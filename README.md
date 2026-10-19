@@ -62,7 +62,7 @@ The checkout includes a script that trains a policy, evaluates it, and records v
 
 On Windows, replace `.venv/bin/python` with `.\.venv\Scripts\python.exe`.
 
-By default, this trains on CUDA for one million environment transitions using 256 parallel worlds, evaluates one seed, and records two episodes. This is a workflow example; the training budget is not a claim of a solved task. Reduce `--num-envs` for training and `--eval-envs` for evaluation if GPU memory is tight, or change `--total-timesteps` to set the training budget.
+By default, this trains on CUDA for one million environment transitions using 1,024 parallel worlds, evaluates one seed, and records two episodes. This is a workflow example; the training budget is not a claim of a solved task. Reduce `--num-envs` for training and `--eval-envs` for evaluation if GPU memory is tight, or change `--total-timesteps` to set the training budget.
 
 This example saves to `runs/first-mappo/`, which must not already exist. Without `--run-dir`, each invocation creates a separate directory under `runs/`. Outputs include:
 

@@ -36,7 +36,7 @@ class MATNormalizationConfig:
     normalize_action_input: bool = False
     normalize_memory_input: bool = False
     normalize_query_tokens: bool = False
-    normalize_context_tokens: bool = False
+    normalize_context_tokens: bool = True
     normalize_action_tokens: bool = False
     normalize_memory_tokens: bool = False
     normalize_actor_head_input: bool = False

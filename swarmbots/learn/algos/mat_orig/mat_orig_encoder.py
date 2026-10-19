@@ -31,10 +31,16 @@ class MATOrigSelfAttention(nn.Module):
         self.head_dim = d_model // nhead
         self.masked = masked
 
-        self.key = _init_linear(nn.Linear(d_model, d_model))
-        self.query = _init_linear(nn.Linear(d_model, d_model))
-        self.value = _init_linear(nn.Linear(d_model, d_model))
-        self.proj = _init_linear(nn.Linear(d_model, d_model))
+        self.key = nn.Linear(d_model, d_model)
+        self.query = nn.Linear(d_model, d_model)
+        self.value = nn.Linear(d_model, d_model)
+        self.proj = nn.Linear(d_model, d_model)
+        # Packed (3D, D) QKV Xavier has half the variance of separate (D, D) Xavier.
+        for projection in (self.key, self.query, self.value):
+            nn.init.xavier_uniform_(projection.weight, gain=math.sqrt(0.5))
+            nn.init.zeros_(projection.bias)
+        nn.init.xavier_uniform_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
 
         causal_mask = torch.tril(torch.ones(max_agents, max_agents, dtype=torch.bool))
         self.register_buffer("causal_mask", causal_mask.view(1, 1, max_agents, max_agents))
@@ -79,10 +85,14 @@ class MATOrigSelfAttention(nn.Module):
                 )
             attn = attn.masked_fill(~key_padding_mask[:, None, None, :], float("-inf"))
 
-        attn = torch.softmax(attn, dim=-1)
+        empty_queries = attn.isneginf().all(dim=-1, keepdim=True)
+        # Masking only the output hides forward NaNs but still poisons softmax backward.
+        attn = torch.softmax(attn.masked_fill(empty_queries, 0.0), dim=-1)
+        attn = attn.masked_fill(empty_queries, 0.0)
         y = attn @ v
         y = y.transpose(1, 2).contiguous().view(batch_size, query_len, self.d_model)
         y = self.proj(y)
+        y = y.masked_fill(empty_queries.all(dim=1), 0.0)
 
         if query_padding_mask is not None:
             if query_padding_mask.dtype != torch.bool:

@@ -3,7 +3,8 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigSelfAttention, _init_linear
+from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigSelfAttention
+from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 class MATOrigDecodeBlock(nn.Module):
@@ -15,6 +16,7 @@ class MATOrigDecodeBlock(nn.Module):
             *,
             max_agents: int,
             dim_feedforward: int | None = None,
+            transformer_ff_init_gain: float | None = 1.0,
     ) -> None:
         super().__init__()
         self.ln1 = nn.LayerNorm(d_model)
@@ -24,10 +26,13 @@ class MATOrigDecodeBlock(nn.Module):
         self.attn2 = MATOrigSelfAttention(d_model, nhead, max_agents=max_agents, masked=True)
         feedforward_dim = d_model if dim_feedforward is None else dim_feedforward
         self.mlp = nn.Sequential(
-            _init_linear(nn.Linear(d_model, feedforward_dim), activate=True),
+            nn.Linear(d_model, feedforward_dim),
             nn.GELU(),
-            _init_linear(nn.Linear(feedforward_dim, d_model)),
+            nn.Linear(feedforward_dim, d_model),
         )
+        if transformer_ff_init_gain is not None:
+            init_linear_orthogonal(self.mlp[0], gain=transformer_ff_init_gain)
+            init_linear_orthogonal(self.mlp[2], gain=1.0)
 
     def forward(
             self,
@@ -67,6 +72,9 @@ class MATOrigDecoderConfig:
     num_layers: int = 2
     latent_pi_dim: int | None = None
     dim_feedforward: int | None = None
+    token_encoder_init_gain: float = 1.0
+    transformer_ff_init_gain: float | None = 1.0
+    actor_head_init_gain: float = 1.0
 
 
 class MATOrigDecoder(nn.Module):
@@ -85,21 +93,22 @@ class MATOrigDecoder(nn.Module):
         self.latent_pi_dim = config.d_model if config.latent_pi_dim is None else config.latent_pi_dim
 
         self.action_encoder = nn.Sequential(
-            _init_linear(nn.Linear(action_input_dim, config.d_model), activate=True),
+            init_linear_orthogonal(nn.Linear(action_input_dim, config.d_model), gain=config.token_encoder_init_gain),
             nn.GELU(),
         )
         self.ln = nn.LayerNorm(config.d_model)
         self.blocks = nn.ModuleList([
             MATOrigDecodeBlock(
                 config.d_model, config.nhead, max_agents=max_agents, dim_feedforward=config.dim_feedforward,
+                transformer_ff_init_gain=config.transformer_ff_init_gain,
             )
             for _ in range(config.num_layers)
         ])
         self.head = nn.Sequential(
-            _init_linear(nn.Linear(config.d_model, config.d_model), activate=True),
+            init_linear_orthogonal(nn.Linear(config.d_model, config.d_model), gain=config.actor_head_init_gain),
             nn.GELU(),
             nn.LayerNorm(config.d_model),
-            _init_linear(nn.Linear(config.d_model, self.latent_pi_dim)),
+            init_linear_orthogonal(nn.Linear(config.d_model, self.latent_pi_dim), gain=config.actor_head_init_gain),
         )
 
     def forward(

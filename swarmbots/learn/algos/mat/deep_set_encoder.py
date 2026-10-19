@@ -15,7 +15,7 @@ class DeepSetEncoderLayer(MATEncoderLayer):
     """Retain the transformer block's FF and residuals with pooled set communication."""
 
     def __init__(self, config: MATEncoderConfig, interaction_config: DeepSetInteractionConfig) -> None:
-        super().__init__(replace(config, use_agent_attention=False))
+        super().__init__(replace(config, use_agent_attention=False, attention_replacement_config=None))
         interaction_type = GatedDeepSetInteraction if interaction_config.gated else DeepSetInteraction
         self.interaction = interaction_type(
             config.d_model,

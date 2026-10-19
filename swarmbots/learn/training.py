@@ -33,7 +33,6 @@ from swarmbots.learn.presets.policy_factory import (
     _is_off_policy_variant,
     _is_sac_policy_variant,
     _make_base_policy,
-    _make_mat_parameter_lr_multipliers,
     set_actuator_gsde_init_joint_stds,
     wrap_vec_env,
 )
@@ -400,11 +399,7 @@ def make_training(
             "vf_coef": 2.0 if use_popart else 0.5,
             "use_popart": use_popart,
             "agent_logprob_reduction": "sum" if policy_variant == "ppo" else None,
-            "parameter_lr_multipliers": _make_mat_parameter_lr_multipliers(
-                policy_variant=policy_variant,
-                mat_decoder_lr_multiplier=0.25,
-                include_actor_head_lr_multiplier=False,
-            ),
+            "parameter_lr_multipliers": {},
         }
         algorithm_config.update(shared_options)
         algorithm_config.update(algorithm_options)

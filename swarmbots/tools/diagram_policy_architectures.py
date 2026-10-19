@@ -284,6 +284,8 @@ def encoder_lines(
             f"attention / block: {config['nhead']} heads ({module_count(row, block + '.self_attn'):,})"
             if config["use_agent_attention"] else "agent attention: disabled"
         )
+        if config.get("attention_replacement_config"):
+            attention = "local attention replacement / block: " + chain(row, block + ".attention_replacement")
     lines: list[str | ComponentBlock] = []
     if projection:
         lines.append("obs MLP (once): " + projection)
@@ -330,6 +332,23 @@ def encoder_lines(
         lines.append(f"final LayerNorm (once): {module_count(row, prefix + '.norm'):,} parameters")
     lines.append(f"output: N × {width}")
     return lines
+
+
+def residual_mlp_lines(
+    row: dict[str, Any], config: dict[str, Any], prefix: str, output_width: int,
+) -> list[str | ComponentBlock]:
+    block = prefix + ".layers.0"
+    return [
+        "per-agent residual stream; no agent mixing",
+        ComponentBlock("Pre-norm residual MLP", [
+            "LayerNorm on the branch input",
+            "FF: " + chain(row, block + ".feedforward"),
+            "residual: x = x + FF(LayerNorm(x))",
+        ], config["num_blocks"], module_count(row, block)),
+        f"final LayerNorm (once): {module_count(row, prefix + '.norm'):,} parameters",
+        "output projection (once): " + chain(row, prefix + ".output_projection", fallback="identity (0)"),
+        f"output: N × {output_width}",
+    ]
 
 
 def critic_embedding_lines(
@@ -553,6 +572,13 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
         "Solid = data. Dashed = causal actions / detached state. Insets show sub-component scope; crossing lines do not join.",
         "Main sketch is online networks. Frozen target copies and optimizer updates are omitted.",
     ]
+    if row["model_scale"]["depth_scope"] == "encoder":
+        d.notes.append("Depth label counts actor/critic encoder blocks; action head/decoder depth is separate.")
+    decoder_attention = row["processing"]["actor_decoder_attention_parameters"]
+    if decoder_attention:
+        d.notes.append(
+            f"Decoder attention: {decoder_attention:,} additional parameters above the base allocation; included in Main/Actor totals."
+        )
     source = "representation"
     if on_policy:
         if "actor_config" in cfg:
@@ -585,10 +611,13 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
         actor_source = source
         if not shared:
             if "actor_config" in cfg:
-                d.node("actor_encoder", "Actor observation encoder",
-                       [chain(row, "actor_encoder.mlp"),
+                actor_encoder_config = cfg.get("actor_encoder_config")
+                actor_lines = encoder_lines(
+                    row, actor_encoder_config, "actor_encoder", chain(row, "actor_encoder.local_obs_encoder"),
+                ) if actor_encoder_config else [chain(row, "actor_encoder.mlp"),
                         *(["LayerNorm after each activation"] if ac.get("layer_norm") else []),
-                        f"output: N \u00d7 {width}"], "actor")
+                        f"output: N \u00d7 {width}"]
+                d.node("actor_encoder", "Actor observation encoder", actor_lines, "actor")
             else:
                 ac = cfg["encoder_config"]
                 d.node(
@@ -614,16 +643,19 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                 f"{'memory' if qcx else 'obs context'} width: {width if qcx else dec_width}",
             ]
             block = "decoder.layers.0" if qcx else "decoder.blocks.0"
-            block_lines = [f"D={dec_width} · {dec['nhead']} heads"]
+            block_lines = [f"D={dec_width} · {dec['nhead']} heads · {dec_width // dec['nhead']} features/head"]
             if qcx:
                 block_lines.extend(
                     [
                         "context MLP / block: " + chain(row, block + ".context_encoder", fallback="identity (0)"),
+                        f"causal Q/K/V widths: {dec_width} → {dec_width}",
                         f"causal attn / block: {module_count(row, block + '.query_context_attn'):,}",
+                        f"memory Q: {dec_width} → {dec_width}; K/V: {width} → {dec_width}",
                         f"memory attn / block: {module_count(row, block + '.memory_attn'):,}",
                         f"FF / block: {dec_width} → {dec['dim_feedforward']} → {dec_width} ({module_count(row, block + '.linear1') + module_count(row, block + '.linear2'):,})",
                     ]
                 )
+                block_lines.append("Pre-norm + residual for both attentions and FF")
             else:
                 block_lines.extend(
                     [
@@ -636,6 +668,7 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
             if not qcx:
                 lines.append("decoder head (once): " + chain(row, "decoder.head"))
             else:
+                lines.append("final decoder LayerNorm before actor head")
                 lines.append("actor head (once): " + chain(row, "actor_head", fallback="identity (0)"))
             output_width = (
                 dec['actor_head_hidden_dims'][-1] if qcx and dec.get('actor_head_hidden_dims')
@@ -654,8 +687,14 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
                 "Decoder loop is across agent order, not future observations; training may teacher-force actions."
             )
         else:
-            d.node("actor", "Private actor MLP", [chain(row, "actor.mlp", "actor_head"), "per agent"], "actor")
-            d.edge(actor_source, "actor", f"N × {cfg.get('actor_encoder_config', {}).get('d_model', width)}")
+            actor_config = cfg.get("actor_config", cfg)
+            residual_config = actor_config.get("residual_mlp_config")
+            if residual_config:
+                prefix = "actor.mlp" if "actor_config" in cfg else "actor_head"
+                d.node("actor", "Residual actor MLP", residual_mlp_lines(row, residual_config, prefix, width), "actor")
+            else:
+                d.node("actor", "Private actor MLP", [chain(row, "actor.mlp", "actor_head"), "per agent"], "actor")
+            d.edge(actor_source, "actor", f"N × {width}")
         d.edge("actor", "actions")
         if row["base_policy_class"] == "MATOrigPolicy":
             d.node(
@@ -731,14 +770,24 @@ def build_diagram(row: dict[str, Any]) -> Diagram:
         # TD3 nests the backbone inside actor; the audited actor MLP width is still explicit.
         if shared:
             actor_node = next(node for node in d.nodes if node.id == "actor_encoder")
-            actor_node.content[-1:] = [
+            residual_config = cfg["actor_head_config"].get("residual_mlp_config")
+            actor_node.content[-1:] = ["head: pre-norm residual MLP", *residual_mlp_lines(
+                row, residual_config, "actor_head.head", cfg["actor_head_config"]["hidden_dims"][-1],
+            )] if residual_config else [
                 "head: " + actor_chain,
                 f"output: N × {cfg['actor_head_config']['hidden_dims'][-1]}",
             ]
             actor_node.__post_init__()
             d.edge("actor_encoder", "actions")
         else:
-            d.node("actor", "Actor output MLP", [actor_chain, "distribution/tanh readout"], "actor")
+            residual_config = cfg["actor_head_config"].get("residual_mlp_config")
+            if residual_config:
+                prefix = "actor_head.head" if "actor_head.head" in row["module_parameter_counts"] else "actor.head.head"
+                d.node("actor", "Residual actor MLP", residual_mlp_lines(
+                    row, residual_config, prefix, cfg["actor_head_config"]["hidden_dims"][-1],
+                ), "actor")
+            else:
+                d.node("actor", "Actor output MLP", [actor_chain, "distribution/tanh readout"], "actor")
             d.edge("actor_encoder", "actor", f"N × {acwidth}")
             d.edge("actor", "actions")
         d.node(

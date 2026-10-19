@@ -18,7 +18,6 @@ from swarmbots.learn.action_dists.hybrid_action_dist import (
 from swarmbots.learn.algos.mat.independent_encoders import encode_critic_observations, make_critic_encoder
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoder, MATOrigDecoderConfig
-from swarmbots.learn.algos.mat_orig.mat_orig_encoder import _init_linear
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
@@ -67,23 +66,26 @@ class MATOrigCritic(nn.Module):
             popart_config: PopArtConfig,
             pool_mode: Literal["mean", "sum"],
             value_head_hidden_dims: list[int] | None = None,
+            local_projection_init_gain: float = 1.0,
+            value_regressor_init_gain: float = 1.0,
+            value_head_init_gain: float = 0.01,
     ) -> None:
         super().__init__()
         self.pool_mode = pool_mode
 
         value_head_layers: list[nn.Module] = [
-            _init_linear(nn.Linear(encoder_dim, encoder_dim), activate=True),
+            make_init_linear_orthogonal(local_projection_init_gain)(nn.Linear(encoder_dim, encoder_dim)),
             nn.GELU(),
             nn.LayerNorm(encoder_dim),
         ]
         head_input_dim = encoder_dim
         for hidden_dim in [] if value_head_hidden_dims is None else value_head_hidden_dims:
             value_head_layers.extend([
-                _init_linear(nn.Linear(head_input_dim, hidden_dim), activate=True),
+                make_init_linear_orthogonal(value_regressor_init_gain)(nn.Linear(head_input_dim, hidden_dim)),
                 nn.GELU(),
             ])
             head_input_dim = hidden_dim
-        value_head_layers.append(_init_linear(nn.Linear(head_input_dim, 1)))
+        value_head_layers.append(make_init_linear_orthogonal(value_head_init_gain)(nn.Linear(head_input_dim, 1)))
         self.value_head = nn.Sequential(*value_head_layers)
 
         self.popart_head: PopArtLinear | None
@@ -141,6 +143,9 @@ class MATOrigCriticConfig:
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
     pool_mode: Literal["mean", "sum"] = "mean"
     value_head_hidden_dims: list[int] = field(default_factory=list)
+    local_projection_init_gain: float = 1.0
+    value_regressor_init_gain: float = 1.0
+    value_head_init_gain: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -226,6 +231,9 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             popart_config=config.critic_config.popart_config,
             pool_mode=config.critic_config.pool_mode,
             value_head_hidden_dims=config.critic_config.value_head_hidden_dims,
+            local_projection_init_gain=config.critic_config.local_projection_init_gain,
+            value_regressor_init_gain=config.critic_config.value_regressor_init_gain,
+            value_head_init_gain=config.critic_config.value_head_init_gain,
         )
         self._generate_actions_fn: Callable[..., tuple[torch.Tensor, Optional[torch.Tensor]]] = self._generate_actions_impl
         self._evaluate_latent_and_values_fn: Callable[..., tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (

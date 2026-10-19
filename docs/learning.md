@@ -14,14 +14,14 @@ from swarmbots.learn import train
 trainer = train(
     "SwarmBots-WallEasy-v0",
     "mappo__deepset_critic",
-    num_envs=256,
+    num_envs=1024,
     device="cuda",
     total_timesteps=1_000_000,
     run_dir="runs/wall-easy/mappo",
 )
 ```
 
-Run this after [installation](../README.md#install). `total_timesteps` counts transitions across all parallel worlds: one step with 256 worlds adds 256 transitions. A short run checks the workflow; reaching good performance may need a larger budget and tuning.
+Run this after [installation](../README.md#install). `total_timesteps` counts transitions across all parallel worlds: one step with the default 1,024 worlds adds 1,024 transitions. A short run checks the workflow; reaching good performance may need a larger budget and tuning.
 
 `train` saves logs and checkpoints when `run_dir` is set and closes the simulator when it finishes. The returned trainer retains the learned policy and observation-normalization statistics for evaluation. Choose a separate run directory for each experiment.
 
@@ -62,7 +62,7 @@ The Python helper and the runnable example use different workload defaults:
 | Setting | `train(...)` | `examples/train_policy.py` |
 | --- | --- | --- |
 | Training budget | 100 million transitions | 1 million transitions |
-| Parallel training worlds | 1024 | 256 |
+| Parallel training worlds | 1024 | 1024 |
 | Device | CUDA | CUDA |
 | Training seed | 42 | 42 |
 | Model scale | `5M-2L NOP1M` | `5M-2L NOP1M` |
@@ -88,7 +88,7 @@ The `model_scale` argument selects a fixed layout; `model_scale="2.5M"` selects 
 | `10M-4L` | 10 million, with four encoder blocks | 2 million |
 | `10M-5L` | 10 million, with five encoder blocks | 2 million |
 
-At the 5M budget, 2L actors use 320-wide features and 3L actors use 256-wide features across MAT, MAPPO and off-policy families. FF/head widths balance their parameter budgets; plain PPO retains its shared backbone.
+Depth labels count actor and critic encoder blocks. At the 5M budget, 2L and 3L actors both use 256-wide features, two or three encoder blocks and the same small one-block action head across MAT, MAPPO and off-policy families. The 10M actors use 320-wide features and three, four or five encoder blocks. Autoregressive decoder attention is additional capacity above matched encoder/non-attention head budgets; plain PPO retains its shared backbone.
 
 NOP means **next-observation prediction**, an auxiliary training objective enabled by default in the core presets. MAT, recurrent MAT, and MAPPO train NOP from critic-encoder features; the prediction loss updates the critic encoder without updating the actor. Plain PPO retains its shared feature encoder. `use_nop=False` disables it without changing the main policy's dimensions.
 
@@ -106,7 +106,7 @@ from swarmbots.learn import train
 trainer = train(
     "SwarmBots-POWallMedium-v0",
     "mat_qcx",
-    num_envs=256,
+    num_envs=1024,
     total_timesteps=10_000_000,
     run_dir="runs/po-wall/mat-qcx",
     model_scale="2.5M",
@@ -215,7 +215,7 @@ trainer = train(
     load_path="runs/wall-easy/mappo/models/model_1000000_steps_final.pt",
     total_timesteps=2_000_000,
     run_dir="runs/wall-easy/mappo-continuation",
-    num_envs=256,
+    num_envs=1024,
     device="cuda",
 )
 ```
@@ -329,7 +329,7 @@ Use the actual checkpoint path and matching training settings. The Python equiva
 ```python
 from swarmbots.learn import make_training
 
-trainer = make_training("SwarmBots-Bridge-v0", "mat_dec", num_envs=256)
+trainer = make_training("SwarmBots-Bridge-v0", "mat_dec", num_envs=1024)
 try:
     trainer.learn(
         max_total_timesteps=10_000_000,

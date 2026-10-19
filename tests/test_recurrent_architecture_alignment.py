@@ -35,6 +35,16 @@ def _assert_additive_recurrent_encoder(baseline: nn.Module, recurrent: RMATEncod
     assert all(layer.inter_module_feedforward is None for layer in recurrent.layers)
 
 
+@pytest.mark.parametrize("scale", list_model_scales())
+@pytest.mark.parametrize("variant", ["tmatd3", "tmatd3_dec"])
+def test_recurrent_td3_critics_share_mat_memory_allocation(variant: str, scale: str) -> None:
+    with torch.device("meta"):
+        td3 = make_policy(variant, scale, use_nop=False, td3_recurrent_actor=True, td3_recurrent_critic=True)
+        mat = make_policy("mat_ind__lstm", scale, use_nop=False)
+    assert td3.critic.encoder.config.temporal_hidden_dim == mat.critic_encoder.config.temporal_hidden_dim
+    assert _parameter_shapes(td3.critic.encoder.layers) == _parameter_shapes(mat.critic_encoder.layers)
+
+
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
 @pytest.mark.parametrize(
     ("baseline_variant", "recurrent_variant"),
@@ -71,7 +81,7 @@ def test_recurrent_presets_add_memory_without_resizing_the_base(
 
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
 @pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm"])
-def test_recurrent_tmasac_splits_actor_mlp_budget_and_preserves_critic(
+def test_recurrent_tmasac_preserves_feedforward_capacity_and_critic(
     scale: str | None, variant: str,
 ) -> None:
     with torch.device("meta"):
@@ -79,23 +89,26 @@ def test_recurrent_tmasac_splits_actor_mlp_budget_and_preserves_critic(
         recurrent = make_policy(variant, scale, use_nop=False)
 
     for field in fields(MATEncoderConfig):
-        if field.name not in {"transformer_ff_config", "dim_feedforward"}:
+        if scale is not None or field.name not in {"transformer_ff_config", "dim_feedforward"}:
             assert getattr(recurrent.actor_encoder_config, field.name) == getattr(baseline.actor_encoder_config, field.name)
         assert getattr(recurrent.critic_encoder_config, field.name) == getattr(baseline.critic_encoder_config, field.name)
     assert recurrent.actor_encoder.config.temporal_model_order == "inter_agent_attention_first"
-    assert recurrent.actor_encoder.config.inter_module_mlp
-    for reference_layer, layer in zip(baseline.actor_encoder.layers, recurrent.actor_encoder.layers, strict=True):
-        assert _parameter_shapes(layer.self_attn) == _parameter_shapes(reference_layer.self_attn)
-        reference_count = sum(parameter.numel() for parameter in reference_layer.feedforward.parameters())
-        for feedforward in (layer.inter_module_feedforward, layer.feedforward):
-            linears = [module for module in feedforward.modules() if isinstance(module, nn.Linear)]
-            assert len(linears) == 2
-            assert linears[0].in_features == linears[-1].out_features == layer.d_model
-            assert sum(parameter.numel() for parameter in feedforward.parameters()) == pytest.approx(reference_count / 2, rel=0.01)
-        assert not {id(parameter) for parameter in layer.inter_module_feedforward.parameters()} & {
-            id(parameter) for parameter in layer.feedforward.parameters()
-        }
-        assert layer.temporal_residual and layer.temporal_layer_norm
+    if scale is not None:
+        _assert_additive_recurrent_encoder(baseline.actor_encoder, recurrent.actor_encoder)
+    else:
+        assert recurrent.actor_encoder.config.inter_module_mlp
+        for reference_layer, layer in zip(baseline.actor_encoder.layers, recurrent.actor_encoder.layers, strict=True):
+            assert _parameter_shapes(layer.self_attn) == _parameter_shapes(reference_layer.self_attn)
+            reference_count = sum(parameter.numel() for parameter in reference_layer.feedforward.parameters())
+            for feedforward in (layer.inter_module_feedforward, layer.feedforward):
+                linears = [module for module in feedforward.modules() if isinstance(module, nn.Linear)]
+                assert len(linears) == 2
+                assert linears[0].in_features == linears[-1].out_features == layer.d_model
+                assert sum(parameter.numel() for parameter in feedforward.parameters()) == pytest.approx(reference_count / 2, rel=0.01)
+            assert not {id(parameter) for parameter in layer.inter_module_feedforward.parameters()} & {
+                id(parameter) for parameter in layer.feedforward.parameters()
+            }
+            assert layer.temporal_residual and layer.temporal_layer_norm
     assert _parameter_shapes(recurrent.actor_head) == _parameter_shapes(baseline.actor_head)
     assert recurrent.config.critic_config == baseline.config.critic_config
     assert _parameter_shapes(recurrent.critic.q1) == _parameter_shapes(baseline.critic.q1)

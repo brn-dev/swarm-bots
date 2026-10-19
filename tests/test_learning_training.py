@@ -98,8 +98,20 @@ def capture_training_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
         return kwargs
 
     monkeypatch.setattr("swarmbots.learn.training._make_policy_env", make_environment)
-    for algorithm_name in ("SAC", "RecurrentSAC", "TD3", "RecurrentTD3", "DDPG"):
+    for algorithm_name in ("PPO", "SAC", "RecurrentSAC", "TD3", "RecurrentTD3", "DDPG"):
         monkeypatch.setattr(f"swarmbots.learn.training.{algorithm_name}", capture_algorithm)
+
+
+@pytest.mark.parametrize(
+    "variant", [name for name in list_variants(include_hidden=True) if name not in OFF_POLICY_VARIANTS],
+)
+@pytest.mark.parametrize("multipliers", [None, {"decoder": 0.5, "actor_head": 0.5}])
+def test_on_policy_presets_share_component_learning_rates_unless_explicitly_overridden(
+    capture_training_configuration: None, variant: str, multipliers: dict[str, float] | None,
+) -> None:
+    overrides = {} if multipliers is None else {"parameter_lr_multipliers": multipliers}
+    config = make_training("SwarmBots-WallEasy-v0", variant, algorithm_kwargs=overrides)
+    assert config["parameter_lr_multipliers"] == (multipliers or {})
 
 
 @pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)

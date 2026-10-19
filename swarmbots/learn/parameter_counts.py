@@ -211,6 +211,11 @@ def count_policy_parameters(policy: nn.Module) -> dict[str, Any]:
         {"role": role, "kind": kind, "module": name, **counts}
         for (role, kind, name), counts in sorted(processing_components.items())
     ]
+    processing["actor_decoder_attention_parameters"] = sum(
+        component["total"] for component in processing["components"]
+        if component["role"] == "actor" and component["kind"] == "attention"
+        and "decoder" in component["module"].split(".")
+    )
     return {
         **totals,
         "trainable_minus_nop": totals["trainable"] - roles["next_obs_prediction"]["trainable"],

@@ -227,7 +227,9 @@ def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.
         "Buffers (including normalization/PopArt state), optimizer state, replay, and activations are excluded. "
         "Parameter MiB below uses the tensors' actual dtypes and is not runtime or checkpoint memory.", "",
         "Supported model scales select fixed, reviewed architecture layouts; counts depend on task inputs and are not fitted at construction. "
-        "Scale names describe feed-forward references. Recurrent and gated presets retain matched backbones and add capacity; "
+        "Depth labels count actor/critic encoder blocks; decoder/head depth is separate. "
+        "Scale names describe base feed-forward references excluding actor decoder attention. "
+        "Recurrent and gated presets retain matched backbones and add capacity; "
         "fixed TMASAC LSTM/sLSTM layouts use different memory widths to match complete main counts. "
         f"See [model-scale allocation]({allocation_doc}) for the sizing rules. These are the registered preset defaults "
         "unless overrides below are nonempty. A residual-connection ablation can have the same count.", "",
@@ -263,8 +265,10 @@ def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.
         "Attention's matrix operations can add substantial compute without additional parameters. "
         "Matching MLP + linear totals alone can also hide different actor/critic allocations or layer shapes; "
         "use the role and module breakdowns when choosing an experimental control.", "",
-        "| Variant | Actor MLP + linear | Critic MLP + linear | Shared MLP + linear | Total MLP + linear | Attention | Recurrent | Remainder | Online total | Trainable − NOP |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "Actor decoder attention is additional capacity above the matched actor backbone/non-attention head budget. "
+        "Its column is a subset of Attention and is already included in the online total.", "",
+        "| Variant | Actor MLP + linear | Critic MLP + linear | Shared MLP + linear | Total MLP + linear | Attention | Decoder attention (included) | Recurrent | Remainder | Online total | Trainable − NOP |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
     for row in report["policies"]:
         processing = row["processing"]
@@ -272,6 +276,7 @@ def render_report(report: dict[str, Any], *, allocation_doc: str = "model_scale.
         values = [
             *(processing["roles"][role]["mlp_and_linear"]["total"] for role in PROCESSING_ROLES[:3]),
             processing["mlp_and_linear"]["total"], processing["kinds"]["attention"]["total"],
+            processing["actor_decoder_attention_parameters"],
             processing["kinds"]["recurrent"]["total"], remainder, processing["total"], row["trainable_minus_nop"],
         ]
         lines.append(f"| {row['variant']} | " + " | ".join(f"{value:,}" for value in values) + " |")
@@ -375,7 +380,10 @@ def save_report(report: dict[str, Any], output_dir: Path, *, allocation_doc: str
         writer.writeheader()
         for row in report["policies"]:
             writer.writerows({"variant": row["variant"], **layer} for layer in row.get("layer_layout", []))
-    processing_columns = ["main_policy_total", "mlp_and_linear", *(f"processing_{kind}" for kind in PROCESSING_KINDS)]
+    processing_columns = [
+        "main_policy_total", "mlp_and_linear", "actor_decoder_attention_parameters",
+        *(f"processing_{kind}" for kind in PROCESSING_KINDS),
+    ]
     role_columns = [f"{role}_mlp_and_linear" for role in PROCESSING_ROLES]
     columns = ["variant", *PARAMETER_ROLES, "total", "trainable", "trainable_minus_nop", "frozen", "parameter_bytes", *processing_columns, *role_columns]
     with (output_dir / "counts.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -388,6 +396,7 @@ def save_report(report: dict[str, Any], output_dir: Path, *, allocation_doc: str
                 **{role: row["roles"][role]["total"] for role in PARAMETER_ROLES},
                 "main_policy_total": processing["total"],
                 "mlp_and_linear": processing["mlp_and_linear"]["total"],
+                "actor_decoder_attention_parameters": processing["actor_decoder_attention_parameters"],
                 **{f"processing_{kind}": processing["kinds"][kind]["total"] for kind in PROCESSING_KINDS},
                 **{f"{role}_mlp_and_linear": processing["roles"][role]["mlp_and_linear"]["total"] for role in PROCESSING_ROLES},
             })

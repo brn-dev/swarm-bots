@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.nn_components.activations import ActivationFactory
+from swarmbots.learn.nn_components.attention import safe_key_padding_mask
 from swarmbots.learn.nn_components.nn_init import (
     make_init_linear_orthogonal,
     reinitialize_multihead_attention,
@@ -41,6 +42,7 @@ class MATEncoderConfig:
     normalize_tokens: bool = False
     use_agent_attention: bool = True
     joint_obs_embedding: bool = field(default=False, kw_only=True)
+    attention_replacement_config: FeedForwardConfig | None = field(default=None, kw_only=True)
 
 
 class MATEncoderLayer(nn.Module):
@@ -66,6 +68,15 @@ class MATEncoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
         self.dropout1 = nn.Dropout(config.dropout)
         self.dropout2 = nn.Dropout(config.dropout)
+        self.attention_replacement = (
+            make_feedforward(
+                input_dim=config.d_model, output_dim=config.d_model,
+                config=config.attention_replacement_config, linear_init=_skip_init,
+                output_linear_init=_skip_init, act_fn_cls=config.act_fn_cls,
+                bias=config.bias, dropout=config.dropout,
+            )
+            if not config.use_agent_attention and config.attention_replacement_config is not None else None
+        )
         self.feedforward = make_feedforward(
             input_dim=config.d_model,
             output_dim=config.d_model,
@@ -139,16 +150,22 @@ class MATEncoderLayer(nn.Module):
             is_causal: bool,
     ) -> torch.Tensor:
         if self.self_attn is None:
-            return torch.zeros_like(embeddings)
+            return (
+                torch.zeros_like(embeddings) if self.attention_replacement is None
+                else self.dropout1(self.attention_replacement(embeddings))
+            )
+        safe_padding_mask, empty_rows = safe_key_padding_mask(key_padding_mask)
         attention_output = self.self_attn(
             embeddings,
             embeddings,
             embeddings,
             attn_mask=attention_mask,
-            key_padding_mask=key_padding_mask,
+            key_padding_mask=safe_padding_mask,
             need_weights=False,
             is_causal=is_causal,
         )[0]
+        if empty_rows is not None:
+            attention_output = attention_output.masked_fill(empty_rows.unsqueeze(-1), 0.0)
         return self.dropout1(attention_output)
 
     def _feedforward_block(self, embeddings: torch.Tensor) -> torch.Tensor:
@@ -262,11 +279,14 @@ class MATEncoder(nn.Module):
         for layer in self.layers:
             if layer.self_attn is not None:
                 reinitialize_multihead_attention(layer.self_attn)
-            hidden_layers, output_layers = feedforward_linear_layers(layer.feedforward)
-            for linear in hidden_layers:
-                hidden_linear_init(linear)
-            for linear in output_layers:
-                output_linear_init(linear)
+            for block in (layer.feedforward, layer.attention_replacement):
+                if block is None:
+                    continue
+                hidden_layers, output_layers = feedforward_linear_layers(block)
+                for linear in hidden_layers:
+                    hidden_linear_init(linear)
+                for linear in output_layers:
+                    output_linear_init(linear)
 
 
 def _skip_init(module: nn.Linear) -> nn.Linear:

@@ -47,6 +47,20 @@ def test_counts_separate_targets_nop_and_buffers() -> None:
     assert sum(component["total"] for component in result["components"]) == 56
 
 
+def test_decoder_attention_allowance_excludes_encoder_targets_and_auxiliary_models() -> None:
+    policy = nn.Module()
+    policy.actor_encoder = nn.MultiheadAttention(4, 2)
+    policy.decoder = nn.Sequential(nn.MultiheadAttention(4, 2), nn.MultiheadAttention(4, 2))
+    policy.decoder_target = copy.deepcopy(policy.decoder).requires_grad_(False)
+    policy.actor_nop = copy.deepcopy(policy.decoder)
+
+    result = count_policy_parameters(policy)
+
+    assert result["processing"]["actor_decoder_attention_parameters"] == 160
+    assert result["processing"]["kinds"]["attention"]["total"] == 240
+    assert result["processing"]["total"] == 240
+
+
 def test_wrapped_policy_and_world_model_use_the_same_breakdown() -> None:
     policy = nn.Module()
     policy.actor = nn.Linear(2, 1)  # 3

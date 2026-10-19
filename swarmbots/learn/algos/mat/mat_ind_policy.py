@@ -32,6 +32,7 @@ from swarmbots.learn.base_policy import policy_inference_step
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
+from swarmbots.learn.nn_components.residual_mlp import ResidualMLP, ResidualMLPConfig
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
 
 
@@ -41,6 +42,7 @@ class MATIndPolicyConfig:
     critic_encoder_config: MATEncoderConfig | None = None
     critic_config: MATCriticConfig = field(default_factory=MATCriticConfig)
     actor_head_hidden_dims: list[int] | None = None
+    residual_mlp_config: ResidualMLPConfig | None = None
     act_fn_cls: ActivationFactory = nn.GELU
     dropout: float = 0.0
     continuous_config: ContinuousActionDistConfigInput = None
@@ -81,15 +83,13 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         self.d_model_encoder = config.encoder_config.d_model
         self.actor_encoder_config = self._build_encoder_config()
         self.actor_encoder = self._build_encoder()
-        self.critic_encoder_config, self.critic_encoder = make_critic_encoder(
-            config.critic_encoder_config, self.actor_encoder_config,
-            env=env, max_agents=self.max_agents,
-        )
-        self.d_model_critic_encoder = self.critic_encoder_config.d_model
-        self.nop_latent_dim = self.d_model_critic_encoder
-        self.nop_latent_source = "critic_encoder"
-
-        if config.actor_head_hidden_dims is not None and len(config.actor_head_hidden_dims) > 0:
+        if config.residual_mlp_config is not None:
+            latent_pi_dim = config.actor_head_hidden_dims[-1] if config.actor_head_hidden_dims else self.d_model_encoder
+            self.actor_head = ResidualMLP(
+                self._actor_input_dim(), latent_pi_dim, config.residual_mlp_config,
+                act_fn_cls=config.act_fn_cls, linear_init=make_init_linear_orthogonal(config.actor_head_init_gain),
+            )
+        elif config.actor_head_hidden_dims is not None and len(config.actor_head_hidden_dims) > 0:
             self.actor_head = MLP(
                 input_dim=self._actor_input_dim(),
                 hidden_dims=config.actor_head_hidden_dims,
@@ -110,6 +110,15 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
         )
 
+        # Complete actor initialization before critic-specific RNG draws so
+        # critic-communication ablations can start from identical actors.
+        self.critic_encoder_config, self.critic_encoder = make_critic_encoder(
+            config.critic_encoder_config, self.actor_encoder_config,
+            env=env, max_agents=self.max_agents,
+        )
+        self.d_model_critic_encoder = self.critic_encoder_config.d_model
+        self.nop_latent_dim = self.d_model_critic_encoder
+        self.nop_latent_source = "critic_encoder"
         self.critic = make_value_head(config.critic_config, self.d_model_critic_encoder, config.act_fn_cls)
 
         self._generate_actions_fn: Callable[..., tuple[torch.Tensor, torch.Tensor | None]] = self._generate_actions_impl
@@ -157,6 +166,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 "critic_encoder_config": serialize_dataclass(self.critic_encoder_config),
                 "critic_config": serialize_dataclass(self.config.critic_config),
                 "actor_head_hidden_dims": self.config.actor_head_hidden_dims,
+                "residual_mlp_config": serialize_value(self.config.residual_mlp_config),
                 "act_fn_cls": serialize_value(self.act_fn_cls),
                 "dropout": self.dropout,
                 "continuous_config": continuous_config_to_dicts(self.action_dist.continuous_configs),

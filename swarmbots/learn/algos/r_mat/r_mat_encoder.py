@@ -13,6 +13,7 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
     TemporalSequenceModel,
 )
 from swarmbots.learn.nn_components.feed_forward import make_feedforward
+from swarmbots.learn.nn_components.attention import safe_key_padding_mask
 from swarmbots.learn.nn_components.nn_init import (
     make_init_linear_orthogonal,
     reinitialize_multihead_attention,
@@ -104,6 +105,15 @@ class RMATEncoderLayer(nn.Module):
             else make_init_linear_orthogonal(config.linear_init_gain)
         )
         feedforward_projection_init = make_init_linear_orthogonal(1.0)
+        self.attention_replacement = (
+            make_feedforward(
+                input_dim=config.d_model, output_dim=config.d_model,
+                config=config.attention_replacement_config, linear_init=feedforward_linear_init,
+                output_linear_init=feedforward_projection_init, act_fn_cls=config.act_fn_cls,
+                bias=config.bias, dropout=config.dropout,
+            )
+            if not config.use_agent_attention and config.attention_replacement_config is not None else None
+        )
         self.inter_module_feedforward: nn.Module | None = (
             make_feedforward(
                 input_dim=config.d_model,
@@ -244,7 +254,10 @@ class RMATEncoderLayer(nn.Module):
     ) -> torch.Tensor:
         attention_inputs = self.attention_norm(embeddings) if self.norm_first else embeddings
         if self.self_attn is None:
-            attention_outputs = torch.zeros_like(attention_inputs)
+            attention_outputs = (
+                torch.zeros_like(attention_inputs) if self.attention_replacement is None
+                else self.attention_replacement(attention_inputs)
+            )
         else:
             batch_size, sequence_length, n_agents, hidden_dim = attention_inputs.shape
             flat_attention_inputs = attention_inputs.reshape(batch_size * sequence_length, n_agents, hidden_dim)
@@ -253,13 +266,17 @@ class RMATEncoderLayer(nn.Module):
                 if agent_mask is None
                 else agent_mask.reshape(batch_size * sequence_length, n_agents)
             )
-            attention_outputs = self.self_attn(
+            safe_padding_mask, empty_rows = safe_key_padding_mask(None if flat_agent_mask is None else ~flat_agent_mask)
+            flat_attention_outputs = self.self_attn(
                 flat_attention_inputs,
                 flat_attention_inputs,
                 flat_attention_inputs,
-                key_padding_mask=None if flat_agent_mask is None else ~flat_agent_mask,
+                key_padding_mask=safe_padding_mask,
                 need_weights=False,
-            )[0].reshape(batch_size, sequence_length, n_agents, hidden_dim)
+            )[0]
+            if empty_rows is not None:
+                flat_attention_outputs = flat_attention_outputs.masked_fill(empty_rows.unsqueeze(-1), 0.0)
+            attention_outputs = flat_attention_outputs.reshape(batch_size, sequence_length, n_agents, hidden_dim)
 
         if self.norm_first:
             outputs = embeddings + self.attention_dropout(attention_outputs)

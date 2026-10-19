@@ -30,6 +30,7 @@ from swarmbots.learn.presets.model_scale import (
 from swarmbots.learn.training import _add_ppo_nop, _variant_options
 from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.nn_components.deep_set import DeepSet, DeepSetInteractionConfig, GatedDeepSetInteraction
+from swarmbots.learn.nn_components.residual_mlp import ResidualMLP
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -183,14 +184,14 @@ def test_fixed_scales_override_existing_recurrent_memory_widths(
 
 @pytest.mark.parametrize("variant", list_variants(include_hidden=True))
 @pytest.mark.parametrize(
-    ("scales", "depths", "decentralized_depth"),
+    ("scales", "depths"),
     [
-        (("5M-2L", "5M-3L"), (2, 3), 3),
-        (("10M-3L", "10M-4L", "10M-5L"), (3, 4, 5), 4),
+        (("5M-2L", "5M-3L"), (2, 3)),
+        (("10M-3L", "10M-4L", "10M-5L"), (3, 4, 5)),
     ],
 )
 def test_depth_choices_preserve_parameter_and_auxiliary_budgets(
-    variant: str, scales: tuple[str, ...], depths: tuple[int, ...], decentralized_depth: int,
+    variant: str, scales: tuple[str, ...], depths: tuple[int, ...],
 ) -> None:
     with torch.device("meta"):
         policies = [make_policy(variant, scale) for scale in scales]
@@ -202,16 +203,15 @@ def test_depth_choices_preserve_parameter_and_auxiliary_budgets(
             if variant == "ppo":
                 assert config == bases[0].config
             else:
-                assert len(base.actor_encoder.mlp.hidden_dims) == 3 * layout.mat_encoder_layers
-                assert len(base.actor.mlp.hidden_dims) == 3 * layout.decoder_layers
+                assert len(base.actor_encoder.layers) == depth
+                assert len(base.actor.mlp.layers) == layout.actor_head_blocks
                 assert len(base.critic_encoder.layers) == depth
         elif hasattr(config, "encoder_config"):
-            assert len(base.actor_encoder.layers) == layout.mat_encoder_layers
+            assert len(base.actor_encoder.layers) == depth
             assert len(base.critic_encoder.layers) == depth
         else:
             actor_encoder = base.actor_encoder if hasattr(base, "actor_encoder") else base.actor.encoder
-            uses_attention = actor_encoder.layers[0].self_attn is not None
-            assert len(actor_encoder.layers) == (depth if uses_attention else decentralized_depth)
+            assert len(actor_encoder.layers) == depth
             if hasattr(base, "critic_encoder"):
                 critic_encoder = base.critic_encoder
             else:
@@ -224,9 +224,6 @@ def test_depth_choices_preserve_parameter_and_auxiliary_budgets(
     for second in bases[1:]:
         if hasattr(first.config, "actor_config"):
             assert first.config.critic_config == second.config.critic_config
-        elif not hasattr(first.config, "encoder_config"):
-            if scales[0].startswith("10M-") and not first.config.actor_encoder_config.use_agent_attention:
-                assert first.config.actor_encoder_config == second.config.actor_encoder_config
         if hasattr(first.config, "nop_config"):
             assert first.config.nop_config == second.config.nop_config
     if hasattr(policies[0], "world_model_config"):
@@ -237,28 +234,40 @@ def test_depth_choices_preserve_parameter_and_auxiliary_budgets(
 
 
 @pytest.mark.parametrize("variant", [name for name in list_variants(include_hidden=True) if name != "ppo"])
-def test_5m_two_layer_actors_use_wider_features_across_families(variant: str) -> None:
+@pytest.mark.parametrize("scales", [("5M-2L", "5M-3L"), ("10M-3L", "10M-4L", "10M-5L")])
+def test_depth_choices_preserve_actor_width_and_output_head(variant: str, scales: tuple[str, ...]) -> None:
     with torch.device("meta"):
         policies = [getattr(policy, "policy", policy) for policy in (
-            make_policy(variant, scale, use_nop=False) for scale in ("5M-2L", "5M-3L")
+            make_policy(variant, scale, use_nop=False) for scale in scales
         )]
     encoders = [policy.actor_encoder if hasattr(policy, "actor_encoder") else policy.actor.encoder for policy in policies]
-    widths = [encoder.mlp.hidden_dims[-1] if variant == "mappo__deepset_critic" else encoder.norm.normalized_shape[0] for encoder in encoders]
-    assert widths[0] > widths[1]
+    widths = [encoder.norm.normalized_shape[0] for encoder in encoders]
+    assert len(set(widths)) == 1
+    for policy in policies[1:]:
+        if hasattr(policies[0].config, "decoder_config"):
+            assert policy.config.decoder_config == policies[0].config.decoder_config
+        elif variant == "mappo__deepset_critic":
+            assert policy.config.actor_config == policies[0].config.actor_config
+        elif hasattr(policy.config, "actor_head_config"):
+            assert policy.config.actor_head_config == policies[0].config.actor_head_config
+        else:
+            assert policy.config.residual_mlp_config == policies[0].config.residual_mlp_config
+            assert policy.config.actor_head_hidden_dims == policies[0].config.actor_head_hidden_dims
 
 
 @pytest.mark.parametrize("variant", ["mat_ind", "mat_qcx", "mat_orig", "tmasac", "tmatd3"])
-def test_5m_two_layer_actor_encoding_balances_attention_and_feedforward_parameters(
+def test_two_layer_actors_have_two_attention_blocks_and_encoder_dominated_capacity(
     variant: str, wall_easy_actor_shape: None,
 ) -> None:
     with torch.device("meta"):
         policy = make_policy(variant, "5M-2L", n_agents=5, use_nop=False)
     encoder = policy.actor_encoder if hasattr(policy, "actor_encoder") else policy.actor.encoder
-    attention_count = sum(parameter.numel() for layer in encoder.layers for parameter in layer.self_attn.parameters())
-    feedforward_count = sum(parameter.numel() for layer in encoder.layers for parameter in layer.feedforward.parameters())
+    assert len(encoder.layers) == 2
+    assert all(isinstance(layer.self_attn, nn.MultiheadAttention) for layer in encoder.layers)
     encoder_count = sum(parameter.numel() for parameter in encoder.parameters())
-    assert attention_count > 0.35 * encoder_count
-    assert attention_count > 0.8 * feedforward_count
+    counts = count_policy_parameters(policy)
+    base_actor_count = counts["roles"]["actor"]["total"] - counts["processing"]["actor_decoder_attention_parameters"]
+    assert encoder_count > 0.8 * base_actor_count
 
 
 @pytest.mark.parametrize("scale", [None, *list_model_scales()])
@@ -272,6 +281,9 @@ def test_actor_attention_ablation_preserves_critic_architecture(scale: str | Non
     assert ablation.critic_encoder_config == baseline.critic_encoder_config
     assert ablation.config.critic_config == baseline.config.critic_config
     assert count_policy_parameters(ablation)["roles"]["critic"] == count_policy_parameters(baseline)["roles"]["critic"]
+    if scale is not None:
+        actor_counts = [count_policy_parameters(policy)["roles"]["actor"]["total"] for policy in (baseline, ablation)]
+        assert max(actor_counts) / min(actor_counts) < 1.001
 
 
 @pytest.mark.parametrize("scale", list_model_scales())
@@ -289,6 +301,20 @@ def test_td3_scale_uses_top_level_critic_kind(
     matching_config = replace(config, joint_critic_config=replace(config.joint_critic_config, kind=critic_kind))
 
     assert model_config_at_scale(config, scale) == model_config_at_scale(matching_config, scale)
+
+
+@pytest.mark.parametrize("scale", list_model_scales())
+def test_single_flattened_critic_omits_one_unchanged_mlp_head(scale: str) -> None:
+    with torch.device("meta"):
+        single = make_policy_at_scale(TD3Policy, _make_env(), TD3PolicyConfig(critic_kind="mlp", n_critics=1), scale)
+        twin = make_policy_at_scale(TD3Policy, _make_env(), TD3PolicyConfig(critic_kind="mlp", n_critics=2), scale)
+    shapes = {name: parameter.shape for name, parameter in single.critic[0].named_parameters()}
+    assert len(single.critic) == 1 and len(twin.critic) == 2
+    for head in twin.critic:
+        assert {name: parameter.shape for name, parameter in head.named_parameters()} == shapes
+    single_count = count_policy_parameters(single)["roles"]["critic"]["total"]
+    twin_count = count_policy_parameters(twin)["roles"]["critic"]["total"]
+    assert twin_count == 2 * single_count
 
 
 @pytest.mark.parametrize("scale", list_model_scales())
@@ -341,7 +367,7 @@ def test_scaled_deepset_policies_preserve_explicit_encoder_and_head_controls(fam
     assert encoder.norm.eps == 1e-4
     assert any(isinstance(module, activation) for module in encoder.local_action_encoder.modules())
     for head in heads:
-        assert all(block.features == layout.deepset_q_head_width for block in head.deepset.interactions)
+        assert all(block.features == layout.critic_head_width for block in head.deepset.interactions)
         assert all(isinstance(block, GatedDeepSetInteraction) for block in head.deepset.interactions)
         assert all(block.message_dim == 24 and block.gate_hidden_dim == 5 for block in head.deepset.interactions)
         assert all(isinstance(block.global_norm, nn.Identity) for block in head.deepset.interactions)
@@ -405,7 +431,7 @@ def test_core_presets_have_explicit_conventional_layouts(variant, scale):
     base = getattr(policy, "policy", policy)
     config = base.config
     if hasattr(config, "encoder_config"):
-        assert len(base.actor_encoder.layers) == layout.mat_encoder_layers
+        assert len(base.actor_encoder.layers) == layout.actor_encoder_layers
         assert len(base.critic_encoder.layers) == layout.layers
     if hasattr(config, "decoder_config"):
         blocks = getattr(base.decoder, "layers", getattr(base.decoder, "blocks", None))
@@ -414,12 +440,8 @@ def test_core_presets_have_explicit_conventional_layouts(variant, scale):
         actor_encoder = base.actor_encoder if hasattr(base, "actor_encoder") else base.actor.encoder
         if getattr(config, "shared_encoder_config", None) is not None:
             actor_layers = layout.private_layers
-        elif hasattr(config.actor_encoder_config, "temporal_model_cls"):
-            actor_layers = layout.layers
         else:
-            actor_layers = (
-                layout.layers if actor_encoder.layers[0].self_attn is not None else layout.decentralized_layers
-            )
+            actor_layers = layout.actor_encoder_layers
         assert len(actor_encoder.layers) == actor_layers
     if getattr(config, "shared_encoder_config", None) is not None:
         assert len(base.shared_observation_encoder.layers) == layout.layers
@@ -510,8 +532,8 @@ def test_off_policy_decentralized_actor_is_common_across_algorithms(scale):
         assert (
             policy.config.actor_head_config.hidden_dims
             == first.actor_head_config.hidden_dims
-            == [SCALE_LAYOUTS[scale].head_width]
         )
+        assert policy.config.actor_head_config.hidden_dims[-1] == SCALE_LAYOUTS[scale].width
         assert policy.config.actor_head_config.normalize_input == first.actor_head_config.normalize_input
         assert policy.config.actor_head_config.init_gain == first.actor_head_config.init_gain
 
@@ -663,7 +685,7 @@ def test_recurrent_mat_preserves_independent_per_layer_temporal_specs(
     scale: str | None, variant: str, specification: str,
 ) -> None:
     layout = None if scale is None else SCALE_LAYOUTS[scale]
-    actor_depth = 2 if layout is None else layout.mat_encoder_layers
+    actor_depth = 2 if layout is None else layout.actor_encoder_layers
     critic_depth = 2 if layout is None else layout.layers
     options = {}
     expected = {}
@@ -694,7 +716,7 @@ def test_recurrent_mat_preserves_independent_per_layer_temporal_specs(
 @pytest.mark.parametrize("num_heads", [4, 8])
 def test_per_layer_slstm_specs_match_repeated_scalar_specs(scale: str, num_heads: int) -> None:
     config = SLSTMTemporalSequenceModelConfig(num_heads=num_heads)
-    depth = SCALE_LAYOUTS[scale].layers
+    depth = SCALE_LAYOUTS[scale].actor_encoder_layers
     with torch.device("meta"):
         scalar = make_policy("tmasac__slstm", scale, use_nop=False, rmat_temporal_model_config=config)
         per_layer = make_policy(
@@ -707,9 +729,9 @@ def test_per_layer_slstm_specs_match_repeated_scalar_specs(scale: str, num_heads
     }
 
 
-@pytest.mark.parametrize("scale", ["2.5M NOP0.75M", "10M-5L NOP2M"])
+@pytest.mark.parametrize("scale", ["5M-3L NOP1M", "10M-5L NOP2M"])
 def test_mixed_tmasac_temporal_specs_support_eight_head_slstm_layers(scale: str) -> None:
-    depth = SCALE_LAYOUTS[scale].layers
+    depth = SCALE_LAYOUTS[scale].actor_encoder_layers
     with torch.device("meta"):
         policy = make_policy(
             "tmasac__slstm", scale, use_nop=False,
@@ -725,7 +747,7 @@ def test_mixed_tmasac_temporal_specs_support_eight_head_slstm_layers(scale: str)
 def test_recurrent_mat_rollout_uses_independent_actor_and_critic_temporal_specs(variant: str) -> None:
     policy = make_policy(
         variant, "5M-2L", use_nop=False,
-        rmat_temporal_model_config=[LSTMTemporalSequenceModelConfig()],
+        rmat_temporal_model_config=[LSTMTemporalSequenceModelConfig(), LSTMTemporalSequenceModelConfig()],
         rmat_critic_temporal_model_cls=[SLSTMTemporalSequenceModel, LSTMTemporalSequenceModel],
         rmat_critic_temporal_model_config=[SLSTMTemporalSequenceModelConfig(), LSTMTemporalSequenceModelConfig()],
     )
@@ -736,7 +758,7 @@ def test_recurrent_mat_rollout_uses_independent_actor_and_critic_temporal_specs(
     )
     assert actions.shape == (2, 3, 3) and log_probs.shape == (2, 3) and values.shape == (2,)
     assert torch.isfinite(actions).all() and torch.isfinite(values).all()
-    assert len(state["actor"]) == 1 and len(state["critic"]) == 2
+    assert len(state["actor"]) == len(state["critic"]) == 2
     values.square().mean().backward()
     for layer in policy.critic_encoder.layers:
         assert any(parameter.grad is not None and parameter.grad.abs().sum() > 0
@@ -804,15 +826,15 @@ def test_shared_mat_v_critics_and_decoders_use_common_dimensions(scale):
         assert policy.config.decoder_config.dim_feedforward == layout.qcx_ff_width
         for block in policy.decoder.layers:
             assert (block.linear1.in_features, block.linear1.out_features, block.linear2.out_features) == (
-                layout.qcx_decoder_width,
+                layout.decoder_width,
                 layout.qcx_ff_width,
-                layout.qcx_decoder_width,
+                layout.decoder_width,
             )
 
 
 @pytest.mark.parametrize("scale", list_model_scales())
 @pytest.mark.parametrize("recurrent", [False, True])
-def test_mat_heads_use_identical_encoders_and_matched_parameter_budgets(
+def test_mat_heads_use_identical_encoders_and_matched_non_attention_budgets(
     scale: str, recurrent: bool, wall_easy_actor_shape: None,
 ) -> None:
     variants = ("mat_ind__lstm", "mat_qcx__lstm") if recurrent else ("mat_ind", "mat_qcx", "mat_orig")
@@ -825,8 +847,9 @@ def test_mat_heads_use_identical_encoders_and_matched_parameter_budgets(
         assert policy.config.encoder_config == reference.config.encoder_config
         assert {name: parameter.shape for name, parameter in policy.actor_encoder.named_parameters()} == reference_shapes
         encoder_count = sum(parameter.numel() for parameter in policy.actor_encoder.parameters())
-        actor_count = count_policy_parameters(policy)["roles"]["actor"]["trainable"]
-        head_counts.append(actor_count - encoder_count)
+        counts = count_policy_parameters(policy)
+        actor_count = counts["roles"]["actor"]["trainable"]
+        head_counts.append(actor_count - encoder_count - counts["processing"]["actor_decoder_attention_parameters"])
     assert max(head_counts) / min(head_counts) < 1.01
     assert policies[1].config.critic_config == reference.config.critic_config
     assert policies[1].critic_encoder_config == reference.critic_encoder_config
@@ -841,34 +864,42 @@ def test_actor_roles_and_encoder_head_depth_are_controlled_across_methods(
     with torch.device("meta"):
         policies = {variant: make_policy(variant, scale, n_agents=5, use_nop=False) for variant in variants}
     counts = {variant: count_policy_parameters(policy) for variant, policy in policies.items()}
-    actor_counts = [count["roles"]["actor"]["trainable"] for count in counts.values()]
+    actor_counts = [
+        count["roles"]["actor"]["trainable"] - count["processing"]["actor_decoder_attention_parameters"]
+        for count in counts.values()
+    ]
     assert max(actor_counts) / min(actor_counts) < 1.015
     target = SCALE_LAYOUTS[scale].main_parameters * 2 // 5
     assert all(abs(count / target - 1) < 0.015 for count in actor_counts)
-    encoder_layers, head_layers = {2: (1, 1), 3: (2, 1), 4: (2, 2), 5: (3, 2)}[SCALE_LAYOUTS[scale].layers]
-    for variant in ("mappo__deepset_critic", "mat_ind", "mat_dec", "mat_qcx", "mat_orig"):
+    encoder_layers = SCALE_LAYOUTS[scale].layers
+    for variant in variants:
         policy = policies[variant]
-        encoder_count = sum(parameter.numel() for parameter in policy.actor_encoder.parameters())
-        assert abs(encoder_count / (target / 2) - 1) < 0.02
-        head_count = counts[variant]["roles"]["actor"]["trainable"] - encoder_count
-        assert abs(head_count / (target / 2) - 1) < 0.025
+        encoder = policy.actor_encoder if hasattr(policy, "actor_encoder") else policy.actor.encoder
+        encoder_count = sum(parameter.numel() for parameter in encoder.parameters())
+        base_actor_count = (
+            counts[variant]["roles"]["actor"]["trainable"]
+            - counts[variant]["processing"]["actor_decoder_attention_parameters"]
+        )
+        assert 0.8 < encoder_count / base_actor_count < 0.92
+        assert len(encoder.layers) == encoder_layers
         if variant == "mappo__deepset_critic":
-            assert sum(isinstance(module, nn.Linear) for module in policy.actor_encoder.mlp) == 3 * encoder_layers
-            assert sum(isinstance(module, nn.Linear) for module in policy.actor.mlp) == 3 * head_layers
+            assert len(policy.actor.mlp.layers) == SCALE_LAYOUTS[scale].actor_head_blocks
+        elif variant in ("mat_qcx", "mat_orig"):
+            blocks = policy.decoder.layers if variant == "mat_qcx" else policy.decoder.blocks
+            assert len(blocks) == 1
         else:
-            assert len(policy.actor_encoder.layers) == encoder_layers
-            if variant in ("mat_ind", "mat_dec"):
-                assert sum(isinstance(module, nn.Linear) for module in policy.actor_head) == 3 * head_layers
-            else:
-                blocks = policy.decoder.layers if variant == "mat_qcx" else policy.decoder.blocks
-                assert len(blocks) == head_layers
+            head = policy.actor_head if hasattr(policy, "actor_head") else policy.actor.head
+            if not isinstance(head, ResidualMLP):
+                head = head.head
+            assert len(head.layers) == SCALE_LAYOUTS[scale].actor_head_blocks
         reference_critic = counts["mat_ind"]["roles"]["critic"]["trainable"]
-        critic_tolerance = 0.01 if variant == "mappo__deepset_critic" else 0.005
-        assert abs(counts[variant]["roles"]["critic"]["trainable"] / reference_critic - 1) < critic_tolerance
-    assert policies["mat_ind"].config.actor_head_hidden_dims == [
-        *policies["mappo__deepset_critic"].config.actor_config.actor_head_hidden_dims,
-        policies["mappo__deepset_critic"].config.actor_config.latent_pi_dim,
-    ]
+        critic_count = counts[variant]["roles"]["critic"]["trainable"]
+        if hasattr(policy.critic, "q2"):
+            critic_count -= sum(parameter.numel() for parameter in policy.critic.q2.parameters())
+        assert abs(critic_count / reference_critic - 1) < 0.01
+    assert policies["mat_ind"].config.residual_mlp_config == (
+        policies["mappo__deepset_critic"].config.actor_config.residual_mlp_config
+    )
 
 
 @pytest.mark.parametrize("scale", list_model_scales())
@@ -894,7 +925,7 @@ def test_ind_and_mappo_heads_use_common_initialization_gains() -> None:
     policies = [make_policy(variant, "2.5M", use_nop=False) for variant in ("mat_ind", "mappo__deepset_critic")]
     for policy in policies:
         head = policy.actor_head if hasattr(policy, "actor_head") else policy.actor.mlp
-        for layer in head:
+        for layer in head.modules():
             if isinstance(layer, nn.Linear):
                 assert layer.weight.square().sum().item() / min(layer.weight.shape) == pytest.approx(1.0, rel=1e-5)
         for layer in policy.action_dist.modules():

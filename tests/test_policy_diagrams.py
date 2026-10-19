@@ -135,12 +135,20 @@ def test_fixed_presets_meet_main_budget_and_match_across_depths(
 ) -> None:
     scales = [scale for scale in SCALES if scale.startswith(budget + "-")]
     rows = [policy_row(variant, scale) for scale in scales]
-    counts = [row["trainable_minus_nop"] for row in rows]
-    assert all(count >= SCALE_LAYOUTS[scales[0]].main_parameters for count in counts)
+    counts = [
+        row["trainable_minus_nop"] - row["processing"]["actor_decoder_attention_parameters"] for row in rows
+    ]
+    reference_counts = [
+        count + row["module_parameter_counts"]["critic.0.network"] if variant.startswith("maddpg__")
+        else count + row["module_parameter_counts"]["critic"] if variant.startswith(("mat_", "mappo__"))
+        else count
+        for count, row in zip(counts, rows, strict=True)
+    ]
+    assert all(count >= SCALE_LAYOUTS[scales[0]].main_parameters for count in reference_counts)
     tolerance = 0.03 if budget == "10M" and "__gated_" in variant else 0.01
     assert all(abs(count / counts[0] - 1) < tolerance for count in counts[1:])
     if not variant.endswith(("__lstm", "__slstm")) and "__gated_" not in variant:
-        assert all(count <= maximum_main for count in counts)
+        assert all(count <= maximum_main for count in reference_counts)
 
 
 def assert_line_order(node: Node, *prefixes: str) -> None:
@@ -180,6 +188,10 @@ def test_all_core_diagrams_render_with_valid_dimensions_and_privilege_boundary(r
         )
     assert sum(node.parameters or 0 for node in d.nodes) == row["trainable"]
     assert d.parameter_summary in "".join(root.itertext())
+    if row["variant"] != "ppo":
+        actor_encoder = next(node for node in d.nodes if node.id == "actor_encoder")
+        assert f"Encoder block × {SCALE_LAYOUTS[row['model_scale']['name']].layers}" in actor_encoder.lines
+        assert any("Depth label counts actor/critic encoder blocks" in note for note in d.notes)
     for node in d.nodes:
         assert [item.text for item in node.content_layout[0] if isinstance(item, ContentText)] == node.lines
         if node.parameters is not None:
@@ -241,6 +253,13 @@ def test_qcx_diagram_includes_final_actor_projection_and_output_width(row: dict[
     config = configuration(row)["decoder_config"]
     assert any(line.startswith("actor head (once):") for line in actor.lines)
     assert actor.lines[-1] == f"output: N × {config['actor_head_hidden_dims'][-1]}"
+    assert "Decoder block × 1" in actor.lines
+    assert_line_order(actor, "final decoder LayerNorm", "actor head (once):", "output:")
+    encoder_width = configuration(row)["encoder_config"]["d_model"]
+    decoder_width = config["d_model"]
+    assert f"memory Q: {decoder_width} → {decoder_width}; K/V: {encoder_width} → {decoder_width}" in actor.lines
+    extra = row["processing"]["actor_decoder_attention_parameters"]
+    assert any(f"Decoder attention: {extra:,} additional parameters" in note for note in diagram.notes)
 
 
 @pytest.mark.integration

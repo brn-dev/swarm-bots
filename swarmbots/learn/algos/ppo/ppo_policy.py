@@ -19,7 +19,7 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSam
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.feed_forward import MLP
-from swarmbots.learn.nn_components.nn_init import LinearInitialization, init_linear_orthogonal, make_init_linear_orthogonal
+from swarmbots.learn.nn_components.nn_init import LinearInitialization, make_init_linear_orthogonal
 from swarmbots.learn.nn_components.popart import PopArtLinear
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
@@ -40,6 +40,9 @@ class PPOActorConfig:
     latent_pi_dim_per_agent: int = 64
     act_fun_class: type[nn.Module] = nn.Tanh
     actor_head_init_gain: float = 0.01
+    shared_encoder_init_gain: float = 1.0
+    shared_encoder_projection_init_gain: float | None = None
+    actor_head_hidden_init_gain: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,7 @@ class PPOCriticConfig:
     use_popart: bool = False
     popart_config: PopArtConfig = field(default_factory=PopArtConfig)
     value_head_init_gain: float = 0.01
+    value_features_init_gain: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,7 @@ class PPOPolicyConfig:
     bernoulli_config: BernoulliConfig | None = None
     compile_modules: bool = False
     compile_mode: str = "default"
+    action_net_init_gain: float = 1.0
 
 
 class PPOSharedEncoder(nn.Module):
@@ -69,9 +74,9 @@ class PPOSharedEncoder(nn.Module):
             local_obs_dim: int,
             global_obs_dim: int,
             config: PPOActorConfig,
-            linear_init: LinearInitialization = init_linear_orthogonal,
+            linear_init: LinearInitialization | None = None,
             act_fun_class: type[nn.Module] | None = None,
-    ):
+    ) -> None:
         super().__init__()
         encoder_act_fun_class = config.act_fun_class if act_fun_class is None else act_fun_class
         self.n_agents = n_agents
@@ -85,12 +90,20 @@ class PPOSharedEncoder(nn.Module):
             else config.shared_encoder_latent_dim_per_agent
         )
         self.act_fun_class = encoder_act_fun_class
+        hidden_initialization = (
+            make_init_linear_orthogonal(config.shared_encoder_init_gain) if linear_init is None else linear_init
+        )
+        projection_initialization = (
+            hidden_initialization if config.shared_encoder_projection_init_gain is None
+            else make_init_linear_orthogonal(config.shared_encoder_projection_init_gain)
+        )
 
         self.mlp = MLP(
             input_dim=local_obs_dim * n_agents + global_obs_dim,
             hidden_dims=[*config.hidden_dims, self.local_latent_dim * n_agents],
             end_with_act_fn=True,
-            linear_init=linear_init,
+            linear_init=hidden_initialization,
+            final_linear_init=projection_initialization,
             act_fn_cls=encoder_act_fun_class
         )
 
@@ -107,9 +120,9 @@ class PPOActor(nn.Module):
             self,
             local_latent_dim: int,
             config: PPOActorConfig,
-            linear_init: LinearInitialization = init_linear_orthogonal,
+            linear_init: LinearInitialization | None = None,
             act_fun_class: type[nn.Module] | None = None,
-    ):
+    ) -> None:
         super().__init__()
         actor_act_fun_class = config.act_fun_class if act_fun_class is None else act_fun_class
         self.local_latent_dim = local_latent_dim
@@ -121,7 +134,9 @@ class PPOActor(nn.Module):
             input_dim=local_latent_dim,
             hidden_dims=[*config.actor_head_hidden_dims, config.latent_pi_dim_per_agent],
             end_with_act_fn=True,
-            linear_init=linear_init,
+            linear_init=(
+                make_init_linear_orthogonal(config.actor_head_hidden_init_gain) if linear_init is None else linear_init
+            ),
             final_linear_init=make_init_linear_orthogonal(config.actor_head_init_gain),
             act_fn_cls=actor_act_fun_class,
         )
@@ -138,9 +153,9 @@ class PPOCritic(nn.Module):
             local_obs_dim: int,
             global_obs_dim: int,
             config: PPOCriticConfig,
-            linear_init: LinearInitialization = init_linear_orthogonal,
+            linear_init: LinearInitialization | None = None,
             act_fun_class: type[nn.Module] | None = None,
-    ):
+    ) -> None:
         super().__init__()
         critic_act_fun_class = config.act_fun_class if act_fun_class is None else act_fun_class
         self.n_agents = n_agents
@@ -158,7 +173,9 @@ class PPOCritic(nn.Module):
                 input_dim=value_head_input_dim,
                 hidden_dims=config.hidden_dims,
                 end_with_act_fn=True,
-                linear_init=linear_init,
+                linear_init=(
+                    make_init_linear_orthogonal(config.value_features_init_gain) if linear_init is None else linear_init
+                ),
                 act_fn_cls=critic_act_fun_class
             )
             value_head_input_dim = int(config.hidden_dims[-1])
@@ -265,6 +282,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             action_space=env.action_space,
             continuous_config=config.continuous_config,
             bernoulli_config=config.bernoulli_config,
+            action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
         )
 
         self.critic = PPOCritic(
@@ -284,6 +302,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 "bernoulli_config": bernoulli_config_to_dict(self.action_dist.bernoulli_config),
                 "compile_modules": self.config.compile_modules,
                 "compile_mode": self.config.compile_mode,
+                "action_net_init_gain": self.config.action_net_init_gain,
             }
         }
 

@@ -10,6 +10,7 @@ from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoder, MATQCXD
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
+from swarmbots.learn.nn_components.residual_mlp import ResidualMLP, ResidualMLPConfig
 
 
 class TMASACActorHeadKind(Enum):
@@ -25,6 +26,7 @@ class TMASACActorHeadConfig:
     normalize_input: bool = False
     init_gain: float = 1.0
     qcx_decoder_config: MATQCXDecoderConfig = field(default_factory=MATQCXDecoderConfig)
+    residual_mlp_config: ResidualMLPConfig | None = None
 
 
 class TMASACActorHead(nn.Module):
@@ -74,7 +76,13 @@ class TMASACIndependentActorHead(TMASACActorHead):
         self.d_model = int(d_model)
         self.config = config
         self.input_norm = nn.LayerNorm(d_model) if config.normalize_input else nn.Identity()
-        if config.hidden_dims:
+        if config.residual_mlp_config is not None:
+            self.latent_dim = int(config.hidden_dims[-1]) if config.hidden_dims else d_model
+            self.head = ResidualMLP(
+                d_model, self.latent_dim, config.residual_mlp_config,
+                act_fn_cls=act_fn_cls, linear_init=make_init_linear_orthogonal(config.init_gain),
+            )
+        elif config.hidden_dims:
             self.head = MLP(
                 input_dim=d_model,
                 hidden_dims=[*config.hidden_dims],

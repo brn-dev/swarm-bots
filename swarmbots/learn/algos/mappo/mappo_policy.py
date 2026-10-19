@@ -14,7 +14,7 @@ from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActor, MAPPOActorConfig
 from swarmbots.learn.algos.mappo.mappo_encoder import MAPPOEncoder
 from swarmbots.learn.algos.mat.deep_set_encoder import DeepSetEncoder
 from swarmbots.learn.algos.mat.independent_encoders import encode_critic_observations, make_value_head
-from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
+from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
 from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.base_policy import BasePolicy
@@ -27,6 +27,7 @@ from swarmbots.learn.serialization_utils import serialize_dataclass
 @dataclass(frozen=True)
 class MAPPOPolicyConfig:
     actor_config: MAPPOActorConfig = field(default_factory=MAPPOActorConfig)
+    actor_encoder_config: MATEncoderConfig | None = None
     critic_encoder_config: MATEncoderConfig = field(default_factory=MATEncoderConfig)
     critic_interaction_config: DeepSetInteractionConfig = field(default_factory=DeepSetInteractionConfig)
     critic_config: MATCriticConfig = field(default_factory=MATCriticConfig)
@@ -58,18 +59,14 @@ class MAPPOPolicy(PPOPolicy):
         self.critic_latent_dim = self.critic_encoder_config.d_model
         self.nop_latent_dim = self.critic_latent_dim
         self.nop_latent_source = "critic_encoder"
-        self.actor_encoder = MAPPOEncoder(
+        self.actor_encoder = MATEncoder(
+            config=config.actor_encoder_config, max_agents=env.n_agents,
+            local_obs_dim=env.local_obs_dim, global_obs_dim=env.global_obs_dim,
+        ) if config.actor_encoder_config is not None else MAPPOEncoder(
             n_agents=env.n_agents,
             local_obs_dim=env.local_obs_dim,
             global_obs_dim=env.global_obs_dim,
             config=config.actor_config,
-        )
-        self.critic_encoder = DeepSetEncoder(
-            config=self.critic_encoder_config,
-            interaction_config=config.critic_interaction_config,
-            max_agents=env.n_agents,
-            local_obs_dim=env.local_obs_dim + env.hidden_local_vars_dim,
-            global_obs_dim=env.global_obs_dim + env.hidden_global_vars_dim,
         )
         self.actor = MAPPOActor(
             local_latent_dim=self.local_latent_dim,
@@ -83,6 +80,13 @@ class MAPPOPolicy(PPOPolicy):
             action_net_initialization=make_init_linear_orthogonal(config.action_net_init_gain),
         )
 
+        self.critic_encoder = DeepSetEncoder(
+            config=self.critic_encoder_config,
+            interaction_config=config.critic_interaction_config,
+            max_agents=env.n_agents,
+            local_obs_dim=env.local_obs_dim + env.hidden_local_vars_dim,
+            global_obs_dim=env.global_obs_dim + env.hidden_global_vars_dim,
+        )
         self.critic = make_value_head(
             config.critic_config, self.critic_latent_dim, self.critic_encoder_config.act_fn_cls,
         )
@@ -92,6 +96,9 @@ class MAPPOPolicy(PPOPolicy):
         return {
             "mappo_policy_config": {
                 "actor_config": serialize_dataclass(self.config.actor_config),
+                "actor_encoder_config": (
+                    None if self.config.actor_encoder_config is None else serialize_dataclass(self.config.actor_encoder_config)
+                ),
                 "critic_encoder_config": serialize_dataclass(self.critic_encoder_config),
                 "critic_interaction_config": serialize_dataclass(self.config.critic_interaction_config),
                 "critic_config": serialize_dataclass(self.config.critic_config),

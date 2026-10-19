@@ -130,7 +130,7 @@ def update_policy(model: ActorCritic, optimizer: torch.optim.Optimizer, rollout:
 
 
 def train(
-    benchmark_id: str = "SwarmBots-WallEasy-v0", *, device: str = "cuda", num_envs: int = 256,
+    benchmark_id: str = "SwarmBots-WallEasy-v0", *, device: str = "cuda", num_envs: int = 1024,
     total_timesteps: int = 1_000_000, rollout_steps: int = 128, seed: int = 42,
 ) -> ActorCritic:
     torch.manual_seed(seed)
@@ -161,7 +161,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("benchmark_id", nargs="?", default="SwarmBots-WallEasy-v0")
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--num-envs", type=int, default=256)
+    parser.add_argument("--num-envs", type=int, default=1024)
     parser.add_argument("--total-timesteps", type=int, default=1_000_000)
     parser.add_argument("--rollout-steps", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)

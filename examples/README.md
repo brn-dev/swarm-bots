@@ -18,7 +18,7 @@ On Windows:
 .\.venv\Scripts\python.exe examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo__deepset_critic --run-dir runs/first-mappo
 ```
 
-The script trains for one million environment transitions using 256 parallel CUDA worlds, evaluates deterministic actions at seed `1000`, then records two episodes at 640 × 480. A short run demonstrates the workflow; it may not learn to solve the task.
+The script trains for one million environment transitions using 1,024 parallel CUDA worlds, evaluates deterministic actions at seed `1000`, then records two episodes at 640 × 480. A short run demonstrates the workflow; it may not learn to solve the task.
 
 Inspect the saved outputs:
 
@@ -82,7 +82,7 @@ Full episodes can still be slow on CPU. Use the [smoke test](../README.md#quick-
 
 This minimal PyTorch PPO example uses the environment API directly, without `swarmbots.learn` or additional dependencies. It provides a starting point for custom-learner integration. It demonstrates public observation inputs, bounded actions, active-agent masks, rollout collection, and episode handling.
 
-Defaults are one million transitions, 256 worlds, and 128 steps per rollout. It prints mean reward per transition; it does not produce the preset example's checkpoint, evaluation, and video outputs. The settings illustrate integration and are not tuned reference baselines.
+Defaults are one million transitions, 1,024 worlds, and 128 steps per rollout. It prints mean reward per transition; it does not produce the preset example's checkpoint, evaluation, and video outputs. The settings illustrate integration and are not tuned reference baselines.
 
 For a short CPU execution check:
 
