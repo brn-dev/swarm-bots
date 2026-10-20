@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Serialize Python configuration overrides in policy inspection reports so dataclasses, enums and activation classes export to Markdown and compressed JSON. Document NOP transition masks' nonempty-row requirement without adding CUDA synchronization.
+- Pass agent masks to optional MAPPO MAT actor encoders during inference, rollout and action evaluation, keeping inactive tokens out of attention and active-agent gradients. Derive actor-head input widths from the selected encoder instead of requiring duplicate width settings.
 - Add an optional per-vector `gate_input_dim_cap` to gated Deep Set inputs, retaining full message outputs and independent `gate_hidden_dim` control. Default to all features and record custom caps in policy metadata and diagrams.
 - Round actor memory widths to multiples of eight while retaining matched LSTM/sLSTM budgets and custom temporal overrides. Fix component tests after the 2.5M width change and clarify depth-comparison guidance. Prevent touching arcs from crashing PNG export and other connections from overwriting SVG/PNG bridge arcs.
 - Draw permitted arrow crossings with solid bridge arcs in SVG diagrams and PNG previews, making the jump clear on dashed connections.

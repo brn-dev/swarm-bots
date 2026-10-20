@@ -33,6 +33,7 @@ from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequence
 from swarmbots.learn.nn_components.feed_forward import GLU, MLP
 from swarmbots.learn.nn_components.popart import PopArtLinear
 from swarmbots.learn.presets.policy_factory import ContinuousActionDistVariant, _is_deterministic_policy_variant
+from swarmbots.learn.serialization_utils import serialize_value
 from swarmbots.learn.training import _make_policy_env, _variant_options
 
 
@@ -181,14 +182,14 @@ def inspect_variants(
         "device": device,
         "seed": seed,
         "requested_variants": list(variants),
-        "overrides": {
+        "overrides": serialize_value({
             "use_nop": use_nop,
             "model_scale": model_scale,
             "continuous_action_dist": continuous_action_dist,
             "policy_kwargs": policy_kwargs or {},
             "scenario_kwargs": scenario_kwargs or {},
             "env_kwargs": env_kwargs or {},
-        },
+        }),
         "policies": rows,
         "errors": errors,
     }

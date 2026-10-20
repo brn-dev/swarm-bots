@@ -10,15 +10,18 @@ import pytest
 import torch
 from torch import nn
 
-from swarmbots.tools.inspect_policy_parameters import layer_layout, module_parameter_counts, save_report
+from swarmbots.tools.inspect_policy_parameters import inspect_variants, layer_layout, module_parameter_counts, save_report
 from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigSelfAttention
 from swarmbots.learn.algos.xlstm.slstm.slstm_temporal_sequence_model import (
     SLSTMTemporalSequenceModel,
     SLSTMTemporalSequenceModelConfig,
 )
 from swarmbots.learn.nn_components.feed_forward import SwiGLU
+from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 from swarmbots.learn.nn_components.popart import PopArtLinear
 from swarmbots.learn.parameter_counts import count_policy_parameters
+from swarmbots.learn.presets.transformer import MATNormalizationConfig
+from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 
 
 def test_counts_separate_targets_nop_and_buffers() -> None:
@@ -249,6 +252,44 @@ def test_report_exports_trainable_minus_nop_and_lossless_compressed_json(tmp_pat
     assert "total_minus_nop" not in row
     assert row["main_policy_total"] == "3"  # online-only processing excludes targets too
     assert "Trainable − NOP" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
+def test_inspection_exports_python_configuration_overrides(tmp_path: Path) -> None:
+    interaction_config = DeepSetInteractionConfig(gated=True, gate_input_dim_cap=64)
+    policy_kwargs = {
+        "deepset_interaction_config": interaction_config,
+        "mat_normalization": MATNormalizationConfig(normalize_encoder_tokens=True),
+        "act_fn_cls": nn.ReLU,
+    }
+    scenario_kwargs = {
+        "reset_settle_time": 0,
+        "unit_start_locations": MJWPreConnectedUnitLocationsConfig(num_units=2, pool_seeds=(42_000,)),
+    }
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        report = inspect_variants(
+            "SwarmBots-WallEasy-v0", ("masac__deepset_critic",), model_scale="2.5M",
+            policy_kwargs=policy_kwargs, scenario_kwargs=scenario_kwargs,
+        )
+    finally:
+        torch.set_num_threads(previous_threads)
+
+    assert not report["errors"]
+    save_report(report, tmp_path)
+    with gzip.open(tmp_path / "counts.json.gz", "rt", encoding="utf-8") as stream:
+        exported = json.load(stream)
+    assert exported == report
+    overrides = exported["overrides"]
+    assert overrides["policy_kwargs"]["deepset_interaction_config"]["gated"] is True
+    assert overrides["policy_kwargs"]["deepset_interaction_config"]["gate_input_dim_cap"] == 64
+    assert overrides["policy_kwargs"]["mat_normalization"]["normalize_encoder_tokens"] is True
+    assert overrides["policy_kwargs"]["act_fn_cls"] == "torch.nn.modules.activation.ReLU"
+    assert overrides["scenario_kwargs"]["unit_start_locations"]["pool_seeds"] == [42_000]
+    assert json.dumps(overrides, sort_keys=True) in (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert policy_kwargs["deepset_interaction_config"] is interaction_config
+    assert policy_kwargs["act_fn_cls"] is nn.ReLU
 
 
 def test_layer_layout_shows_actual_dimensions_without_nested_duplicates() -> None:

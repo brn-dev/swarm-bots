@@ -54,7 +54,10 @@ class MAPPOPolicy(PPOPolicy):
         self.hidden_local_vars_dim = env.hidden_local_vars_dim
         self.hidden_global_vars_dim = env.hidden_global_vars_dim
         self.latent_pi_dim = config.actor_config.latent_pi_dim
-        self.local_latent_dim = config.actor_config.latent_dim
+        self.local_latent_dim = (
+            config.actor_config.latent_dim
+            if config.actor_encoder_config is None else config.actor_encoder_config.d_model
+        )
         self.critic_encoder_config = replace(config.critic_encoder_config, use_agent_attention=False)
         self.critic_latent_dim = self.critic_encoder_config.d_model
         self.nop_latent_dim = self.critic_latent_dim
@@ -111,8 +114,10 @@ class MAPPOPolicy(PPOPolicy):
         }
 
     def _encode_actor_observations(
-        self, local_obs: torch.Tensor, global_obs: torch.Tensor,
+        self, local_obs: torch.Tensor, global_obs: torch.Tensor, agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
+        if self.config.actor_encoder_config is not None:
+            return self.actor_encoder(local_obs, global_obs, agent_mask=agent_mask)
         return self.actor_encoder(local_obs, global_obs)
 
     def _evaluate_critic(

@@ -10,9 +10,11 @@ from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
 from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy, MAPPOPolicyConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
 from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.feed_forward import MLPConfig
+from swarmbots.learn.nn_components.residual_mlp import ResidualMLPConfig
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -33,12 +35,15 @@ def make_env(global_obs_dim: int = 3, hidden_global_vars_dim: int = 5) -> Simple
 
 def make_policy(
     env: SimpleNamespace, *, joint_obs_embedding: bool = False, use_popart: bool = False,
-    compile_modules: bool = False,
+    compile_modules: bool = False, actor_encoder_config: MATEncoderConfig | None = None,
+    residual_mlp_config: ResidualMLPConfig | None = None,
 ) -> MAPPOPolicy:
     return MAPPOPolicy(env, MAPPOPolicyConfig(
         actor_config=MAPPOActorConfig(
             hidden_dims=[8], latent_dim=6, actor_head_hidden_dims=[8], latent_pi_dim=4,
+            residual_mlp_config=residual_mlp_config,
         ),
+        actor_encoder_config=actor_encoder_config,
         critic_encoder_config=MATEncoderConfig(
             d_model=16, nhead=4, num_layers=2, dim_feedforward=24, joint_obs_embedding=joint_obs_embedding,
             local_obs_encoder_config=MLPConfig(hidden_dims=[16]),
@@ -136,6 +141,58 @@ def test_mappo_actor_remains_local_while_critic_communicates_between_agents() ->
     )
     assert not torch.allclose(original_features[0, 0], changed_features[0, 0])
     assert not torch.allclose(original_values[0], changed_values[0])
+
+
+@pytest.mark.parametrize("training", [False, True])
+def test_mappo_attention_actor_ignores_inactive_tokens_in_inference_rollout_and_training(training: bool) -> None:
+    torch.manual_seed(42)
+    env = make_env()
+    policy = make_policy(env, actor_encoder_config=MATEncoderConfig(
+        d_model=6, nhead=2, num_layers=2, dim_feedforward=12, add_agent_embeddings=True,
+    )).train(training)
+    obs = observations(env)
+    mask = obs["agent_mask"]
+    with torch.no_grad():
+        expected_actions = policy.act(**obs, deterministic=True)
+        rollout_actions, rollout_log_probs, values = policy(**obs, deterministic=True)
+        batch = PPOSamples(
+            **obs, previous_actions=None, actions=rollout_actions, log_probs=rollout_log_probs,
+            values=values, returns=torch.zeros_like(values), advantages=torch.zeros_like(values),
+        )
+        expected_log_probs, _, _, _ = policy.evaluate_actions(batch)
+        policy.actor_encoder.agent_embeddings[:, [1, 3]] += torch.randn(1, 2, 6)
+        actual_actions = policy.act(**obs, deterministic=True)
+        actual_rollout_actions, actual_rollout_log_probs, actual_values = policy(**obs, deterministic=True)
+
+    torch.testing.assert_close(actual_actions[mask], expected_actions[mask], rtol=0, atol=0)
+    torch.testing.assert_close(actual_rollout_actions[mask], rollout_actions[mask], rtol=0, atol=0)
+    torch.testing.assert_close(actual_rollout_log_probs[mask], rollout_log_probs[mask], rtol=0, atol=0)
+    assert torch.isfinite(actual_actions).all() and torch.isfinite(actual_values).all()
+
+    log_probs, _, _, _ = policy.evaluate_actions(batch)
+    torch.testing.assert_close(log_probs[mask], expected_log_probs[mask])
+    (-log_probs[0, 0]).backward()
+    embedding_gradients = policy.actor_encoder.agent_embeddings.grad
+    assert torch.isfinite(embedding_gradients).all()
+    assert torch.count_nonzero(embedding_gradients[:, [1, 3]]) == 0
+    assert torch.count_nonzero(embedding_gradients[:, 2]) > 0
+
+
+@pytest.mark.parametrize("residual_head", [False, True])
+def test_mappo_actor_head_uses_the_selected_encoder_width(residual_head: bool) -> None:
+    env = make_env()
+    policy = make_policy(
+        env, actor_encoder_config=MATEncoderConfig(d_model=12, nhead=2, num_layers=1, dim_feedforward=16),
+        residual_mlp_config=ResidualMLPConfig(hidden_dim=16, num_blocks=1) if residual_head else None,
+    )
+    obs = observations(env)
+    actions = policy.act(**obs, deterministic=True)
+    rollout_actions, log_probs, values = policy(**obs, deterministic=True)
+    torch.testing.assert_close(actions, rollout_actions)
+    assert actions.shape == (2, env.n_agents, 2)
+    assert torch.isfinite(log_probs).all() and torch.isfinite(values).all()
+    actions[obs["agent_mask"]].sum().backward()
+    assert obs["local_obs"].grad[obs["agent_mask"]].abs().sum() > 0
 
 
 @pytest.mark.cuda

@@ -320,7 +320,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             deterministic: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         local_obs = self._mask_local_obs(local_obs, agent_mask)
-        local_latents = self._encode_actor_observations(local_obs, global_obs)
+        local_latents = self._encode_actor_observations(local_obs, global_obs, agent_mask)
         latent_pi = self.actor(local_latents)
         actions, log_probs = self.action_dist.get_on_policy_actions_with_log_probs(
             latent_pi,
@@ -347,7 +347,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         actions = self._policy_actions(batch.actions)
 
         local_obs = self._mask_local_obs(local_obs, agent_mask)
-        local_latents = self._encode_actor_observations(local_obs, global_obs)
+        local_latents = self._encode_actor_observations(local_obs, global_obs, agent_mask)
         latent_pi = self.actor(local_latents)
 
         self.action_dist.update_latent_features(latent_pi)
@@ -385,7 +385,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         _ = hidden_local_vars
         _ = hidden_global_vars
         local_obs = self._mask_local_obs(local_obs, agent_mask)
-        local_latents = self._encode_actor_observations(local_obs, global_obs)
+        local_latents = self._encode_actor_observations(local_obs, global_obs, agent_mask)
         latent_pi = self.actor(local_latents)
         actions = self.action_dist.update_latent_features(latent_pi).get_actions(
             deterministic=deterministic,
@@ -394,7 +394,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         return actions
 
     def _encode_actor_observations(
-        self, local_obs: torch.Tensor, global_obs: torch.Tensor,
+        self, local_obs: torch.Tensor, global_obs: torch.Tensor, agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
         return self.shared_encoder(local_obs, global_obs)
 

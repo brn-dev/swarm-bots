@@ -182,6 +182,7 @@ class TransformerTransitionModel(nn.Module):
             z_t: (batch, n_agents, latent_dim)
             a_t: (batch, n_agents, action_dim)
             agent_mask: optional bool mask (batch, n_agents) where True means "valid / present".
+                Every batch row must contain at least one active agent.
 
         Returns:
             z_{t+1} prediction: (batch, n_agents, latent_dim)
@@ -199,6 +200,8 @@ class TransformerTransitionModel(nn.Module):
                 )
             if agent_mask.dtype != torch.bool:
                 raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
+            # Callers guarantee nonempty rows; checking tensor values here would
+            # synchronize CUDA. Empty rows can make native inference attention non-finite.
             src_key_padding_mask = ~agent_mask
 
         h = self.encoder(x, src_key_padding_mask=src_key_padding_mask)
@@ -222,6 +225,7 @@ class TransformerTransitionModel(nn.Module):
             agent_mask:
                 Optional bool mask either shaped (batch, n_agents) (static across steps) or
                 (batch, steps, n_agents) (time-varying), where True means "valid / present".
+                Every batch row must contain at least one active agent at every step.
 
         Returns:
             z_preds: (batch, steps, n_agents, latent_dim) where z_preds[:, t] predicts z_{t+1}.
