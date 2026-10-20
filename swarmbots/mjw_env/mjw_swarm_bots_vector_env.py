@@ -686,9 +686,13 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
     def get_active_swarm_pool_size(self) -> int:
         return self.scenario.swarm.get_active_pool_size()
 
-    def set_active_swarm_pool_size(self, active_pool_size: int) -> int:
+    def validate_active_swarm_pool_size(self, active_pool_size: int) -> None:
         if self._pending_step is not None:
             raise RuntimeError("Cannot change the swarm pool while an MJW step is pending.")
+        self.scenario.swarm.validate_active_pool_size(active_pool_size)
+
+    def set_active_swarm_pool_size(self, active_pool_size: int) -> int:
+        self.validate_active_swarm_pool_size(active_pool_size)
         previous_size = self.scenario.swarm.get_active_pool_size()
         size = int(self.scenario.swarm.set_active_pool_size(active_pool_size))
         if size != previous_size and self._settled_reset_buffer is not None:

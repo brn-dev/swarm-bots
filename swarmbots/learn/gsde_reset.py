@@ -51,6 +51,34 @@ def build_gsde_step_reset_mask(
     raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
 
 
+def reset_gsde_noise(
+    *,
+    action_dist: Any,
+    local_obs: torch.Tensor,
+    episode_start_mask: torch.Tensor,
+    rollout_step_idx: int,
+    gsde_reset_mode: GSDEResetMode,
+    initialize: bool,
+) -> None:
+    batch_shape = tuple(local_obs.shape[:-1])
+    if initialize:
+        action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
+    action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
+    if initialize:
+        return
+    step_reset_mask = build_gsde_step_reset_mask(
+        gsde_reset_mode=gsde_reset_mode,
+        rollout_step_idx=rollout_step_idx,
+        batch_shape=batch_shape,
+        rollout_device=local_obs.device,
+    )
+    if step_reset_mask is not None:
+        if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
+            action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask)
+        else:
+            action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
+
+
 def gsde_reset_mode_from_settings(settings: Mapping[str, Any] | None) -> GSDEResetMode | None:
     if settings is None:
         return None

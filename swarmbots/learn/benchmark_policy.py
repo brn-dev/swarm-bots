@@ -16,8 +16,7 @@ from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTrans
 from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
     GSDEEpisodeResetMode,
-    GSDEProbabilityResetMode,
-    build_gsde_step_reset_mask,
+    reset_gsde_noise,
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.rollout_utils import initial_previous_actions
@@ -135,24 +134,14 @@ class BenchmarkPolicy:
             action_dist.set_temporal_correlation_state(self.distribution_state)
         self.policy.eval()
         try:
-            step_reset_mask = None
             if not self.deterministic and self.gsde_reset_mode is not None:
-                if self.rollout_step_idx == 0:
-                    action_dist.reset_temporal_correlations_on_step(batch_shape=tuple(local_obs.shape[:-1]))
-                else:
-                    step_reset_mask = build_gsde_step_reset_mask(
-                        gsde_reset_mode=self.gsde_reset_mode,
-                        rollout_step_idx=self.rollout_step_idx,
-                        batch_shape=tuple(local_obs.shape[:-1]),
-                        rollout_device=local_obs.device,
-                    )
-            if action_dist is not None:
+                reset_gsde_noise(
+                    action_dist=action_dist, local_obs=local_obs, episode_start_mask=episode_starts,
+                    rollout_step_idx=self.rollout_step_idx, gsde_reset_mode=self.gsde_reset_mode,
+                    initialize=self.rollout_step_idx == 0,
+                )
+            elif action_dist is not None:
                 action_dist.reset_temporal_correlations_on_ep_start(episode_starts)
-            if step_reset_mask is not None:
-                if isinstance(self.gsde_reset_mode, GSDEProbabilityResetMode):
-                    action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask)
-                else:
-                    action_dist.reset_temporal_correlations_on_step(batch_shape=tuple(local_obs.shape[:-1]))
             actions, temporal_state = self.policy.act_with_temporal_state(
                 **actor_obs,
                 previous_actions=self.previous_actions,

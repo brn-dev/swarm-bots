@@ -16,6 +16,7 @@ from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
+from swarmbots.learn.base_policy import policy_inference_step
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.feed_forward import MLP
@@ -309,6 +310,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     def requires_previous_actions(self) -> bool:
         return self.action_dist.requires_previous_actions()
 
+    @policy_inference_step
     def forward(
             self,
             local_obs: torch.Tensor,
@@ -359,6 +361,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
         return log_probs, values, {}, {}, critic_latents
 
+    @policy_inference_step
     def predict_values(
             self,
             local_obs: torch.Tensor,
@@ -372,6 +375,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         return self._evaluate_critic(local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask)[0]
 
+    @policy_inference_step
     def act(
             self,
             local_obs: torch.Tensor,

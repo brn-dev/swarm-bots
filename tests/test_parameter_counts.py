@@ -6,6 +6,7 @@ import gzip
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -272,6 +273,7 @@ def test_inspection_exports_python_configuration_overrides(tmp_path: Path) -> No
         report = inspect_variants(
             "SwarmBots-WallEasy-v0", ("masac__deepset_critic",), model_scale="2.5M",
             policy_kwargs=policy_kwargs, scenario_kwargs=scenario_kwargs,
+            env_kwargs={"first_episode_lengths": torch.tensor([5])},
         )
     finally:
         torch.set_num_threads(previous_threads)
@@ -287,9 +289,24 @@ def test_inspection_exports_python_configuration_overrides(tmp_path: Path) -> No
     assert overrides["policy_kwargs"]["mat_normalization"]["normalize_encoder_tokens"] is True
     assert overrides["policy_kwargs"]["act_fn_cls"] == "torch.nn.modules.activation.ReLU"
     assert overrides["scenario_kwargs"]["unit_start_locations"]["pool_seeds"] == [42_000]
+    assert overrides["env_kwargs"]["first_episode_lengths"] == [5]
     assert json.dumps(overrides, sort_keys=True) in (tmp_path / "report.md").read_text(encoding="utf-8")
     assert policy_kwargs["deepset_interaction_config"] is interaction_config
     assert policy_kwargs["act_fn_cls"] is nn.ReLU
+
+
+def test_serialized_overrides_preserve_nested_numeric_values() -> None:
+    from swarmbots.learn.serialization_utils import serialize_value
+
+    values = {
+        "tensor": torch.tensor([[1.5, 2.5]], requires_grad=True),
+        "array": np.array([1, 2], dtype=np.int64),
+        "scalars": (np.float32(0.5), np.int64(7), np.bool_(True), torch.tensor(3)),
+    }
+    assert json.loads(json.dumps(serialize_value(values))) == {
+        "tensor": [[1.5, 2.5]], "array": [1, 2], "scalars": [0.5, 7, True, 3],
+    }
+    assert values["tensor"].requires_grad
 
 
 def test_layer_layout_shows_actual_dimensions_without_nested_duplicates() -> None:

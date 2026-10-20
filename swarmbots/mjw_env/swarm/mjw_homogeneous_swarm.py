@@ -149,10 +149,13 @@ class MJWHomogeneousSwarm:
     def get_active_pool_size(self) -> int:
         return self.unit_start_locations.active_pool_size
 
-    def set_active_pool_size(self, active_pool_size: int) -> int:
+    def validate_active_pool_size(self, active_pool_size: int) -> None:
         pool_size = self.get_pool_size()
         if active_pool_size < 1 or active_pool_size > pool_size:
             raise ValueError(f"active_pool_size must be in [1, {pool_size}], got {active_pool_size}")
+
+    def set_active_pool_size(self, active_pool_size: int) -> int:
+        self.validate_active_pool_size(active_pool_size)
         self.unit_start_locations.active_pool_size = int(active_pool_size)
         return int(self.unit_start_locations.active_pool_size)
 

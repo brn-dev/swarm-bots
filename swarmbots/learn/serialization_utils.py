@@ -4,6 +4,9 @@ from enum import Enum
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
+import torch
+
 
 def serialize_fn(fn: Callable) -> dict[str, str]:
     fn_dict = {
@@ -17,6 +20,12 @@ def serialize_fn(fn: Callable) -> dict[str, str]:
 
 
 def serialize_value(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.ndarray):
+        return serialize_value(value.tolist())
+    if isinstance(value, np.generic):
+        return value.item()
     if is_dataclass(value):
         return serialize_dataclass(value)
     if isinstance(value, Enum):

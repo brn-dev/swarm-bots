@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve PPO, MAPPO and Original MAT CUDA-graph inference outputs across composed compiled modules and subsequent bootstrap/action calls. Validate all scenario pool-size changes before mutation, and export tensor/NumPy configuration overrides in policy reports.
+- Make frozen stochastic evaluation follow the trainer's current gSDE reset schedule, sharing episode/interval/probability noise resets with off-policy rollouts and benchmark adapters while preserving training noise and RNG state.
 - Serialize Python configuration overrides in policy inspection reports so dataclasses, enums and activation classes export to Markdown and compressed JSON. Document NOP transition masks' nonempty-row requirement without adding CUDA synchronization.
 - Pass agent masks to optional MAPPO MAT actor encoders during inference, rollout and action evaluation, keeping inactive tokens out of attention and active-agent gradients. Derive actor-head input widths from the selected encoder instead of requiring duplicate width settings.
 - Add an optional per-vector `gate_input_dim_cap` to gated Deep Set inputs, retaining full message outputs and independent `gate_hidden_dim` control. Default to all features and record custom caps in policy metadata and diagrams.

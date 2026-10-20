@@ -23,6 +23,7 @@ from swarmbots.mjw_env.mjw_swarm_bots_vector_env import (
 from swarmbots.mjw_env.parameter_distributions import UniformDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWStepResult
 from swarmbots.mjw_env.scenarios.mjw_move_to_goal_runtime import MoveToGoalMJWScenarioRuntime, MoveToGoalResetSpec
+from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
 
 
@@ -69,16 +70,8 @@ def test_morphology_pool_change_discards_prefetched_snapshots() -> None:
     env, _ = _make_uninitialized_env()
     buffer = _FakeSettledResetBuffer()
     env._settled_reset_buffer = buffer
-    swarm = SimpleNamespace(size=50)
-
-    def set_size(size):
-        if not 1 <= size <= 50:
-            raise ValueError("invalid pool size")
-        swarm.size = size
-        return size
-
-    swarm.get_active_pool_size = lambda: swarm.size
-    swarm.set_active_pool_size = set_size
+    swarm = object.__new__(MJWHomogeneousSwarm)
+    swarm.unit_start_locations = SimpleNamespace(active_pool_size=50, get_pool_size=lambda: 50)
     env.scenario = SimpleNamespace(swarm=swarm)
     assert env.set_active_swarm_pool_size(1) == 1
     assert buffer.clear_calls == [True]
@@ -90,7 +83,7 @@ def test_morphology_pool_change_discards_prefetched_snapshots() -> None:
     env._pending_step = object()
     with pytest.raises(RuntimeError, match="pending"):
         env.set_active_swarm_pool_size(2)
-    assert swarm.size == 1
+    assert swarm.get_active_pool_size() == 1
 
 
 class _ManualExecutor:

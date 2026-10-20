@@ -250,7 +250,12 @@ class MultiScenarioVectorEnv(VectorEnv):
     def get_active_swarm_pool_size(self) -> int:
         return self._common_child_value("get_active_swarm_pool_size")
 
+    def validate_active_swarm_pool_size(self, active_pool_size: int) -> None:
+        for env in self.envs:
+            env.validate_active_swarm_pool_size(active_pool_size)
+
     def set_active_swarm_pool_size(self, active_pool_size: int) -> int:
+        self.validate_active_swarm_pool_size(active_pool_size)
         values = [
             int(env.set_active_swarm_pool_size(active_pool_size))
             for env in self.envs

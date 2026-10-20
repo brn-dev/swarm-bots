@@ -8,8 +8,7 @@ from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
-    GSDEProbabilityResetMode,
-    build_gsde_step_reset_mask,
+    reset_gsde_noise,
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.performance_timer import PerformanceTimer
@@ -114,35 +113,6 @@ def _move_rollout_state_to_device(
         rollout_step_idx=rollout_state.rollout_step_idx,
         gsde_noise_state=move_temporal_state(rollout_state.gsde_noise_state, device=device),
     )
-
-
-def _reset_policy_action_noise(
-        *,
-        policy: BasePolicy,
-        local_obs: torch.Tensor,
-        episode_start_mask: torch.Tensor,
-        rollout_step_idx: int,
-        gsde_reset_mode: GSDEResetMode,
-        force_step_reset: bool,
-) -> None:
-    action_dist = getattr(policy, "action_dist")
-    batch_shape = tuple(local_obs.shape[:-1])
-    if force_step_reset:
-        action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
-    action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
-    if force_step_reset:
-        return
-    step_reset_mask = build_gsde_step_reset_mask(
-        gsde_reset_mode=gsde_reset_mode,
-        rollout_step_idx=rollout_step_idx,
-        batch_shape=batch_shape,
-        rollout_device=local_obs.device,
-    )
-    if step_reset_mask is not None:
-        if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-            action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask)
-        else:
-            action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
 
 
 def _build_rollout_metrics(
@@ -296,14 +266,13 @@ def collect_off_policy_steps(
 
         with timers.reset_noise_timer:
             if policy is not None and active_gsde_reset_mode is not None:
-                force_gsde_step_reset = not gsde_noise_initialized
-                _reset_policy_action_noise(
-                    policy=policy,
+                reset_gsde_noise(
+                    action_dist=policy.action_dist,
                     local_obs=obs_for_step["local_obs"],
                     episode_start_mask=episode_start_mask,
                     rollout_step_idx=rollout_step_idx,
                     gsde_reset_mode=active_gsde_reset_mode,
-                    force_step_reset=force_gsde_step_reset,
+                    initialize=not gsde_noise_initialized,
                 )
                 gsde_noise_initialized = True
         timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())

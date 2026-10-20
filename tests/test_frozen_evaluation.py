@@ -2,18 +2,27 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
 import torch
 from torch import nn
+from gymnasium import spaces
 
+from swarmbots.learn.action_dists.gsde_action_dist import GSDEConfig
+from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.evaluation import (
     EvaluationRecordingConfig,
     FrozenEvaluationRunner,
     ScheduledEvaluationHook,
     _format_percentage,
 )
+from swarmbots.learn.gsde_reset import (
+    GSDEResetMode, GSDEEpisodeResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode,
+)
+from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots.learn.temporal_state import clone_detach_temporal_state
 
 
 def test_recording_percentage_accepts_integer_and_fractional_milestones() -> None:
@@ -152,6 +161,84 @@ class _EvaluationEnv:
 
     def get_video_recording_status(self) -> dict[str, bool]:
         return {"active": False}
+
+
+class _GSDEEvaluationPolicy(_EvaluationPolicy):
+    gsde_enabled = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.action_dist = HybridActionDistribution(
+            latent_dim=1,
+            action_space=VectorHybridActionSpace({"control": spaces.Box(-1.0, 1.0, (2, 1, 1))}),
+            continuous_config=GSDEConfig(base_std=0.3),
+        )
+        self.noise_states: list[Any] = []
+
+    def act_with_temporal_state(self, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
+        _, next_state = super().act_with_temporal_state(**kwargs)
+        self.noise_states.append(clone_detach_temporal_state(self.action_dist.get_temporal_correlation_state()))
+        actions = self.action_dist.update_latent_features(kwargs["local_obs"]).get_actions(
+            deterministic=kwargs["deterministic"],
+        )
+        return actions, next_state
+
+
+@pytest.mark.parametrize("reset_mode", [GSDEEpisodeResetMode(), GSDEIntervalResetMode(3)])
+def test_frozen_gsde_noise_follows_episode_and_interval_schedules(reset_mode: GSDEResetMode) -> None:
+    policy = _GSDEEvaluationPolicy()
+    policy.action_dist.reset_temporal_correlations_on_step(batch_shape=(3, 2))
+    training_noise = clone_detach_temporal_state(policy.action_dist.get_temporal_correlation_state())
+    runner = FrozenEvaluationRunner(
+        make_env=_EvaluationEnv, training_env=object(), policy=policy, episodes_per_env=4, seed=123,
+    )
+    rng_state = torch.random.get_rng_state().clone()
+    try:
+        runner.evaluate(timesteps=25, milestone_percentage=25.0, gsde_reset_mode=reset_mode)
+        stochastic_steps = policy.deterministic_modes.index(True)
+        for step in range(1, stochastic_steps):
+            previous = policy.noise_states[step - 1][0]
+            current = policy.noise_states[step][0]
+            changed = (previous != current).flatten(start_dim=1).any(dim=1)
+            expected = policy.episode_start_masks[step].clone()
+            if isinstance(reset_mode, GSDEIntervalResetMode) and step % reset_mode.interval == 0:
+                expected.fill_(True)
+            torch.testing.assert_close(changed, expected)
+        torch.testing.assert_close(policy.action_dist.get_temporal_correlation_state(), training_noise)
+        assert torch.equal(torch.random.get_rng_state(), rng_state)
+    finally:
+        runner.close()
+
+
+def test_frozen_gsde_probability_resets_are_selective_and_repeatable() -> None:
+    policy = _GSDEEvaluationPolicy()
+    runner = FrozenEvaluationRunner(
+        make_env=_EvaluationEnv, training_env=object(), policy=policy, episodes_per_env=8, seed=123,
+    )
+    mode = GSDEProbabilityResetMode(0.25)
+    try:
+        runner.evaluate(timesteps=25, milestone_percentage=25.0, gsde_reset_mode=mode)
+        stochastic_steps = policy.deterministic_modes.index(True)
+        changes_outside_episode_starts = []
+        for step in range(1, stochastic_steps):
+            changed = (policy.noise_states[step - 1][0] != policy.noise_states[step][0]).flatten(1).any(1)
+            episode_starts = policy.episode_start_masks[step]
+            assert changed[episode_starts].all()
+            changes_outside_episode_starts.extend(changed[~episode_starts].tolist())
+        assert any(changes_outside_episode_starts)
+        assert not all(changes_outside_episode_starts)
+        first_noise = clone_detach_temporal_state(policy.noise_states)
+        policy.noise_states.clear()
+        runner.evaluate(timesteps=50, milestone_percentage=50.0, gsde_reset_mode=mode)
+        torch.testing.assert_close(policy.noise_states, first_noise)
+    finally:
+        runner.close()
+
+
+def test_frozen_gsde_requires_an_explicit_reset_schedule() -> None:
+    runner = FrozenEvaluationRunner(make_env=_EvaluationEnv, training_env=object(), policy=_GSDEEvaluationPolicy())
+    with pytest.raises(ValueError, match="gsde_reset_mode is required"):
+        runner.evaluate(timesteps=25, milestone_percentage=25.0)
 
 
 class _LongRecordingEnv(_EvaluationEnv):
@@ -333,7 +420,7 @@ def test_scheduled_evaluation_runs_when_milestone_is_crossed() -> None:
     hook(algorithm, metrics, rollout_steps=8)
 
     assert metrics == {"training_loss": 0.5}
-    runner.evaluate.assert_called_once_with(timesteps=30, milestone_percentage=25.0)
+    runner.evaluate.assert_called_once_with(timesteps=30, milestone_percentage=25.0, gsde_reset_mode=None)
     metrics_logger.log.assert_called_once_with({"eval_success_rate": 75.0})
     metrics_logger.flush.assert_called_once_with()
 
@@ -358,13 +445,13 @@ def test_scheduled_evaluation_only_runs_latest_crossed_milestone() -> None:
     algorithm.n_total_timesteps = 60
     hook(algorithm, {}, rollout_steps=60)
 
-    runner.evaluate.assert_called_once_with(timesteps=60, milestone_percentage=50.0)
+    runner.evaluate.assert_called_once_with(timesteps=60, milestone_percentage=50.0, gsde_reset_mode=None)
 
     runner.evaluate.reset_mock()
     algorithm.n_total_timesteps = 80
     hook(algorithm, {}, rollout_steps=20)
 
-    runner.evaluate.assert_called_once_with(timesteps=80, milestone_percentage=75.0)
+    runner.evaluate.assert_called_once_with(timesteps=80, milestone_percentage=75.0, gsde_reset_mode=None)
     assert metrics_logger.log.call_count == 2
     assert metrics_logger.flush.call_count == 2
 
@@ -389,9 +476,22 @@ def test_scheduled_evaluation_milestones_are_relative_to_continuation_window() -
 
     algorithm.n_total_timesteps = 200
     hook(algorithm, {}, rollout_steps=1)
-    runner.evaluate.assert_called_once_with(timesteps=200, milestone_percentage=50.0)
+    runner.evaluate.assert_called_once_with(timesteps=200, milestone_percentage=50.0, gsde_reset_mode=None)
 
     runner.evaluate.reset_mock()
     algorithm.n_total_timesteps = 300
     hook(algorithm, {}, rollout_steps=100)
-    runner.evaluate.assert_called_once_with(timesteps=300, milestone_percentage=100.0)
+    runner.evaluate.assert_called_once_with(timesteps=300, milestone_percentage=100.0, gsde_reset_mode=None)
+
+
+def test_scheduled_evaluation_uses_the_current_training_gsde_schedule() -> None:
+    algorithm = SimpleNamespace(n_total_timesteps=0, gsde_reset_mode=GSDEEpisodeResetMode())
+    runner = Mock()
+    hook = ScheduledEvaluationHook(
+        algorithm=algorithm, total_timesteps=100, milestones=(25, 50), runner=runner, metrics_logger=Mock(),
+    )
+    for steps, mode in ((25, GSDEIntervalResetMode(3)), (50, GSDEProbabilityResetMode(0.25))):
+        algorithm.n_total_timesteps = steps
+        algorithm.gsde_reset_mode = mode
+        hook(algorithm, {}, rollout_steps=25)
+        assert runner.evaluate.call_args.kwargs["gsde_reset_mode"] == mode

@@ -22,6 +22,7 @@ from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
+from swarmbots.learn.base_policy import policy_inference_step
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.popart import PopArtLinear
@@ -265,6 +266,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     def requires_previous_actions(self) -> bool:
         return self.action_dist.requires_previous_actions()
 
+    @policy_inference_step
     def forward(
             self,
             local_obs: torch.Tensor,
@@ -326,6 +328,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             log_probs = log_probs.masked_fill(~batch.agent_mask, 0.0)
         return log_probs, values, {}, {}, critic_rep
 
+    @policy_inference_step
     def predict_values(
             self,
             local_obs: torch.Tensor,
@@ -345,6 +348,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             agent_mask=agent_mask,
         )
 
+    @policy_inference_step
     def act(
             self,
             local_obs: torch.Tensor,

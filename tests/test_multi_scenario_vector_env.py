@@ -1,4 +1,6 @@
 from typing import Any
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import gymnasium
 import numpy as np
@@ -19,6 +21,8 @@ from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import
 from swarmbots.learn.env_wrappers.torch_task_ep_stats_wrapper import TorchTaskEpisodeStatsWrapper
 from swarmbots.learn.rollout_utils import append_episode_infos
 from swarmbots.learn.evaluation import FrozenEvaluationRunner
+from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv
+from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 
 
 class _ScenarioEnv(gymnasium.Env):
@@ -212,8 +216,13 @@ class _DirectVectorEnv:
     def get_active_swarm_pool_size(self) -> int:
         return self.active_pool_size
 
+    def validate_active_swarm_pool_size(self, active_pool_size: int) -> None:
+        if not 1 <= active_pool_size <= self.pool_size:
+            raise ValueError("invalid active pool size")
+
     def set_active_swarm_pool_size(self, active_pool_size: int) -> int:
-        self.active_pool_size = min(active_pool_size, self.pool_size)
+        self.validate_active_swarm_pool_size(active_pool_size)
+        self.active_pool_size = active_pool_size
         return self.active_pool_size
 
     def _observations(self) -> dict[str, np.ndarray | torch.Tensor]:
@@ -1302,6 +1311,35 @@ def test_multi_scenario_vector_env_rejects_disagreeing_child_pool_values() -> No
 
     with pytest.raises(ValueError, match="different get_swarm_pool_size"):
         env.get_swarm_pool_size()
+
+
+@pytest.mark.parametrize("failure", ["capacity", "pending_step"])
+def test_rejected_multi_scenario_pool_change_preserves_all_children(failure: str) -> None:
+    children = []
+    for index in range(2):
+        capacity = 3 if failure == "capacity" and index == 1 else 8
+        template = _DirectVectorEnv(
+            num_envs=1, global_obs_dim=1, hidden_local_vars_dim=1, hidden_global_vars_dim=1,
+            pool_size=capacity,
+        )
+        child = object.__new__(MJWSwarmBotsVectorEnv)
+        child.__dict__.update(vars(template))
+        swarm = object.__new__(MJWHomogeneousSwarm)
+        swarm.unit_start_locations = SimpleNamespace(active_pool_size=2, get_pool_size=lambda size=capacity: size)
+        child.scenario = SimpleNamespace(swarm=swarm)
+        child._pending_step = object() if failure == "pending_step" and index == 1 else None
+        child._settled_reset_buffer = Mock()
+        children.append(child)
+    env = MultiScenarioVectorEnv(dict(zip(("first", "second"), children, strict=True)))
+
+    assert env.get_active_swarm_pool_size() == 2
+    with pytest.raises(ValueError if failure == "capacity" else RuntimeError):
+        env.set_active_swarm_pool_size(5)
+
+    assert env.get_active_swarm_pool_size() == 2
+    for child in children:
+        assert child.get_active_swarm_pool_size() == 2
+        child._settled_reset_buffer.clear.assert_not_called()
 
 
 def test_multi_scenario_vector_env_closes_every_child() -> None:

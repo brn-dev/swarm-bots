@@ -10,6 +10,7 @@ import torch
 from loguru import logger
 
 from swarmbots.learn.checkpointing import apply_env_state, capture_env_state, freeze_env_normalization
+from swarmbots.learn.gsde_reset import GSDEResetMode, reset_gsde_noise, resolve_gsde_reset_mode
 from swarmbots.learn.metrics_logger import MetricsLogger
 from swarmbots.learn.rollout_utils import initial_previous_actions, to_python_episode_stat
 from swarmbots.learn.summary_statistics import compute_summary_statistics
@@ -70,7 +71,12 @@ class FrozenEvaluationRunner:
                 self._env = self._make_env()
         return self._env
 
-    def evaluate(self, *, timesteps: int, milestone_percentage: float) -> dict[str, Any]:
+    def evaluate(
+        self, *, timesteps: int, milestone_percentage: float, gsde_reset_mode: GSDEResetMode | None = None,
+    ) -> dict[str, Any]:
+        gsde_reset_mode = resolve_gsde_reset_mode(
+            gsde_enabled=bool(getattr(self._policy, "gsde_enabled", False)), reset_mode=gsde_reset_mode,
+        )
         env = self.env
         apply_env_state(env, capture_env_state(self._training_env))
         freeze_env_normalization(env)
@@ -114,6 +120,7 @@ class FrozenEvaluationRunner:
                         env=env,
                         initial_obs=obs,
                         deterministic=deterministic,
+                        gsde_reset_mode=gsde_reset_mode,
                         finish_recording=recording_started,
                     )
                     metrics.update(self._summarize_metrics(episode_metrics, action_mode=action_mode))
@@ -149,6 +156,7 @@ class FrozenEvaluationRunner:
         env: Any,
         initial_obs: dict[str, torch.Tensor],
         deterministic: bool,
+        gsde_reset_mode: GSDEResetMode | None = None,
         finish_recording: bool = False,
     ) -> dict[str, list[float]]:
         self._policy.eval()
@@ -179,16 +187,14 @@ class FrozenEvaluationRunner:
                 bool(torch.any(completed_per_env < self.episodes_per_env))
                 or (finish_recording and env.unwrapped.get_video_recording_status()["active"])
             ):
-                if action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
+                if not deterministic and gsde_reset_mode is not None:
+                    reset_gsde_noise(
+                        action_dist=action_dist, local_obs=obs["local_obs"], episode_start_mask=episode_start_mask,
+                        rollout_step_idx=rollout_step_idx, gsde_reset_mode=gsde_reset_mode,
+                        initialize=rollout_step_idx == 0,
+                    )
+                elif action_dist is not None and hasattr(action_dist, "reset_temporal_correlations_on_ep_start"):
                     action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
-                if (
-                    rollout_step_idx == 0
-                    and not deterministic
-                    and bool(getattr(self._policy, "gsde_enabled", False))
-                    and action_dist is not None
-                    and hasattr(action_dist, "reset_temporal_correlations_on_step")
-                ):
-                    action_dist.reset_temporal_correlations_on_step(batch_shape=tuple(obs["local_obs"].shape[:-1]))
 
                 actions, temporal_state = self._policy.act_with_temporal_state(
                     local_obs=obs["local_obs"],
@@ -390,6 +396,7 @@ class ScheduledEvaluationHook:
         evaluation_metrics = self.runner.evaluate(
             timesteps=int(algorithm.n_total_timesteps),
             milestone_percentage=percentage,
+            gsde_reset_mode=getattr(algorithm, "gsde_reset_mode", None),
         )
         self.metrics_logger.log(evaluation_metrics)
         self.metrics_logger.flush()
