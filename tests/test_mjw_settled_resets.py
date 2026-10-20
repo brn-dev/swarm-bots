@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import torch
 
+from swarmbots.learn.env_wrappers.multi_scenario_vector_env import MultiScenarioVectorEnv
 from swarmbots.mjw_env.mjw_env_tensor_ops import (
     MJWActionLayout,
     MJWObservationLayout,
@@ -23,7 +24,7 @@ from swarmbots.mjw_env.mjw_swarm_bots_vector_env import (
 from swarmbots.mjw_env.parameter_distributions import UniformDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWStepResult
 from swarmbots.mjw_env.scenarios.mjw_move_to_goal_runtime import MoveToGoalMJWScenarioRuntime, MoveToGoalResetSpec
-from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
+from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm, MJWPreConnectedUnitLocationsConfig
 from swarmbots.scenario_presets.move_to_goal_config import RelativePolarGoalConfig
 
 
@@ -84,6 +85,41 @@ def test_morphology_pool_change_discards_prefetched_snapshots() -> None:
     with pytest.raises(RuntimeError, match="pending"):
         env.set_active_swarm_pool_size(2)
     assert swarm.get_active_pool_size() == 1
+
+
+@pytest.mark.parametrize("immediate", [False, True])
+def test_reused_morphology_config_pool_change_discards_every_childs_prefetched_resets(immediate: bool) -> None:
+    locations = MJWPreConnectedUnitLocationsConfig(num_units=2, pool_seeds=(42000, 42001))
+    children = []
+    for _ in range(2):
+        child, _ = _make_uninitialized_env(num_envs=1)
+        runtime = _make_spec_only_move_to_goal_runtime()
+        runtime.scenario.swarm = MJWHomogeneousSwarm(locations)
+        child.scenario = runtime.scenario
+        child._scenario_runtime = runtime
+        child._rng.manual_seed(7)
+        child._settled_reset_buffer = _SettledResetSnapshotBuffer(
+            scenario_runtime=runtime,
+            rng=child._rng,
+            executor=_TimingControlledExecutor(immediate=immediate),
+            capacity=4,
+            batch_size=2,
+        )
+        child._settled_reset_buffer.fill_async()
+        children.append(child)
+    env = object.__new__(MultiScenarioVectorEnv)
+    env.envs = tuple(children)
+
+    try:
+        assert env.set_active_swarm_pool_size(1) == 1
+        for child in children:
+            snapshots = child._settled_reset_buffer.take(4)
+            assert all(snapshot.common.pool_idx == 0 for snapshot in snapshots)
+            assert child.get_active_swarm_pool_size() == 1
+        assert locations.active_pool_size == 2
+    finally:
+        for child in children:
+            child._settled_reset_buffer.clear(wait=True)
 
 
 class _ManualExecutor:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Collection
 
 import mujoco
@@ -99,8 +99,9 @@ class MJWHomogeneousSwarm:
         connection_torquescale: float = 50.0,
         quantize_connection_twist: int = 16,
     ) -> None:
-        self.unit_start_locations = unit_start_locations
-        self.num_units = unit_start_locations.num_units
+        # Pool updates mutate this config, so each swarm needs independent ownership.
+        self.unit_start_locations = replace(unit_start_locations)
+        self.num_units = self.unit_start_locations.num_units
         self.config = MJWSwarmConfig(
             num_units=self.num_units,
             unit_config=unit_config,

@@ -88,7 +88,7 @@ The `model_scale` argument selects a fixed layout; `model_scale="2.5M"` selects 
 | `10M-4L` | 10 million, with four encoder blocks | 2 million |
 | `10M-5L` | 10 million, with five encoder blocks | 2 million |
 
-Depth labels count actor and critic encoder blocks. At the 5M budget, 2L and 3L actors both use 256-wide features, two or three encoder blocks and the same small one-block action head across MAT, MAPPO and off-policy families. The 10M actors use 320-wide features and three, four or five encoder blocks. Autoregressive decoder attention is additional capacity above matched encoder/non-attention head budgets; plain PPO retains its shared backbone.
+Depth labels count actor and critic encoder blocks. At the 5M budget, 2L and 3L actors use feature widths of 256 and 212, respectively. The 10M-3L, 10M-4L and 10M-5L actors use widths of 304, 264 and 240. Widths and feed-forward capacity vary with encoder depth to preserve comparable parameter budgets; encoder dimensions remain identical across MAT, MAPPO and off-policy families within each layout. Action heads and decoders remain one block deep. Autoregressive decoder attention is additional capacity above matched encoder/non-attention head budgets; plain PPO retains its shared backbone.
 
 NOP means **next-observation prediction**, an auxiliary training objective enabled by default in the core presets. MAT, recurrent MAT, and MAPPO train NOP from critic-encoder features; the prediction loss updates the critic encoder without updating the actor. Plain PPO retains its shared feature encoder. `use_nop=False` disables it without changing the main policy's dimensions.
 

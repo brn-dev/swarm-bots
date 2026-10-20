@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Give each swarm its own location configuration so shared constructor inputs cannot make pool-size changes skip another environment's settled-reset invalidation.
+- Correct the learning guide's actor widths and explain width changes across encoder-depth choices.
 - Warn when recurrent off-policy training uses an episode limit shorter than its learning sequence, and document the one-truncation replay restriction and exclusion of burn-in steps.
 - Preserve PPO, MAPPO and Original MAT CUDA-graph inference outputs across composed compiled modules and subsequent bootstrap/action calls. Validate all scenario pool-size changes before mutation, and export tensor/NumPy configuration overrides in policy reports.
 - Make frozen stochastic evaluation follow the trainer's current gSDE reset schedule, sharing episode/interval/probability noise resets with off-policy rollouts and benchmark adapters while preserving training noise and RNG state.
