@@ -111,6 +111,8 @@ class RecurrentOffPolicyMixin:
             burn_in_steps=self.burn_in_steps,
             require_initial_temporal_state=True,
             allow_episode_boundaries=True,
+            # Keep time limits at least learning_steps apart: multiple truncations
+            # in the scored suffix reject the window; burn-in truncations are unrestricted.
             max_train_truncations=self.max_truncations_per_segment,
         )
         return batch, None, False

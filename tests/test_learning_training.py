@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import csv
 import math
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -206,6 +207,36 @@ def test_explicit_recurrent_batch_size_remains_a_sequence_count(
     )
     assert config["batch_size"] == 7
     assert config["learning_steps"] == 32
+
+
+@pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
+@pytest.mark.parametrize("episode_length", [16, 63])
+def test_short_recurrent_episode_limits_warn_without_changing_the_horizon(
+    capture_training_configuration: None, variant: str, episode_length: int,
+) -> None:
+    with pytest.warns(UserWarning, match="at most one time-limit truncation"):
+        config = make_training(
+            "SwarmBots-WallEasy-v0", variant, episode_length=episode_length,
+            policy_kwargs={"td3_recurrent_actor": True} if variant == "tmatd3" else {},
+        )
+    assert config["learning_steps"] == 64
+
+
+@pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
+@pytest.mark.parametrize("learning_steps", [32, 64])
+def test_recurrent_timeout_check_excludes_burn_in_and_respects_horizon_overrides(
+    capture_training_configuration: None, variant: str, learning_steps: int,
+) -> None:
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        config = make_training(
+            "SwarmBots-WallEasy-v0", variant, episode_length=learning_steps,
+            policy_kwargs={"td3_recurrent_actor": True} if variant == "tmatd3" else {},
+            algorithm_kwargs={"learning_steps": learning_steps, "burn_in_steps": 128},
+        )
+    assert not captured
+    assert config["burn_in_steps"] == 128
+    assert config["learning_steps"] == learning_steps
 
 
 @pytest.mark.integration

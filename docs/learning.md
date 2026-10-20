@@ -131,6 +131,8 @@ PPO, SAC, and TD3 accept different learner options. The [recurrent TD3 example](
 
 Off-policy default batches target 1,024 learning positions independently of environment count and rollout length. Feed-forward learners sample 1,024 transitions; recurrent learners divide this budget by their effective `learning_steps`, rounding up to at least one whole sequence. The default 64-step learning horizon therefore uses 16 sequences per update. An explicit `algorithm_kwargs={"batch_size": ...}` overrides this default and counts transitions for feed-forward learners or sequences for recurrent learners. Burn-in adds computation outside the scored learning-position budget.
 
+Recurrent SAC/TD3 replay supports at most one time-limit truncation per learning sequence. An `episode_length` of at least `learning_steps` avoids rejection due to repeated regular timeouts; `make_training` warns when the episode limit is shorter. With the default 64 learning steps, limits of 33–63 steps reject some windows, while episodes consistently timing out within 32 steps leave no eligible windows and prevent learning. This restriction excludes burn-in steps and counts truncations, not genuine terminations. Other sources of early truncation can also make windows ineligible.
+
 `make_training` shares these defaults across SAC, DDPG and TD3 presets, including hidden controls:
 
 | Setting | Shared off-policy default |

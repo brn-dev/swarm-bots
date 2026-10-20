@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -330,6 +331,16 @@ def make_training(
                 algorithm_config.update(make_recurrent_replay_options())
             algorithm_config.update(shared_options)
             algorithm_config.update(algorithm_options)
+            if recurrent and algorithm_config["learning_steps"] > vector_env.episode_length:
+                warnings.warn(
+                    "Recurrent off-policy replay allows at most one time-limit truncation per learning sequence. "
+                    f"episode_length={vector_env.episode_length} is shorter than "
+                    f"learning_steps={algorithm_config['learning_steps']}; some or all replay windows may be "
+                    "rejected, preventing updates. Keep episode_length >= learning_steps to avoid this "
+                    "restriction; burn-in steps do not count toward the learning sequence length.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             if recurrent and "batch_size" not in algorithm_options:
                 learning_steps = int(algorithm_config.get("learning_steps", 64))
                 if learning_steps <= 0:
