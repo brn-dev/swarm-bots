@@ -64,7 +64,7 @@ The selected task's spaces define exact dimensions and action bounds. The [obser
 
 ## Gymnasium compatibility
 
-The environment subclasses Gymnasium's `VectorEnv` and uses Gymnasium spaces, the `reset()` and `step()` return conventions, and `SAME_STEP` autoreset. Observations, rewards, termination flags, and truncation flags are PyTorch tensors on `env.device`. Actions are dictionaries of batched tensors; `info` contains tensors and nested dictionaries.
+The environment subclasses Gymnasium's `VectorEnv` and uses Gymnasium spaces and the `reset()` and `step()` return conventions. Autoreset defaults to `SAME_STEP`; `NEXT_STEP` is available for external learners. Observations, rewards, termination flags, and truncation flags are PyTorch tensors on `env.device`. Actions are dictionaries of batched tensors; `info` contains tensors and nested dictionaries.
 
 Compatibility with Gymnasium's interface does not imply compatibility with every Gymnasium wrapper or training library. Wrappers that assume NumPy arrays, including `gymnasium.wrappers.vector.RecordEpisodeStatistics`, cannot be applied directly. Integration requires tensor-aware code or an adapter that handles device transfer, nested values, and terminal observations. Converting CUDA tensors to CPU NumPy arrays adds transfers and synchronization to the rollout loop.
 
@@ -78,7 +78,23 @@ The example handles reusable observation buffers, time-limit bootstrapping from 
 
 ## Episode lifecycle
 
-The environment uses `SAME_STEP` autoreset. On a done step, the returned observation belongs to the reset episode. The terminal observation is in `info["final_obs"]`, selected by `info["_final_obs"]`. Bootstrap a truncated episode from that terminal observation; terminated episodes should not bootstrap.
+The default `SAME_STEP` autoreset returns the reset episode's observation on a done step. The terminal observation is in `info["final_obs"]`, selected by `info["_final_obs"]`. A truncated episode bootstraps from that terminal observation; a terminated episode does not bootstrap.
+
+External learners expecting [Gymnasium's `NEXT_STEP` lifecycle](https://farama.org/Vector-Autoreset-Mode) can select it at construction:
+
+```python
+from gymnasium.vector import AutoresetMode
+from swarmbots import make_env
+
+env = make_env(
+    "SwarmBots-Climb-v0", num_envs=256, device="cuda",
+    autoreset_mode=AutoresetMode.NEXT_STEP,
+)
+```
+
+In `NEXT_STEP`, a done step returns the terminal observation directly, without `final_obs` or `_final_obs`. On the following `step()` call, only the finished worlds reset: their supplied actions are ignored, rewards are zero, and termination/truncation flags are false. Other worlds advance normally. External learners must exclude reset-only entries from transition storage. The returned reset observations have not advanced through a control step. Explicit partial resets cancel pending autoresets only for the selected worlds.
+
+`env.autoreset_mode`, `env.metadata["autoreset_mode"]`, and `env.get_settings()["autoreset_mode"]` identify the selected lifecycle; settings store its string value (`"SameStep"` or `"NextStep"`). The matching enum or string is accepted at construction. `DISABLED` autoreset is unsupported. The included learning stack continues to require `SAME_STEP` and rejects `NEXT_STEP` environments.
 
 Observation tensors can share environment buffers. Clone tensors that must be retained across calls to `step()` or `reset()`.
 

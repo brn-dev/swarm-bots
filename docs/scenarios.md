@@ -108,7 +108,7 @@ Inactive MultiPayloadGoal records have zero positions/goals and identity orienta
 
 ## Success and termination
 
-Success is a team-level boolean. Padding never counts toward success. For success-enabled tasks, `info["success"]` refers to the episode that just stepped, including its terminal step before SAME_STEP reset.
+Success is a team-level boolean. Padding never counts toward success. For success-enabled tasks, `info["success"]` refers to the episode that just stepped, including its terminal step. In `NEXT_STEP` autoreset, reset-only entries have zero reward and false success; they are excluded from episode statistics and learning transitions.
 
 | Task | Success condition |
 | --- | --- |

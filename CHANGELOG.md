@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Skip `NEXT_STEP` reset-mask operations and synchronization when no world awaits autoreset, preserving the ordinary-step tensor path used by `SAME_STEP`.
+- Preserve sanitized observations for unstable `NEXT_STEP` worlds during mixed autoresets and partial or empty explicit resets; restrict additional masking to actual instabilities.
+- Add optional environment-only `NEXT_STEP` autoreset with terminal observations returned directly and ignored actions, zero rewards and false done flags on reset-only calls. Retain `SAME_STEP` by default and the included learners' existing requirement; cover mixed CPU/CUDA worlds, partial resets, settling, recording and deferred stepping.
 - Give each swarm its own location configuration so shared constructor inputs cannot make pool-size changes skip another environment's settled-reset invalidation.
 - Correct the learning guide's actor widths and explain width changes across encoder-depth choices.
 - Warn when recurrent off-policy training uses an episode limit shorter than its learning sequence, and document the one-truncation replay restriction and exclusion of burn-in steps.

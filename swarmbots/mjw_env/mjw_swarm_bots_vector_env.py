@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 import math
 from pathlib import Path
 from typing import Any
@@ -74,7 +75,10 @@ class _PendingMJWStep:
     truncations: torch.Tensor
     infos: dict[str, Any]
     dones: torch.Tensor
+    unstable_mask: torch.Tensor
     check_nefc_overflow: bool
+    reset_only_mask: torch.Tensor | None = None
+    restore_reset: Callable[[], None] | None = None
 
 
 def _step_and_refresh(model: Any, data: Any, nstep: int) -> None:
@@ -219,8 +223,11 @@ class _SettledResetSnapshotBuffer:
 
 class MJWSwarmBotsVectorEnv(VectorEnv):
     metadata = {"autoreset_mode": AutoresetMode.SAME_STEP, "render_modes": []}
+    autoreset_mode = AutoresetMode.SAME_STEP
     supports_per_env_reset_seeds = False
     _pending_step: _PendingMJWStep | None = None
+    _autoreset_envs: torch.Tensor | None = None
+    _unstable_observation_mask: torch.Tensor | None = None
 
     def __init__(
         self,
@@ -228,6 +235,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         *,
         num_envs: int,
         episode_length: int = 500,
+        autoreset_mode: AutoresetMode | str = AutoresetMode.SAME_STEP,
         first_episode_length: int | None = None,
         first_episode_lengths: list[int] | torch.Tensor | None = None,
         settled_reset_buffer_size: int | None = None,
@@ -243,6 +251,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
     ) -> None:
         super().__init__()
 
+        self.autoreset_mode = AutoresetMode(autoreset_mode)
+        if self.autoreset_mode not in (AutoresetMode.SAME_STEP, AutoresetMode.NEXT_STEP):
+            raise ValueError("MJW environments support only SAME_STEP and NEXT_STEP autoreset.")
+        self.metadata = {**self.metadata, "autoreset_mode": self.autoreset_mode}
         episode_length = int(episode_length)
         if episode_length <= 0:
             raise ValueError(f"Expected episode_length > 0, got {episode_length}")
@@ -592,6 +604,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self._max_nefc_since_overflow_check = torch.zeros((), device=self.device, dtype=self._nefc.dtype)
         self._steps_since_nefc_overflow_check = 0
         self._pending_step: _PendingMJWStep | None = None
+        self._autoreset_envs = None
         self._step_status_host = torch.empty(
             self.num_envs + 1,
             device="cpu",
@@ -634,6 +647,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         return {
             "scenario": self.scenario.get_settings(),
             "episode_length": self.episode_length,
+            "autoreset_mode": self.autoreset_mode.value,
             "action_repeat": self.action_repeat,
             "simulation_unstable_reward": self.simulation_unstable_reward,
             "compile_tensor_operations": self.compile_tensor_operations,
@@ -730,6 +744,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             else to_device_bool_tensor(options["reset_mask"], device=self.device, expected_shape=(self.num_envs,))
         )
         self._reset_worlds(reset_mask)
+        if self._autoreset_envs is not None:
+            self._autoreset_envs[reset_mask] = False
+            if not bool(self._autoreset_envs.any()):
+                self._autoreset_envs = None
         self.successful_connection_counts[reset_mask] = 0
         if self._live_episode_recorder.is_active():
             reset_world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
@@ -741,7 +759,14 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                 snapshots_by_world=self._capture_world_snapshots(reset_world_idx),
             )
         self._refill_settled_reset_buffer()
-        return self._build_obs(), {}
+        obs = self._build_obs()
+        if self._unstable_observation_mask is not None:
+            self._unstable_observation_mask[reset_mask] = False
+            if bool(self._unstable_observation_mask.any()):
+                obs = self._apply_error_obs(obs, self._unstable_observation_mask)
+            else:
+                self._unstable_observation_mask = None
+        return obs, {}
 
     def close_extras(self, **kwargs: Any) -> None:
         if self._pending_step is not None:
@@ -796,6 +821,18 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if connectors.shape != (self.num_envs, self._n_agents, self._n_connectors):
             raise ValueError(f"Unexpected connectors shape {tuple(connectors.shape)}")
 
+        reset_only_mask = self._autoreset_envs
+        restore_reset = None
+        if reset_only_mask is not None:
+            world_idx = torch.nonzero(reset_only_mask, as_tuple=False).flatten()
+            # Warp advances the whole batch. Initialize reset-only worlds safely,
+            # then restore the same sampled reset after physics without resampling.
+            restore_reset = self._prepare_world_reset(world_idx)
+            restore_reset()
+            self.successful_connection_counts[reset_only_mask] = 0
+            actuators = actuators.masked_fill(reset_only_mask[:, None, None], 0.0)
+            connectors = connectors.masked_fill(reset_only_mask[:, None, None], 0)
+
         trunc_limit = self._get_current_truncation_limit()
         self._refill_settled_reset_buffer()
 
@@ -813,6 +850,9 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             self._qvel,
             self.current_step,
         )
+        if reset_only_mask is not None:
+            unstable_mask = unstable_mask & ~reset_only_mask
+            stable_mask = stable_mask & ~reset_only_mask
 
         step_result = self._scenario_runtime.compute_step_rewards(stable_mask=stable_mask)
         infos: dict[str, Any] = dict(step_result.info)
@@ -830,8 +870,11 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             trunc_limit,
             self.simulation_unstable_reward,
         )
+        if reset_only_mask is not None:
+            rewards = rewards.masked_fill(reset_only_mask, 0.0)
+        ignored_info_mask = unstable_mask if reset_only_mask is None else unstable_mask | reset_only_mask
         for value in infos.values():
-            _mask_info_values(value, unstable_mask)
+            _mask_info_values(value, ignored_info_mask)
 
         obs = self._build_obs()
         obs = self._apply_error_obs(obs, unstable_mask)
@@ -875,7 +918,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             truncations=truncations,
             infos=infos,
             dones=dones,
+            unstable_mask=unstable_mask,
             check_nefc_overflow=check_nefc_overflow,
+            reset_only_mask=reset_only_mask,
+            restore_reset=restore_reset,
         )
 
     def end_step(
@@ -893,6 +939,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if self._step_status_ready is not None:
             self._step_status_ready.synchronize()
         self._pending_step = None
+        self._unstable_observation_mask = None
 
         obs = pending_step.obs
         rewards = pending_step.rewards
@@ -901,13 +948,24 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         infos = pending_step.infos
         dones = pending_step.dones
         step_status = self._step_status_host
+        has_dones = bool(step_status[0])
         if pending_step.check_nefc_overflow:
             self._maybe_notify_nefc_overflow(
                 required_njmax=int(self._nefc_overflow_host),
             )
-        if bool(step_status[0]):
+        if pending_step.restore_reset is not None:
+            pending_step.restore_reset()
+            self.successful_connection_counts[pending_step.reset_only_mask] = 0
+            self._record_episode_starts(pending_step.reset_only_mask)
+            obs = self._build_obs()
+        if has_dones:
             self._inject_connection_episode_stats(infos=infos, dones=dones)
             unstable_world_indices = torch.nonzero(step_status[1:], as_tuple=True)[0].tolist()
+            if unstable_world_indices and self.autoreset_mode is AutoresetMode.NEXT_STEP:
+                # Retained masks must not alias reusable compiled step outputs.
+                self._unstable_observation_mask = pending_step.unstable_mask.clone()
+                if pending_step.restore_reset is not None:
+                    obs = self._apply_error_obs(obs, self._unstable_observation_mask)
             if unstable_world_indices and not self._simulation_instability_warning_emitted:
                 self._simulation_instability_warning_emitted = True
                 logger.warning(
@@ -917,20 +975,27 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
                     type(self.scenario).__name__,
                     unstable_world_indices[:20],
                 )
-            infos["final_obs"] = {key: value.clone() for key, value in obs.items()}
-            infos["_final_obs"] = dones.clone()
             self.is_first_episode[dones] = False
-            self._reset_worlds(dones)
-            self.successful_connection_counts[dones] = 0
-            if self._live_episode_recorder.is_active():
-                done_world_idx = torch.nonzero(dones, as_tuple=False).flatten()
-                self._live_episode_recorder.on_episode_starts(
-                    world_idx=done_world_idx.detach().cpu().numpy(),
-                    snapshots_by_world=self._capture_world_snapshots(done_world_idx),
-                )
-            obs = self._build_obs()
+            if self.autoreset_mode is AutoresetMode.SAME_STEP:
+                infos["final_obs"] = {key: value.clone() for key, value in obs.items()}
+                infos["_final_obs"] = dones.clone()
+                self._reset_worlds(dones)
+                self.successful_connection_counts[dones] = 0
+                self._record_episode_starts(dones)
+                obs = self._build_obs()
+
+        if self.autoreset_mode is AutoresetMode.NEXT_STEP:
+            self._autoreset_envs = dones.clone() if has_dones else None
 
         return obs, rewards, terminations, truncations, infos
+
+    def _record_episode_starts(self, reset_mask: torch.Tensor) -> None:
+        if self._live_episode_recorder.is_active():
+            world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
+            self._live_episode_recorder.on_episode_starts(
+                world_idx=world_idx.detach().cpu().numpy(),
+                snapshots_by_world=self._capture_world_snapshots(world_idx),
+            )
 
     def start_video_recording(
         self,
@@ -954,7 +1019,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
             height=int(height),
             camera=camera,
         )
-        episode_start_world_idx = torch.nonzero(self.current_step == 0, as_tuple=False).flatten()
+        episode_start_mask = self.current_step == 0
+        if self._autoreset_envs is not None:
+            episode_start_mask = episode_start_mask & ~self._autoreset_envs
+        episode_start_world_idx = torch.nonzero(episode_start_mask, as_tuple=False).flatten()
         self._live_episode_recorder.start(
             config=config,
             episode_start_world_idx=episode_start_world_idx.detach().cpu().numpy(),
@@ -1036,25 +1104,22 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         world_idx = torch.nonzero(reset_mask, as_tuple=False).flatten()
         if world_idx.numel() == 0:
             return
-        if self._use_settled_resets:
-            self._reset_world_indices_with_settled_snapshots(world_idx)
-            return
-        self._scenario_runtime.apply_reset_batch(
-            world_idx=world_idx,
-            reset_batch=self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng),
-        )
+        self._prepare_world_reset(world_idx)()
 
-    def _reset_world_indices_with_settled_snapshots(self, world_idx: torch.Tensor) -> None:
-        if world_idx.numel() == 0:
-            return
-
+    def _prepare_world_reset(self, world_idx: torch.Tensor) -> Callable[[], None]:
+        if not self._use_settled_resets:
+            return partial(
+                self._scenario_runtime.apply_reset_batch,
+                world_idx=world_idx,
+                reset_batch=self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng),
+            )
         if self._settled_reset_buffer is not None:
             snapshots = self._settled_reset_buffer.take(int(world_idx.numel()))
         else:
             reset_batch = self._scenario_runtime.sample_reset_batch(n_reset=int(world_idx.numel()), rng=self._rng)
             specs = self._scenario_runtime.build_cpu_reset_specs(reset_batch=reset_batch)
             snapshots = self._scenario_runtime.settle_cpu_reset_specs(specs=specs)
-        self._scenario_runtime.apply_settled_reset_batch(world_idx=world_idx, snapshots=snapshots)
+        return partial(self._scenario_runtime.apply_settled_reset_batch, world_idx=world_idx, snapshots=snapshots)
 
     def _apply_actions(self, *, actuators: torch.Tensor, connectors: torch.Tensor) -> None:
         connector_action = self._tensor_operations.prepare_actions(
