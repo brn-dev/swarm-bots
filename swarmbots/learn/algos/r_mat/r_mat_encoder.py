@@ -502,6 +502,8 @@ class RMATEncoder(nn.Module):
             TemporalModelState,
         ]
     ):
+        mask_input_gradients = torch.is_grad_enabled() and (agent_mask is not None or time_mask is not None)
+        mask_global_gradients = torch.is_grad_enabled() and time_mask is not None
         local_obs, global_obs, agent_mask, time_mask, reset_mask, squeeze_time = self._normalize_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -512,6 +514,21 @@ class RMATEncoder(nn.Module):
         batch_size, sequence_length, n_agents, _ = local_obs.shape
         if n_agents > self.max_agents:
             raise ValueError(f"Expected local_obs agent dim <= {self.max_agents}, got {n_agents}")
+
+        valid_agent_time_mask = _combine_agent_time_mask(
+            agent_mask=agent_mask,
+            time_mask=time_mask,
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+            n_agents=n_agents,
+            device=local_obs.device,
+        )
+        # Mask before learned projections for backward: zero upstream gradients
+        # still multiply NaN padding in linear weight gradients.
+        if mask_input_gradients:
+            local_obs = _mask_invalid_agent_time(local_obs, valid_agent_time_mask)
+        if mask_global_gradients and global_obs.shape[-1] > 0:
+            global_obs = global_obs.masked_fill(~time_mask.unsqueeze(-1), 0.0)
 
         if self.joint_obs_embedding:
             global_inputs = global_obs.unsqueeze(2).expand(-1, -1, n_agents, -1)
@@ -525,14 +542,6 @@ class RMATEncoder(nn.Module):
             embeddings = embeddings + global_embeddings.unsqueeze(2)
         embeddings = self.token_norm(embeddings)
 
-        valid_agent_time_mask = _combine_agent_time_mask(
-            agent_mask=agent_mask,
-            time_mask=time_mask,
-            batch_size=batch_size,
-            sequence_length=sequence_length,
-            n_agents=n_agents,
-            device=local_obs.device,
-        )
         if valid_agent_time_mask is not None:
             embeddings = embeddings.masked_fill(~valid_agent_time_mask.unsqueeze(-1), 0.0)
 

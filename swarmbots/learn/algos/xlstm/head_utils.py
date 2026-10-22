@@ -67,6 +67,8 @@ class MultiHeadLayerNorm(nn.Module):
     ) -> None:
         super().__init__()
         require_heads_divide_hidden_dim(hidden_dim=hidden_dim, num_heads=num_heads)
+        if hidden_dim // num_heads < 2:
+            raise ValueError("Per-head LayerNorm requires at least two features per head")
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.eps = eps

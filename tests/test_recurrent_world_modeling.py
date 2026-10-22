@@ -1,9 +1,19 @@
+import shutil
+import sys
 import unittest
+from dataclasses import fields, replace
+from unittest.mock import patch
 
+import pytest
 import torch
 
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSampler, RPPOWMSamplerConfig
+from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
+    WMEpisodeWindows,
+    build_wm_episode_windows,
+    reset_wm_window_helper_compile_cache,
+)
 from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import (
     build_wm_target_time_mask,
     flatten_recurrent_wm_batch,
@@ -87,6 +97,91 @@ def _make_episode(
         rollout_env_idx=rollout_env_idx,
         rollout_start_step=rollout_start_step,
     )
+
+
+@pytest.mark.parametrize("with_agent_mask", [False, True])
+def test_recurrent_wm_rows_own_reusable_compiled_window_outputs(with_agent_mask: bool) -> None:
+    episodes = [
+        _make_episode(
+            num_steps=2, step_offset=start, rollout_env_idx=0,
+            rollout_start_step=start, with_agent_mask=with_agent_mask,
+        )
+        for start in (0, 2)
+    ]
+    config = RPPOWMSamplerConfig(batch_size=1, num_next_steps=3, sequence_length=4)
+    expected = RPPOWMSampler(episodes=episodes, config=config)
+    storage: WMEpisodeWindows | None = None
+
+    def reusable_windows(
+        episode: PPOEpisodeSegment, *, num_next_steps: int, compile_modules: bool, compile_mode: str,
+    ) -> WMEpisodeWindows:
+        nonlocal storage
+        result = build_wm_episode_windows(episode, num_next_steps=num_next_steps)
+        if storage is None:
+            storage = result
+        else:
+            for field in fields(WMEpisodeWindows):
+                source = getattr(result, field.name)
+                if source is not None:
+                    getattr(storage, field.name).copy_(source)
+        return storage
+
+    with (
+        patch("swarmbots.learn.algos.r_mat.r_ppo_wm_sampler.ensure_wm_window_helper_compile_available"),
+        patch("swarmbots.learn.algos.r_mat.r_ppo_wm_sampler.build_wm_episode_windows", side_effect=reusable_windows),
+    ):
+        actual = RPPOWMSampler(
+            episodes=episodes,
+            config=replace(config, compile_wm_window_helper=True, wm_window_helper_compile_mode="reduce-overhead"),
+        )
+    for name in ("wm_actions", "next_local_obs", "next_global_obs", "wm_target_time_mask",
+                 "wm_agent_mask", "wm_loss_agent_mask"):
+        torch.testing.assert_close(getattr(actual, name), getattr(expected, name), rtol=0, atol=0)
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("with_agent_mask", [False, True])
+def test_compiled_recurrent_wm_windows_survive_episode_and_sampler_reuse(with_agent_mask: bool) -> None:
+    if sys.platform.startswith("win") and shutil.which("cl.exe") is None:
+        pytest.skip("cl.exe unavailable")
+    reset_wm_window_helper_compile_cache()
+    config = RPPOWMSamplerConfig(batch_size=2, num_next_steps=3, sequence_length=4)
+    retained: list[tuple[RPPOWMSampler, dict[str, torch.Tensor | None]]] = []
+    try:
+        for offset in range(4):
+            torch.compiler.cudagraph_mark_step_begin()
+            episodes = []
+            for env_idx in range(2):
+                for start in (0, 2):
+                    episode = _make_episode(
+                        num_steps=2, step_offset=offset * 10 + env_idx * 4 + start,
+                        rollout_env_idx=env_idx, rollout_start_step=start, with_agent_mask=with_agent_mask,
+                    )
+                    episodes.append(replace(episode, **{
+                        field.name: value.cuda()
+                        for field in fields(PPOEpisodeSegment)
+                        if isinstance(value := getattr(episode, field.name), torch.Tensor)
+                    }))
+            expected = RPPOWMSampler(episodes=episodes, config=config)
+            actual = RPPOWMSampler(
+                episodes=episodes,
+                config=replace(
+                    config, compile_wm_window_helper=True, wm_window_helper_compile_mode="reduce-overhead",
+                ),
+            )
+            snapshot = {}
+            for name in ("wm_actions", "next_local_obs", "next_global_obs", "wm_target_time_mask",
+                         "wm_agent_mask", "wm_loss_agent_mask"):
+                value = getattr(actual, name)
+                torch.testing.assert_close(value, getattr(expected, name), rtol=0, atol=0)
+                snapshot[name] = None if value is None else value.clone()
+            retained.append((actual, snapshot))
+        for sampler, snapshot in retained:
+            for name, expected_value in snapshot.items():
+                torch.testing.assert_close(getattr(sampler, name), expected_value, rtol=0, atol=0)
+    finally:
+        reset_wm_window_helper_compile_cache()
 
 
 class RPPOWMSamplerTests(unittest.TestCase):

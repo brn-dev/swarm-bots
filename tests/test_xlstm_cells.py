@@ -21,6 +21,27 @@ from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel, SLSTMT
 from swarmbots.learn.temporal_state import index_temporal_state_batch_time, stack_temporal_states
 
 
+@pytest.mark.parametrize("model_cls", [SLSTMTemporalSequenceModel, MLSTMTemporalSequenceModel])
+def test_xlstm_rejects_normalization_that_would_erase_scalar_heads(
+    model_cls: type[SLSTMTemporalSequenceModel | MLSTMTemporalSequenceModel],
+) -> None:
+    with pytest.raises(ValueError, match="at least two features per head"):
+        model_cls(hidden_dim=4)
+
+
+def test_slstm_scalar_heads_remain_trainable_without_output_normalization() -> None:
+    torch.manual_seed(10)
+    model = SLSTMTemporalSequenceModel(
+        hidden_dim=4, config=SLSTMTemporalSequenceModelConfig(output_norm=False),
+    )
+    inputs = torch.randn(2, 3, 4, requires_grad=True)
+    outputs, _state = model(inputs)
+    outputs.sum().backward()
+    assert outputs.abs().sum() > 0
+    assert torch.isfinite(inputs.grad).all()
+    assert inputs.grad.abs().sum() > 0
+
+
 @pytest.mark.parametrize(
     ("model_cls", "config"),
     [

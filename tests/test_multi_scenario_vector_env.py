@@ -548,6 +548,33 @@ def test_multi_scenario_vector_env_preserves_child_info_masks() -> None:
         env.close()
 
 
+@pytest.mark.parametrize("backend", ["numpy", "torch"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_multi_scenario_info_masks_preserve_implicit_presence(backend: str, nested: bool) -> None:
+    env = MultiScenarioVectorEnv({
+        name: _DirectVectorEnv(
+            num_envs=count, global_obs_dim=1, hidden_local_vars_dim=0,
+            hidden_global_vars_dim=0, backend=backend,
+        )
+        for name, count in (("explicit", 2), ("implicit", 1), ("missing", 1))
+    })
+    array = torch.tensor if backend == "torch" else np.asarray
+    child_infos = [
+        {"success": array([True, False]), "_success": array([True, False])},
+        {"success": array([True])},
+        {},
+    ]
+    if nested:
+        child_infos = [{"episode": info} if info else {} for info in child_infos]
+    try:
+        merged = env._merge_infos(child_infos)
+        stats = merged["episode"] if nested else merged
+        assert np.array_equal(stats["success"], [True, False, True, False])
+        assert np.array_equal(stats["_success"], [True, False, True, False])
+    finally:
+        env.close()
+
+
 def test_scenario_ids_round_trip_through_off_policy_replay() -> None:
     vector_env = MultiScenarioVectorEnv({
         "wall": _vector_env(

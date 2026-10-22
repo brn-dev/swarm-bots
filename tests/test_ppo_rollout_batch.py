@@ -1,11 +1,25 @@
 import unittest
+from collections.abc import Callable, Iterator
+from dataclasses import fields, replace
+import shutil
+import sys
+from typing import Any
 
+import pytest
 import torch
 
 from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch, compute_step_rollout_gae
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMBatchSampler, PPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import build_wm_episode_windows
+from swarmbots.learn.algos.world_modeling import wm_sampler_helper
+
+
+@pytest.fixture
+def wm_window_compile_cache() -> Iterator[None]:
+    wm_sampler_helper.reset_wm_window_helper_compile_cache()
+    yield
+    wm_sampler_helper.reset_wm_window_helper_compile_cache()
 
 
 def _make_rollout_batch(*, with_agent_mask: bool) -> PPORolloutBatch:
@@ -267,6 +281,89 @@ class PPORolloutBatchTests(unittest.TestCase):
                 else:
                     self.assertIsNone(sampler.wm_agent_mask)
                     self.assertIsNone(sampler.wm_loss_agent_mask)
+
+
+@pytest.mark.parametrize("with_agent_mask", [False, True])
+@pytest.mark.parametrize("num_next_steps", [1, 4, 8])
+@pytest.mark.parametrize("compile_mode", ["default", "reduce-overhead"])
+def test_wm_batch_sampler_honors_requested_compilation(
+    with_agent_mask: bool,
+    num_next_steps: int,
+    compile_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    wm_window_compile_cache: None,
+) -> None:
+    original_compile = torch.compile
+    compiled_modes: list[str] = []
+    executed_graphs: list[torch.fx.GraphModule] = []
+
+    def backend(graph: torch.fx.GraphModule, _inputs: list[torch.Tensor]) -> Callable[..., Any]:
+        executed_graphs.append(graph)
+        return graph.forward
+
+    def compile_helper(function: Callable[..., Any], *, mode: str) -> Callable[..., Any]:
+        compiled_modes.append(mode)
+        return original_compile(function, backend=backend, fullgraph=True)
+
+    monkeypatch.setattr(torch, "compile", compile_helper)
+    monkeypatch.setattr(wm_sampler_helper.shutil, "which", lambda _name: "compiler")
+    batch = _make_rollout_batch(with_agent_mask=with_agent_mask)
+    eager = PPOWMBatchSampler(
+        rollout_batch=batch, config=PPOWMSamplerConfig(batch_size=3, num_next_steps=num_next_steps),
+    )
+    assert not compiled_modes
+    for _ in range(2):
+        compiled = PPOWMBatchSampler(
+            rollout_batch=batch,
+            config=PPOWMSamplerConfig(
+                batch_size=3, num_next_steps=num_next_steps,
+                compile_wm_window_helper=True, wm_window_helper_compile_mode=compile_mode,
+            ),
+        )
+        for field in fields(wm_sampler_helper.WMEpisodeWindows):
+            torch.testing.assert_close(getattr(compiled, field.name), getattr(eager, field.name), rtol=0, atol=0)
+    assert compiled_modes == [compile_mode]
+    assert len(executed_graphs) == 1
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("with_agent_mask", [False, True])
+@pytest.mark.parametrize("compile_mode", ["default", "reduce-overhead"])
+def test_compiled_wm_batch_windows_remain_valid_across_sampler_construction(
+    with_agent_mask: bool, compile_mode: str, wm_window_compile_cache: None,
+) -> None:
+    if sys.platform.startswith("win") and shutil.which("cl.exe") is None:
+        pytest.skip("cl.exe unavailable")
+    batch = _make_rollout_batch(with_agent_mask=with_agent_mask).to(device="cuda", dtype=torch.float32)
+    retained: list[tuple[PPOWMBatchSampler, dict[str, torch.Tensor | None]]] = []
+    for offset in range(4):
+        torch.compiler.cudagraph_mark_step_begin()
+        current_batch = replace(
+            batch, actions=batch.actions + offset,
+            bootstrap_local_obs=batch.bootstrap_local_obs + offset,
+            bootstrap_global_obs=batch.bootstrap_global_obs + offset,
+            dones=batch.dones.roll(offset, dims=1),
+        )
+        eager = PPOWMBatchSampler(
+            rollout_batch=current_batch, config=PPOWMSamplerConfig(batch_size=3, num_next_steps=8),
+        )
+        compiled = PPOWMBatchSampler(
+            rollout_batch=current_batch,
+            config=PPOWMSamplerConfig(
+                batch_size=3, num_next_steps=8,
+                compile_wm_window_helper=True, wm_window_helper_compile_mode=compile_mode,
+            ),
+        )
+        snapshot: dict[str, torch.Tensor | None] = {}
+        for field in fields(wm_sampler_helper.WMEpisodeWindows):
+            actual = getattr(compiled, field.name)
+            torch.testing.assert_close(actual, getattr(eager, field.name), rtol=0, atol=0)
+            snapshot[field.name] = None if actual is None else actual.clone()
+        retained.append((compiled, snapshot))
+    for sampler, snapshot in retained:
+        for name, expected in snapshot.items():
+            torch.testing.assert_close(getattr(sampler, name), expected, rtol=0, atol=0)
 
 
 if __name__ == "__main__":

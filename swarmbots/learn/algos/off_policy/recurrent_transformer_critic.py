@@ -143,6 +143,8 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             observation_action_encoder=self.observation_action_encoder,
+            agent_mask=agent_mask,
+            time_mask=time_mask,
         )
         primary_latents, next_primary_state = self.encoder(
             local_encoder_inputs,
@@ -163,6 +165,8 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
                 hidden_local_vars=hidden_local_vars,
                 hidden_global_vars=hidden_global_vars,
                 observation_action_encoder=self.observation_action_encoder2,
+                agent_mask=agent_mask,
+                time_mask=time_mask,
             )
         secondary_latents, next_secondary_state = self.encoder2(
             secondary_local_encoder_inputs,
@@ -198,6 +202,8 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             observation_action_encoder=self.observation_action_encoder,
+            agent_mask=agent_mask,
+            time_mask=time_mask,
         )
         q1_latents, next_primary_state = self.encoder(
             local_encoder_inputs,
@@ -220,6 +226,8 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
                     hidden_local_vars=hidden_local_vars,
                     hidden_global_vars=hidden_global_vars,
                     observation_action_encoder=self.observation_action_encoder2,
+                    agent_mask=agent_mask,
+                    time_mask=time_mask,
                 )
             q2_latents, next_secondary_state = self.encoder2(
                 secondary_local_encoder_inputs,
@@ -246,6 +254,8 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
         hidden_local_vars: torch.Tensor | None,
         hidden_global_vars: torch.Tensor | None,
         observation_action_encoder: ObservationActionEncoder | None,
+        agent_mask: torch.Tensor | None,
+        time_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         local_observation_parts = [local_inputs]
         if self.hidden_local_vars_dim > 0:
@@ -257,6 +267,15 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
             if len(local_observation_parts) == 1
             else torch.cat(local_observation_parts, dim=-1)
         )
+        if observation_action_encoder is not None and torch.is_grad_enabled():
+            valid_mask = agent_mask
+            if time_mask is not None:
+                time_valid_mask = time_mask.reshape(*actions.shape[:-2], 1)
+                valid_mask = time_valid_mask if valid_mask is None else valid_mask & time_valid_mask
+            if valid_mask is not None:
+                padding = ~valid_mask.unsqueeze(-1)
+                local_observation_inputs = local_observation_inputs.masked_fill(padding, 0.0)
+                actions = actions.masked_fill(padding, 0.0)
         local_encoder_inputs = (
             torch.cat((local_observation_inputs, actions), dim=-1)
             if observation_action_encoder is None

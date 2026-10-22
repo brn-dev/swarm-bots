@@ -3,6 +3,7 @@ from functools import lru_cache
 import shutil
 import sys
 from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 
 import torch
 
@@ -18,33 +19,23 @@ class WMEpisodeWindows:
     wm_agent_mask: MaybeTensor
     wm_loss_agent_mask: MaybeTensor
 
+    def clone(self) -> "WMEpisodeWindows":
+        return WMEpisodeWindows(
+            multi_step_actions=self.multi_step_actions.clone(),
+            next_local_obs=self.next_local_obs.clone(),
+            wm_target_time_mask=self.wm_target_time_mask.clone(),
+            next_global_obs=self.next_global_obs.clone(),
+            wm_agent_mask=None if self.wm_agent_mask is None else self.wm_agent_mask.clone(),
+            wm_loss_agent_mask=None if self.wm_loss_agent_mask is None else self.wm_loss_agent_mask.clone(),
+        )
 
-_CompiledWMWindowOutputsFn = Callable[
-    [
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        MaybeTensor,
-        MaybeTensor,
-        int,
-    ],
-    tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        MaybeTensor,
-        MaybeTensor,
-    ],
-]
 
-_compiled_wm_window_outputs_fns: dict[str, _CompiledWMWindowOutputsFn] = {}
+WindowHelperArgs = ParamSpec("WindowHelperArgs")
+WindowHelperResult = TypeVar("WindowHelperResult")
 
 
 def reset_wm_window_helper_compile_cache() -> None:
-    _compiled_wm_window_outputs_fns.clear()
+    compile_wm_window_helper.cache_clear()
     dynamo_module = getattr(torch, "_dynamo", None)
     if dynamo_module is not None and hasattr(dynamo_module, "reset"):
         dynamo_module.reset()
@@ -211,7 +202,7 @@ def _build_wm_windows_from_batched_tensors(
 ) -> WMEpisodeWindows:
     outputs_fn = _build_wm_window_outputs_impl
     if compile_modules:
-        outputs_fn = _get_compiled_wm_window_outputs_fn(compile_mode=compile_mode)
+        outputs_fn = compile_wm_window_helper(outputs_fn, compile_mode=compile_mode)
     (
         multi_step_actions,
         next_local_obs,
@@ -353,18 +344,14 @@ def ensure_wm_window_helper_compile_available(*, compile_mode: str) -> None:
     _ensure_wm_window_helper_compile_available_cached(compile_mode)
 
 
-def _get_compiled_wm_window_outputs_fn(*, compile_mode: str) -> _CompiledWMWindowOutputsFn:
-    cached = _compiled_wm_window_outputs_fns.get(compile_mode)
-    if cached is not None:
-        return cached
-
+@lru_cache(maxsize=None)
+def compile_wm_window_helper(
+        helper: Callable[WindowHelperArgs, WindowHelperResult],
+        *,
+        compile_mode: str,
+) -> Callable[WindowHelperArgs, WindowHelperResult]:
     ensure_wm_window_helper_compile_available(compile_mode=compile_mode)
-    compiled_fn = torch.compile(
-        _build_wm_window_outputs_impl,
-        mode=compile_mode,
-    )
-    _compiled_wm_window_outputs_fns[compile_mode] = compiled_fn
-    return compiled_fn
+    return torch.compile(helper, mode=compile_mode)
 
 
 def _pad_batched_time_axis(

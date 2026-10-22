@@ -31,11 +31,9 @@ class NOPInitGains:
 @dataclass(frozen=True)
 class MATNormalizationConfig:
     normalize_encoder_tokens: bool = False
-    normalize_query_input: bool = False
     normalize_context_input: bool = False
     normalize_action_input: bool = False
     normalize_memory_input: bool = False
-    normalize_query_tokens: bool = False
     normalize_context_tokens: bool = True
     normalize_action_tokens: bool = False
     normalize_memory_tokens: bool = False

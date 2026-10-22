@@ -230,15 +230,16 @@ def _build_sequence_row(
             "Use a fixed step rollout no longer than the TBPTT sequence."
         )
 
-    episode_windows = [
-        build_wm_episode_windows(
+    episode_windows = []
+    for episode in episodes:
+        windows = build_wm_episode_windows(
             episode,
             num_next_steps=config.num_next_steps,
             compile_modules=config.compile_wm_window_helper,
             compile_mode=config.wm_window_helper_compile_mode,
         )
-        for episode in episodes
-    ]
+        # Compiled helpers can reuse their output storage on the next episode.
+        episode_windows.append(windows.clone() if config.compile_wm_window_helper else windows)
     episode_start_mask = torch.zeros(
         sequence_length,
         dtype=torch.bool,

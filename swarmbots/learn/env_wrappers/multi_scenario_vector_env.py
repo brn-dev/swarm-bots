@@ -498,16 +498,23 @@ class MultiScenarioVectorEnv(VectorEnv):
                 merged[key] = self._merge_infos(child_dicts)
                 continue
             if self._is_batched_value(exemplar):
+                if all(present):
+                    merged[key] = self._concatenate(values)
+                    continue
                 filled_values = [
-                    self._zeros_for_missing(exemplar, num_envs)
+                    self._full(
+                        (num_envs, *exemplar.shape[1:]),
+                        key.startswith("_") and info.get(key[1:]) is not None,
+                        like=exemplar,
+                        dtype=exemplar.dtype,
+                    )
                     if value is None
                     else value
-                    for value, num_envs in zip(values, self._scenario_num_envs, strict=True)
+                    for value, info, num_envs in zip(values, infos, self._scenario_num_envs, strict=True)
                 ]
                 merged[key] = self._concatenate(filled_values)
                 if (
-                        not all(present)
-                        and not key.startswith("_")
+                        not key.startswith("_")
                         and f"_{key}" not in keys
                 ):
                     merged[f"_{key}"] = self._concatenate([
@@ -675,13 +682,6 @@ class MultiScenarioVectorEnv(VectorEnv):
         if isinstance(value, torch.Tensor):
             return bool(torch.any(value).item())
         return bool(np.any(value))
-
-    @staticmethod
-    def _zeros_for_missing(exemplar: Array, num_envs: int) -> Array:
-        shape = (num_envs, *exemplar.shape[1:])
-        if isinstance(exemplar, torch.Tensor):
-            return torch.zeros(shape, dtype=exemplar.dtype, device=exemplar.device)
-        return np.zeros(shape, dtype=exemplar.dtype)
 
     @staticmethod
     def _full(

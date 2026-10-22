@@ -255,6 +255,9 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         noise = torch.einsum("...d,...da->...a", self._latent_sde, exploration_matrices)
         return self.distribution.mean + noise
 
+    def _std_values_for_metrics(self, agent_mask: torch.Tensor | None) -> torch.Tensor:
+        return self._get_std_matrix(self.log_stds)
+
     def _get_std_matrix(self, log_stds: torch.Tensor) -> torch.Tensor:
         log_stds = torch.clamp(log_stds, *self.log_std_clamp_range)
         if self.full_std:

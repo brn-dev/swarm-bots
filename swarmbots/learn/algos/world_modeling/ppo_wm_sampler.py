@@ -10,6 +10,7 @@ from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler, 
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
     WMEpisodeWindows,
     build_wm_episode_windows_batch,
+    compile_wm_window_helper,
     ensure_wm_window_helper_compile_available,
 )
 from swarmbots.learn.base_sampler import BatchIndices
@@ -169,7 +170,7 @@ class PPOWMBatchSampler(
             rollout_batch: PPORolloutBatch,
             config: PPOWMSamplerConfigType,
             requires_previous_actions: bool = False,
-    ):
+    ) -> None:
         num_next_steps = config.num_next_steps
         if num_next_steps < 1:
             raise ValueError(f"num_next_steps must be >= 1, got {num_next_steps}")
@@ -178,10 +179,16 @@ class PPOWMBatchSampler(
             config=config,
             requires_previous_actions=requires_previous_actions,
         )
-        windows = _build_wm_windows_from_rollout_batch(
+        build_windows = _build_wm_windows_from_rollout_batch
+        if config.compile_wm_window_helper:
+            build_windows = compile_wm_window_helper(build_windows, compile_mode=config.wm_window_helper_compile_mode)
+        windows = build_windows(
             rollout_batch=rollout_batch,
             num_next_steps=num_next_steps,
         )
+        if config.compile_wm_window_helper:
+            # CUDA-graph outputs must stay valid across model calls and subsequent sampler construction.
+            windows = windows.clone()
         self.multi_step_actions = windows.multi_step_actions
         self.next_local_obs = windows.next_local_obs
         self.wm_target_time_mask = windows.wm_target_time_mask

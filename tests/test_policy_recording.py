@@ -10,6 +10,7 @@ import sys
 import numpy as np
 import pytest
 import torch
+from gymnasium.vector import AutoresetMode
 
 import swarmbots.benchmark.cli as cli
 import swarmbots.benchmark.recording as recording
@@ -22,6 +23,7 @@ from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLoc
 class _RecordingEnv:
     num_envs = 2
     device = torch.device("cpu")
+    autoreset_mode = AutoresetMode.SAME_STEP
 
     def __init__(self) -> None:
         self.steps = 0
@@ -110,6 +112,76 @@ def test_recording_uses_reset_observations_and_resets_policy_state_for_each_done
     assert env.closed
 
 
+@pytest.mark.parametrize("autoreset_mode", [AutoresetMode.SAME_STEP, AutoresetMode.NEXT_STEP])
+@pytest.mark.parametrize("episode_lengths", [(1, 1), (2, 3)])
+def test_recording_preserves_recurrent_history_across_recycled_lanes(
+    autoreset_mode: AutoresetMode,
+    episode_lengths: tuple[int, int],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HistoryEnv(_RecordingEnv):
+        def __init__(self) -> None:
+            super().__init__()
+            self.autoreset_mode = autoreset_mode
+            self.elapsed_steps = torch.zeros(2, dtype=torch.long)
+            self.pending_resets = torch.zeros(2, dtype=torch.bool)
+            self.completed_episodes = 0
+            self.executed_actions: list[tuple[float, int]] = []
+
+        def _observations(self) -> dict[str, torch.Tensor]:
+            observations = super()._observations()
+            observations["local_obs"] = torch.where(self.pending_resets, 99.0, 1.0).view(2, 1, 1)
+            return observations
+
+        def reset(
+            self, *, seed: int | None = None, options: dict[str, Any] | None = None,
+        ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
+            reset_mask = torch.ones(2, dtype=torch.bool) if options is None else options["reset_mask"]
+            self.elapsed_steps[reset_mask] = 0
+            self.pending_resets[reset_mask] = False
+            return self._observations(), {}
+
+        def get_video_recording_status(self) -> dict[str, bool]:
+            return {"active": self.completed_episodes < 6}
+
+        def start_video_recording(self, **kwargs: Any) -> None:
+            pass
+
+        def step(self, actions: dict[str, torch.Tensor]) -> tuple:
+            active_lanes = ~self.pending_resets
+            for lane in torch.nonzero(active_lanes).flatten().tolist():
+                self.executed_actions.append((float(actions["actuators"][lane, 0, 0]), int(self.elapsed_steps[lane]) + 1))
+            self.elapsed_steps[self.pending_resets] = 0
+            self.elapsed_steps[active_lanes] += 1
+            dones = active_lanes & (self.elapsed_steps == torch.tensor(episode_lengths))
+            self.completed_episodes += int(dones.sum())
+            self.pending_resets = dones if autoreset_mode is AutoresetMode.NEXT_STEP else torch.zeros_like(dones)
+            if autoreset_mode is AutoresetMode.SAME_STEP:
+                self.elapsed_steps[dones] = 0
+            terminations = dones & torch.tensor([True, False])
+            truncations = dones & ~terminations
+            return self._observations(), torch.zeros(2), terminations, truncations, {}
+
+    env = HistoryEnv()
+    monkeypatch.setattr(recording, "make_env", lambda *args, **kwargs: env)
+    history = torch.zeros(2)
+
+    def policy(observations: Mapping[str, torch.Tensor], starts: torch.Tensor) -> dict[str, torch.Tensor]:
+        history[starts] = 0.0
+        history.add_(observations["local_obs"][:, 0, 0])
+        return {"actuators": history.view(2, 1, 1).clone()}
+
+    record_policy(
+        policy, "SwarmBots-WallEasy-v0", video_folder=tmp_path,
+        num_episodes=6, max_parallel_episodes=2, env_kwargs={"autoreset_mode": autoreset_mode},
+    )
+
+    assert env.completed_episodes >= 6
+    assert all(actual == expected for actual, expected in env.executed_actions)
+    assert env.closed
+
+
 def test_recording_closes_environment_when_policy_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env = _RecordingEnv()
     monkeypatch.setattr(recording, "make_env", lambda *args, **kwargs: env)
@@ -120,6 +192,50 @@ def test_recording_closes_environment_when_policy_fails(tmp_path: Path, monkeypa
     with pytest.raises(RuntimeError, match="actor failed"):
         record_policy(policy, "SwarmBots-WallEasy-v0", video_folder=tmp_path)
     assert env.closed
+
+
+@pytest.mark.integration
+def test_next_step_recording_preserves_history_and_complete_videos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import swarmbots.mjw_env.mjw_live_recording as live_recording
+
+    env = recording.make_env(
+        "SwarmBots-WallEasy-v0", num_envs=2, device="cpu", episode_length=3,
+        first_episode_lengths=[1, 3], autoreset_mode=AutoresetMode.NEXT_STEP,
+        compile_tensor_operations=False,
+        scenario_kwargs={
+            "unit_start_locations": MJWPreConnectedUnitLocationsConfig(num_units=2, pool_seeds=(42000,)),
+            "reset_settle_time": 0.0, "compile_reward_kernel": False,
+        },
+    )
+    monkeypatch.setattr(recording, "make_env", lambda *args, **kwargs: env)
+    written_lengths: list[int] = []
+
+    def write_video(*, frames: list[np.ndarray], output_path: Path, fps: int) -> None:
+        written_lengths.append(len(frames))
+        output_path.write_bytes(b"encoded video")
+
+    monkeypatch.setattr(live_recording, "_write_video_file", write_video)
+    history = torch.zeros(2)
+
+    def policy(observations: Mapping[str, torch.Tensor], starts: torch.Tensor) -> dict[str, torch.Tensor]:
+        torch.testing.assert_close(starts, env.current_step == 0)
+        history[starts] = 0.0
+        history.add_(1.0)
+        torch.testing.assert_close(history, env.current_step.to(dtype=torch.float32) + 1)
+        return {key: torch.zeros(space.shape) for key, space in env.action_space.items()}
+
+    try:
+        record_policy(
+            policy, "SwarmBots-WallEasy-v0", video_folder=tmp_path, device="cpu",
+            num_episodes=5, max_parallel_episodes=2, width=160, height=120,
+            env_kwargs={"autoreset_mode": AutoresetMode.NEXT_STEP},
+        )
+        assert len(list(tmp_path.glob("*.mp4"))) == 5
+        assert sorted(written_lengths) == [2, 4, 4, 4, 4]
+    finally:
+        env.close()
 
 
 def test_record_command_requires_checkpoint_variant() -> None:

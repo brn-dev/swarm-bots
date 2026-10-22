@@ -1,9 +1,26 @@
 import math
 import unittest
 
+import pytest
 import torch
 
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+
+
+@pytest.mark.parametrize("full_std", [False, True])
+@pytest.mark.parametrize("base_std, expected_std", [(0.01, math.exp(-3)), (0.2, 0.2), (1.0, math.exp(-1))])
+def test_gsde_std_metrics_follow_the_sampling_clamp(
+    full_std: bool, base_std: float, expected_std: float,
+) -> None:
+    dist = GSDEActionDist(
+        latent_dim=2, action_dim=3, base_std=base_std,
+        full_std=full_std, log_std_clamp_range=(-3.0, -1.0),
+    )
+    actions = dist.update_latent_features(torch.ones(4, 2)).mode()
+    metrics = dist.get_metrics(actions)
+    assert metrics["std"].mean == pytest.approx(expected_std)
+    assert metrics["std"].min_value == pytest.approx(expected_std)
+    assert metrics["std"].max_value == pytest.approx(expected_std)
 
 
 class GSDEActionDistTests(unittest.TestCase):

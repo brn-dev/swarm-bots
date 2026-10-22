@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from gymnasium.vector import AutoresetMode
 
 from swarmbots.benchmark.evaluation import Policy, policy_observation
 from swarmbots.benchmark.registry import make_env
@@ -38,11 +39,15 @@ def _record_episodes(
         camera=camera,
     )
     episode_starts = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+    next_step_autoreset = env.autoreset_mode is AutoresetMode.NEXT_STEP
     with torch.inference_mode():
         while env.get_video_recording_status()["active"]:
             actions = policy(policy_observation(observations), episode_starts)
             observations, _, terminations, truncations, _ = env.step(dict(actions))
             episode_starts = terminations | truncations
+            if next_step_autoreset and bool(episode_starts.any()) and env.get_video_recording_status()["active"]:
+                # Keep terminal observations out of policy history without advancing unfinished lanes.
+                observations, _ = env.reset(options={"reset_mask": episode_starts})
 
 
 def record_policy(

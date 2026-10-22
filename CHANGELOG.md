@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Snapshot compiled recurrent PPO world-model windows before helper reuse, preserving separate episode segments and retained samplers under CUDA graphs.
+- Preserve implicit metric presence when multi-scenario children mix explicit and omitted info masks; concatenate complete fields directly on the ordinary merge path.
+- Sanitize recurrent observation/action padding before learned projections during gradient-enabled evaluation, keeping masked NaNs out of parameter gradients without extra inference tensor work or host synchronization.
+- Remove the unused `SignedLogAbsPower` activation, its factory and private parameter helpers, and the obsolete query-input/query-token normalization settings.
+- Reject scalar heads in xLSTM output LayerNorm, which would otherwise erase the temporal branch; retain scalar-head sLSTM with output normalization disabled.
+- Report gSDE noise standard deviations using the same clamp as sampling, including shared standard-deviation matrices.
+- Preserve recurrent policy history when recording recycled `NEXT_STEP` lanes by explicitly resetting completed worlds before the next policy call.
+- Honor feed-forward PPO NOP window-helper compilation, share its compilation cache with episode sampling, and snapshot reusable compiled outputs.
 - Skip `NEXT_STEP` reset-mask operations and synchronization when no world awaits autoreset, preserving the ordinary-step tensor path used by `SAME_STEP`.
 - Preserve sanitized observations for unstable `NEXT_STEP` worlds during mixed autoresets and partial or empty explicit resets; restrict additional masking to actual instabilities.
 - Add optional environment-only `NEXT_STEP` autoreset with terminal observations returned directly and ignored actions, zero rewards and false done flags on reset-only calls. Retain `SAME_STEP` by default and the included learners' existing requirement; cover mixed CPU/CUDA worlds, partial resets, settling, recording and deferred stepping.
