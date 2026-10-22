@@ -415,7 +415,10 @@ class RMATEncoder(nn.Module):
         self.add_agent_embeddings = config.add_agent_embeddings
         self.max_agents = max_agents
         self.d_model = config.d_model
-        self.token_norm = nn.LayerNorm(config.d_model) if config.normalize_tokens else nn.Identity()
+        self.token_norm = (
+            nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
+            if config.normalize_tokens else nn.Identity()
+        )
         linear_init = make_init_linear_orthogonal(config.linear_init_gain)
         projection_linear_init = (
             linear_init

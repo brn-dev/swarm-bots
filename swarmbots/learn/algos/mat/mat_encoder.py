@@ -194,7 +194,10 @@ class MATEncoder(nn.Module):
         self.joint_obs_embedding = config.joint_obs_embedding and self.has_global_obs
         self.add_agent_embeddings = config.add_agent_embeddings
         self.max_agents = max_agents
-        self.token_norm = nn.LayerNorm(config.d_model) if config.normalize_tokens else nn.Identity()
+        self.token_norm = (
+            nn.LayerNorm(config.d_model, eps=config.layer_norm_eps, bias=config.bias)
+            if config.normalize_tokens else nn.Identity()
+        )
         linear_init = make_init_linear_orthogonal(config.linear_init_gain)
         projection_linear_init = (
             linear_init
@@ -209,6 +212,7 @@ class MATEncoder(nn.Module):
             linear_init=linear_init,
             output_linear_init=projection_linear_init,
             act_fn_cls=config.act_fn_cls,
+            bias=config.bias,
         )
 
         if self.has_global_obs and not self.joint_obs_embedding:
@@ -219,6 +223,7 @@ class MATEncoder(nn.Module):
                 linear_init=linear_init,
                 output_linear_init=projection_linear_init,
                 act_fn_cls=config.act_fn_cls,
+                bias=config.bias,
             )
         else:
             self.global_obs_encoder = None

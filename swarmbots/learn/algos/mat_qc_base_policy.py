@@ -22,6 +22,7 @@ from swarmbots.learn.algos.ppo.ppo import AGENTS_DIM
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOSamplerConfig
+from swarmbots.learn.base_policy import policy_inference_step
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.losses import LossDict, LossMetrics
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
@@ -428,6 +429,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             return actions, torch.cat(log_probs_list, dim=AGENTS_DIM)
         return actions, None
 
+    @policy_inference_step
     def forward(
             self,
             local_obs: torch.Tensor,
@@ -485,6 +487,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
         return log_probs, values, {}, {}, critic_observations
 
+    @policy_inference_step
     def predict_values(
             self,
             local_obs: torch.Tensor,
@@ -604,6 +607,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
         return log_probs, values, critic_observations
 
+    @policy_inference_step
     def act(
             self,
             local_obs: torch.Tensor,

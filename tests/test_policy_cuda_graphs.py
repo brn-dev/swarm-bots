@@ -11,6 +11,8 @@ from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy, MAPPOPolicyCon
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigPolicy, MATOrigPolicyConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy, MATQCXPolicyConfig
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_policy import PPOActorConfig, PPOPolicy, PPOPolicyConfig
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
@@ -34,6 +36,16 @@ def _make_policy(variant: str, env: SimpleNamespace) -> BasePPOPolicy:
             actor_encoder_config=replace(encoder, use_agent_attention=False) if variant == "mappo_mat" else None,
             critic_encoder_config=encoder, continuous_config=distribution,
         ))
+    if variant == "mat_qcx":
+        return MATQCXPolicy(env, MATQCXPolicyConfig(
+            encoder_config=encoder,
+            decoder_config=MATQCXDecoderConfig(
+                d_model=8, nhead=2, num_layers=1, dim_feedforward=16,
+                context_encoder_hidden_dims=[8], action_encoder_dims=[8, 8],
+                assume_agent_mask_is_active_prefix=True,
+            ),
+            continuous_config=distribution,
+        ))
     return MATOrigPolicy(env, MATOrigPolicyConfig(
         encoder_config=encoder,
         decoder_config=MATOrigDecoderConfig(d_model=8, nhead=2, num_layers=1, latent_pi_dim=8),
@@ -43,7 +55,7 @@ def _make_policy(variant: str, env: SimpleNamespace) -> BasePPOPolicy:
 
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.parametrize("variant", ["ppo", "mappo", "mappo_mat", "mat_orig"])
+@pytest.mark.parametrize("variant", ["ppo", "mappo", "mappo_mat", "mat_orig", "mat_qcx"])
 def test_cuda_graph_inference_preserves_outputs_across_policy_calls(variant: str) -> None:
     env = SimpleNamespace(
         n_agents=2, local_obs_dim=3, global_obs_dim=1, hidden_local_vars_dim=1, hidden_global_vars_dim=1,

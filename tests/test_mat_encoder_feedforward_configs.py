@@ -448,6 +448,50 @@ def test_mat_encoder_config_defaults_to_direct_observation_projections() -> None
     assert config.global_obs_encoder_config == MLPConfig()
 
 
+@pytest.mark.parametrize("config_cls", [MATEncoderConfig, RMATEncoderConfig])
+@pytest.mark.parametrize("bias", [False, True])
+@pytest.mark.parametrize("joint_obs_embedding", [False, True])
+def test_observation_embeddings_respect_encoder_bias(
+        config_cls: type[MATEncoderConfig],
+        bias: bool,
+        joint_obs_embedding: bool,
+) -> None:
+    config = config_cls(
+        d_model=8, nhead=2, num_layers=1, dim_feedforward=16,
+        bias=bias, joint_obs_embedding=joint_obs_embedding,
+        local_obs_encoder_config=MLPConfig(hidden_dims=[11]),
+        global_obs_encoder_config=MLPConfig(hidden_dims=[9]),
+    )
+    encoder_cls = RMATEncoder if isinstance(config, RMATEncoderConfig) else MATEncoder
+    encoder = encoder_cls(config, max_agents=3, local_obs_dim=5, global_obs_dim=3)
+
+    for embedding in (encoder.local_obs_encoder, encoder.global_obs_encoder):
+        if embedding is None:
+            continue
+        linears = [module for module in embedding.modules() if isinstance(module, nn.Linear)]
+        assert linears
+        assert all((linear.bias is not None) == bias for linear in linears)
+
+
+@pytest.mark.parametrize("config_cls", [MATEncoderConfig, RMATEncoderConfig])
+@pytest.mark.parametrize("bias", [False, True])
+def test_token_normalization_respects_encoder_settings(
+        config_cls: type[MATEncoderConfig],
+        bias: bool,
+) -> None:
+    config = config_cls(
+        d_model=8, nhead=2, num_layers=1, dim_feedforward=16,
+        normalize_tokens=True, layer_norm_eps=1e-3, bias=bias,
+    )
+    encoder_cls = RMATEncoder if isinstance(config, RMATEncoderConfig) else MATEncoder
+    encoder = encoder_cls(config, max_agents=3, local_obs_dim=5, global_obs_dim=3)
+    tokens = torch.linspace(-0.01, 0.01, config.d_model).expand(2, 3, -1)
+
+    expected = nn.functional.layer_norm(tokens, (config.d_model,), eps=config.layer_norm_eps)
+    torch.testing.assert_close(encoder.token_norm(tokens), expected)
+    assert (encoder.token_norm.bias is not None) == bias
+
+
 def test_rmat_encoder_supports_deep_swiglu_with_inter_module_blocks_and_masks() -> None:
     torch.manual_seed(7)
     encoder = RMATEncoder(

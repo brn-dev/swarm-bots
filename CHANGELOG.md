@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve QCX CUDA-graph inference boundaries and returned outputs across forward, bootstrap and action calls.
+- Honor MAT observation-embedding bias settings and MAT/RMAT token-normalization bias and epsilon settings.
 - Snapshot compiled recurrent PPO world-model windows before helper reuse, preserving separate episode segments and retained samplers under CUDA graphs.
 - Preserve implicit metric presence when multi-scenario children mix explicit and omitted info masks; concatenate complete fields directly on the ordinary merge path.
 - Sanitize recurrent observation/action padding before learned projections during gradient-enabled evaluation, keeping masked NaNs out of parameter gradients without extra inference tensor work or host synchronization.

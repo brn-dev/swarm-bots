@@ -93,9 +93,9 @@ def test_joint_observation_input_preserves_features_and_reaches_both_fields(
     finally:
         hook.remove()
     expected_input = torch.cat((inputs["local_obs"], inputs["global_obs"].unsqueeze(1).expand(-1, 3, -1)), dim=-1)
-    if kind == "rmat":
-        expected_input = expected_input.unsqueeze(1)
-    torch.testing.assert_close(captured[0], expected_input)
+    embedded_inputs = captured[0][:, 0] if kind == "rmat" else captured[0]
+    active_agents = inputs["agent_mask"]
+    torch.testing.assert_close(embedded_inputs[active_agents], expected_input[active_agents])
     assert encoder.global_obs_encoder is None and encoder.joint_obs_embedding
     assert output.shape == (2, 3, 8) and torch.isfinite(output).all()
     loss = (output * torch.arange(1, 9)).masked_select(inputs["agent_mask"].unsqueeze(-1)).sum()
