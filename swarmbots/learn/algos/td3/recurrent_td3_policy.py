@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.algos.off_policy.nop import SACNOPSequenceBatch
+from swarmbots.learn.algos.off_policy.critic_inputs import sanitize_critic_sequence_inputs
 from swarmbots.learn.algos.off_policy.actor_state_critic import (
     ActorStateCriticInputConfig,
     ActorStateJointQNetwork,
@@ -408,6 +409,7 @@ class RecurrentTD3Policy(TD3Policy):
             if forward is None:
                 forward = critic
             return forward(**observations, initial_state=initial_state, time_mask=time_mask, reset_mask=reset_mask)
+        observations = sanitize_critic_sequence_inputs(observations, time_mask=time_mask)
         sequence = local_obs.ndim == 4
         if sequence:
             batch_size, length = local_obs.shape[:2]

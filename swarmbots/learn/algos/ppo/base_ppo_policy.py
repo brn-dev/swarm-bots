@@ -198,21 +198,6 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
             f"Expected actions shape (B, N, A) or (B, T, N, A), got {tuple(actions.shape)}"
         )
 
-    @staticmethod
-    def _pop_loss_weight_alias(
-            weights: dict[str, float],
-            *,
-            aliases: tuple[str, ...],
-    ) -> tuple[str, float] | None:
-        matching_aliases = [alias for alias in aliases if alias in weights]
-        if not matching_aliases:
-            return None
-        if len(matching_aliases) > 1:
-            raise ValueError(f"Multiple aliases for the same loss weight are not allowed: {matching_aliases}")
-        alias = matching_aliases[0]
-        value = float(weights.pop(alias))
-        return alias, value
-
 class DelegatingPPOPolicyTemporalStateMixin:
     policy: BasePPOPolicy[Any, Any]
 

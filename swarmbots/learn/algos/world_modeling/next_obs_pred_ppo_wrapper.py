@@ -27,6 +27,7 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
 )
 from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_target_time_mask
 from swarmbots.learn.losses import LossDict, LossMetrics
+from swarmbots.learn.loss_weights import resolve_loss_weight_aliases
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
@@ -316,82 +317,18 @@ class NextObsPredWrapper(
         return self.policy.requires_previous_actions()
 
     def update_loss_weights(self, **weights: float) -> None:
-        if not weights:
-            return
-
-        remaining_weights = dict(weights)
-
-        scalar_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("scalar_loss_weight", "scalar"),
-        )
-        if scalar_weight is not None:
-            alias, value = scalar_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.scalar_loss_weight = value
-
-        angle_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("angle_loss_weight", "angle"),
-        )
-        if angle_weight is not None:
-            alias, value = angle_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.angle_loss_weight = value
-
-        rot6d_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("rot6d_loss_weight", "rot6d"),
-        )
-        if rot6d_weight is not None:
-            alias, value = rot6d_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.rot6d_loss_weight = value
-
-        binary_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("binary_loss_weight", "binary"),
-        )
-        if binary_weight is not None:
-            alias, value = binary_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.binary_loss_weight = value
-
-        global_scalar_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("global_scalar_loss_weight", "global_scalar"),
-        )
-        if global_scalar_weight is not None:
-            alias, value = global_scalar_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.global_scalar_loss_weight = value
-
-        global_rot6d_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("global_rot6d_loss_weight", "global_rot6d"),
-        )
-        if global_rot6d_weight is not None:
-            alias, value = global_rot6d_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.global_rot6d_loss_weight = value
-
-        world_model_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("world_model_loss_coef", "wm_loss_coef"),
-        )
-        if world_model_weight is not None:
-            alias, value = world_model_weight
-            if value < 0:
-                raise ValueError(f"{alias} must be >= 0, got {value}")
-            self.world_model_loss_coef = value
-
-        self.policy.update_loss_weights(**remaining_weights)
+        resolved, remaining = resolve_loss_weight_aliases(weights, {
+            "scalar_loss_weight": ("scalar_loss_weight", "scalar"),
+            "angle_loss_weight": ("angle_loss_weight", "angle"),
+            "rot6d_loss_weight": ("rot6d_loss_weight", "rot6d"),
+            "binary_loss_weight": ("binary_loss_weight", "binary"),
+            "global_scalar_loss_weight": ("global_scalar_loss_weight", "global_scalar"),
+            "global_rot6d_loss_weight": ("global_rot6d_loss_weight", "global_rot6d"),
+            "world_model_loss_coef": ("world_model_loss_coef", "wm_loss_coef"),
+        })
+        self.policy.update_loss_weights(**remaining)
+        for name, value in resolved.items():
+            setattr(self, name, value)
 
     def _setup_world_model_from_config(self, world_model_config: NOPWorldModelConfig) -> None:
         next_obs_pred_config = world_model_config.next_obs_pred_config

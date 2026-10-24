@@ -10,7 +10,9 @@ import torch
 import torch.nn as nn
 from loguru import logger
 
-from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, LearningRate, _parse_bool
+from swarmbots.learn.algos.base_algorithm import (
+    BaseAlgorithm, LearningRate, _parse_bool, validate_scalar_learning_rate,
+)
 from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout import (
@@ -1270,7 +1272,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                     state[k] = v.to(device)
 
     def _apply_learning_rate(self, lr: LearningRate) -> None:
-        assert isinstance(lr, float)
+        lr = validate_scalar_learning_rate(lr)
         for param_group in self.optimizer.param_groups:
             lr_multiplier = float(param_group.get("lr_multiplier", 1.0))
             param_group["lr"] = lr * lr_multiplier

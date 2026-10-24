@@ -648,17 +648,25 @@ def test_rmat_encoder_accepts_per_layer_xlstm_temporal_specs() -> None:
     assert len(state) == 2
 
 
-def test_slstm_reset_state_with_large_negative_input_is_finite() -> None:
+@pytest.mark.parametrize("input_preact", [-100.0, -1000.0])
+def test_slstm_reset_state_with_large_negative_input_has_finite_outputs_and_gradients(input_preact: float) -> None:
     cell = SLSTMCell(hidden_dim=4, config=SLSTMCellConfig(num_heads=2))
     state = cell.initial_state(batch_size=1)
     gate_inputs = torch.zeros(1, 16)
-    gate_inputs[:, :4] = -1000.0
+    gate_inputs[:, :4] = input_preact
+    gate_inputs[:, 8:12] = 1.0
+    gate_inputs.requires_grad_()
 
     output, next_state = cell(gate_inputs, state)
 
     assert torch.isfinite(output).all()
     for state_tensor in next_state:
         assert torch.isfinite(state_tensor).all()
+    output.sum().backward()
+    assert torch.isfinite(gate_inputs.grad).all()
+    assert torch.count_nonzero(gate_inputs.grad) > 0
+    for parameter in cell.parameters():
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
 
 
 def test_reset_state_clears_nonfinite_values_in_reset_rows() -> None:

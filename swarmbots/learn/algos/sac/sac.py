@@ -1,3 +1,4 @@
+import math
 from typing import Any
 
 import torch
@@ -387,8 +388,8 @@ class SAC(OffPolicyAlgorithm):
                 suffix_name="initial_value",
                 default=1.0,
             )
-            if init_value <= 0:
-                raise ValueError(f"Initial entropy coefficient must be > 0, got {init_value}")
+            if not math.isfinite(init_value) or init_value <= 0:
+                raise ValueError(f"Initial entropy coefficient must be finite and > 0, got {init_value}")
             self.log_ent_coef = torch.log(
                 torch.ones((), device=self.train_device, dtype=torch.float32) * init_value
             ).requires_grad_(True)
@@ -399,9 +400,13 @@ class SAC(OffPolicyAlgorithm):
             return
 
         ent_coef = float(self.ent_coef)
-        if ent_coef < 0:
-            raise ValueError(f"ent_coef must be >= 0, got {ent_coef}")
+        self._validate_fixed_entropy_coefficient(ent_coef)
         self.ent_coef_tensor = torch.tensor(ent_coef, device=self.train_device, dtype=torch.float32)
+
+    @staticmethod
+    def _validate_fixed_entropy_coefficient(ent_coef: float) -> None:
+        if not math.isfinite(ent_coef) or ent_coef < 0:
+            raise ValueError(f"ent_coef must be finite and nonnegative, got {ent_coef}")
 
     def _update_entropy_coefficient(
         self,
@@ -544,23 +549,19 @@ class SAC(OffPolicyAlgorithm):
         self._rebuild_optimizer_steps()
 
     def _apply_learning_rate(self, lr: LearningRate) -> None:
-        assert isinstance(lr, float)
-        actor_critic_lr = self._actor_critic_learning_rate_for_update(self.n_total_updates)
-        for optimizer in (self.actor_optimizer, self.critic_optimizer):
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = actor_critic_lr
-        self._apply_entropy_coefficient_learning_rate()
+        super()._apply_learning_rate(lr)
+        self._apply_entropy_coefficient_learning_rate(base_learning_rate=lr)
 
-    def _apply_entropy_coefficient_learning_rate(self) -> None:
+    def _apply_entropy_coefficient_learning_rate(self, *, base_learning_rate: float | None = None) -> None:
         if self.ent_coef_optimizer is None:
             return
-        learning_rate = self._resolved_ent_coef_learning_rate()
+        learning_rate = self._resolved_ent_coef_learning_rate(base_learning_rate=base_learning_rate)
         for param_group in self.ent_coef_optimizer.param_groups:
             param_group["lr"] = learning_rate
 
-    def _resolved_ent_coef_learning_rate(self) -> float:
+    def _resolved_ent_coef_learning_rate(self, *, base_learning_rate: float | None = None) -> float:
         if self.ent_coef_learning_rate is None:
-            return self.learning_rate
+            return self.learning_rate if base_learning_rate is None else base_learning_rate
         return self.ent_coef_learning_rate
 
     def _validate_hyper_parameters(self) -> None:
@@ -599,13 +600,13 @@ class SAC(OffPolicyAlgorithm):
     def _execute_command(self, cmd: str, params: str, extra_run_metadata: dict[str, Any] | None) -> bool:
         if cmd in {"set_ent_coef", "ent_coef"}:
             ent_coef = float(params)
-            if ent_coef < 0:
-                raise ValueError(f"ent_coef must be >= 0, got {ent_coef}")
+            self._validate_fixed_entropy_coefficient(ent_coef)
+            ent_coef_tensor = torch.tensor(ent_coef, device=self.train_device, dtype=torch.float32)
             self.ent_coef = ent_coef
             self.log_ent_coef = None
             self.ent_coef_optimizer = None
             self._ent_coef_optimizer_step = None
-            self.ent_coef_tensor = torch.tensor(ent_coef, device=self.train_device, dtype=torch.float32)
+            self.ent_coef_tensor = ent_coef_tensor
             logger.warning(f"Setting fixed ent_coef to {ent_coef}")
             return True
         return super()._execute_command(cmd, params, extra_run_metadata)

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Validate live learning-rate and SAC entropy-coefficient updates before mutation, preserving trainer and optimizer settings on rejection while retaining zero fixed learning rates.
+- Apply PPO/SAC/TD3 loss-weight requests atomically through shared alias and finite-value validation, including disabled NOP modules and delegated policy keys.
+- Sanitize agent and timestep padding independently before feed-forward critic projections in recurrent SAC/TD3 APIs. Protect actor-state projections across direct forward and encode entry points; cover optional masks, empty swarms, shared/precomputed features, action candidates and compiled CPU/CUDA gradients while preserving detached states and no-grad fast paths.
+- Sanitize NOP source features before projection using origin-agent validity and scored-window presence, preserving shared-feature reuse and context from unscored steps. Exclude unused action tails and mask local/global targets before nonlinear losses while retaining delta predecessors. Mask transition inputs and inactive predicted states consistently in training and inference, including agent disappearance and reactivation.
+- Clamp sLSTM log gates before exponentiation so large negative reset inputs retain finite backward gradients as well as finite outputs.
 - Separate inactive MultiPayloadGoal payloads from the full robot parking grid before physics settling, with geometry-based clearance and contact regressions across payload shapes and swarm sizes.
 - Expose episode, interval and per-agent probability gSDE noise-reset overrides in checkpoint recording CLI. Retain saved schedules by default, report missing schedules with an explicit override remedy, and verify noise refreshes while recording recycled episodes.
 - Share recurrent critic encoder/state execution and scenario reward-kernel compilation setup, and dispatch fixed model scales by policy configuration type.

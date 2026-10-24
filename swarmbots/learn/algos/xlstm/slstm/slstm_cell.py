@@ -117,8 +117,8 @@ class SLSTMCell(nn.Module):
         # The NXAI reference special-cases an all-zero initial normalizer. Applying it per row
         # preserves the same stabilization when individual RL episodes reset inside a batch.
         m_new = torch.where(normalizer_heads == 0.0, input_preact, m_candidate)
-        input_gate = torch.minimum(torch.exp(input_preact - m_new), torch.ones_like(input_preact))
-        forget_gate = torch.minimum(torch.exp(stabilizer_heads + log_forget - m_new), torch.ones_like(forget_preact))
+        input_gate = torch.exp((input_preact - m_new).clamp_max(0.0))
+        forget_gate = torch.exp((stabilizer_heads + log_forget - m_new).clamp_max(0.0))
 
         cell_new = forget_gate * cell_heads + input_gate * torch.tanh(cell_preact)
         normalizer_new = torch.maximum(

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from enum import Enum
 from typing import Any
 
@@ -18,6 +19,7 @@ from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
+from swarmbots.learn.loss_weights import resolve_loss_weight_aliases
 
 
 class SACNOPLatentSource(Enum):
@@ -369,6 +371,35 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
         if scalar_loss_name == "smooth_l1":
             return nn.SmoothL1Loss(reduction="none")
         raise ValueError(f"Unknown scalar_loss {scalar_loss_name!r}")
+
+
+def update_nop_loss_weights(
+    weights: Mapping[str, float],
+    *,
+    actor_nop: SACNOPModule | None,
+    critic_nop: SACNOPModule | None,
+) -> None:
+    resolved, remaining = resolve_loss_weight_aliases(weights, {
+        "nop_loss_coef": ("nop_loss_coef", "world_model_loss_coef", "wm_loss_coef"),
+        "actor_nop_loss_coef": ("actor_nop_loss_coef", "actor_world_model_loss_coef"),
+        "critic_nop_loss_coef": ("critic_nop_loss_coef", "critic_world_model_loss_coef"),
+    })
+    if remaining:
+        raise ValueError(f"Unknown weights given: {remaining}")
+    updates: list[tuple[SACNOPModule, float]] = []
+    for name, modules in (
+        ("nop_loss_coef", (actor_nop, critic_nop)),
+        ("actor_nop_loss_coef", (actor_nop,)),
+        ("critic_nop_loss_coef", (critic_nop,)),
+    ):
+        if name not in resolved:
+            continue
+        active = [module for module in modules if module is not None]
+        if not active:
+            raise ValueError(f"{name} requires an enabled NOP module")
+        updates.extend((module, resolved[name]) for module in active)
+    for module, value in updates:
+        module.nop_loss_coef = value
 
 
 def normalize_nop_latent_source(source: SACNOPLatentSource | str) -> SACNOPLatentSource:

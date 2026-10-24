@@ -78,8 +78,14 @@ class _ActorStateInputMixin:
             act_fn_cls=act_fn_cls,
         )
 
-    def _append_actor_state(self, local_inputs: torch.Tensor, actor_state: torch.Tensor) -> torch.Tensor:
-        projected_state = self.actor_state_encoder(actor_state.detach())
+    def _append_actor_state(
+        self, local_inputs: torch.Tensor, actor_state: torch.Tensor, *, agent_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        actor_state = actor_state.detach()
+        # This projection runs before the parent critic masks inactive agents.
+        if torch.is_grad_enabled() and agent_mask is not None:
+            actor_state = actor_state.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        projected_state = self.actor_state_encoder(actor_state)
         return torch.cat((local_inputs, projected_state), dim=-1)
 
 
@@ -107,7 +113,8 @@ class ActorStateTransformerTwinCritic(_ActorStateInputMixin, TransformerTwinCrit
         )
 
     def encode(self, *, actor_state: torch.Tensor, local_inputs: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        return super().encode(local_inputs=self._append_actor_state(local_inputs, actor_state), **kwargs)
+        local_inputs = self._append_actor_state(local_inputs, actor_state, agent_mask=kwargs.get("agent_mask"))
+        return super().encode(local_inputs=local_inputs, **kwargs)
 
     def forward(
         self,
@@ -116,7 +123,8 @@ class ActorStateTransformerTwinCritic(_ActorStateInputMixin, TransformerTwinCrit
         local_obs: torch.Tensor,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return super().forward(local_obs=self._append_actor_state(local_obs, actor_state), **kwargs)
+        local_obs = self._append_actor_state(local_obs, actor_state, agent_mask=kwargs.get("agent_mask"))
+        return super().forward(local_obs=local_obs, **kwargs)
 
 
 class ActorStateJointQNetwork(_ActorStateInputMixin, JointQNetwork):
@@ -149,7 +157,8 @@ class ActorStateJointQNetwork(_ActorStateInputMixin, JointQNetwork):
         local_obs: torch.Tensor,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        return super().forward_with_latents(local_obs=self._append_actor_state(local_obs, actor_state), **kwargs)
+        local_obs = self._append_actor_state(local_obs, actor_state, agent_mask=kwargs.get("agent_mask"))
+        return super().forward_with_latents(local_obs=local_obs, **kwargs)
 
     def forward(
         self,
@@ -186,7 +195,8 @@ class ActorStateJointTwinCritic(_ActorStateInputMixin, JointTwinCritic):
         )
 
     def encode(self, *, actor_state: torch.Tensor, local_inputs: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        return super().encode(local_inputs=self._append_actor_state(local_inputs, actor_state), **kwargs)
+        local_inputs = self._append_actor_state(local_inputs, actor_state, agent_mask=kwargs.get("agent_mask"))
+        return super().encode(local_inputs=local_inputs, **kwargs)
 
     def forward(
         self,
@@ -195,4 +205,5 @@ class ActorStateJointTwinCritic(_ActorStateInputMixin, JointTwinCritic):
         local_obs: torch.Tensor,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        return super().forward(local_obs=self._append_actor_state(local_obs, actor_state), **kwargs)
+        local_obs = self._append_actor_state(local_obs, actor_state, agent_mask=kwargs.get("agent_mask"))
+        return super().forward(local_obs=local_obs, **kwargs)

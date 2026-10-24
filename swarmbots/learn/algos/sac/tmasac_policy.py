@@ -23,6 +23,7 @@ from swarmbots.learn.algos.off_policy.nop import (
     SACNOPLatentSource,
     SACNOPModule,
     normalize_nop_latent_source,
+    update_nop_loss_weights,
 )
 from swarmbots.learn.algos.sac.scenario_obs_encoder import (
     TMASACScenarioEncoderConfig,
@@ -783,35 +784,7 @@ class TMASACPolicy(BaseSACPolicy):
         return metrics
 
     def update_loss_weights(self, **weights: float) -> None:
-        if not weights:
-            return
-        remaining_weights = dict(weights)
-        nop_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("nop_loss_coef", "world_model_loss_coef", "wm_loss_coef"),
-        )
-        if nop_weight is not None:
-            alias, value = nop_weight
-            self._set_all_nop_loss_coefs(alias=alias, value=value)
-
-        actor_nop_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("actor_nop_loss_coef", "actor_world_model_loss_coef"),
-        )
-        if actor_nop_weight is not None:
-            alias, value = actor_nop_weight
-            self._set_nop_loss_coef(self.actor_nop, alias=alias, value=value)
-
-        critic_nop_weight = self._pop_loss_weight_alias(
-            remaining_weights,
-            aliases=("critic_nop_loss_coef", "critic_world_model_loss_coef"),
-        )
-        if critic_nop_weight is not None:
-            alias, value = critic_nop_weight
-            self._set_nop_loss_coef(self.critic_nop, alias=alias, value=value)
-
-        if remaining_weights:
-            raise ValueError(f"Unknown weights given: {remaining_weights}")
+        update_nop_loss_weights(weights, actor_nop=self.actor_nop, critic_nop=self.critic_nop)
 
     def encode_shared_observations(
             self,
@@ -1264,36 +1237,3 @@ class TMASACPolicy(BaseSACPolicy):
             if module is None:
                 continue
             yield from module.parameters()
-
-    @staticmethod
-    def _pop_loss_weight_alias(
-            weights: dict[str, float],
-            *,
-            aliases: tuple[str, ...],
-    ) -> tuple[str, float] | None:
-        matching_aliases = [alias for alias in aliases if alias in weights]
-        if not matching_aliases:
-            return None
-        if len(matching_aliases) > 1:
-            raise ValueError(f"Multiple aliases for the same loss weight are not allowed: {matching_aliases}")
-        alias = matching_aliases[0]
-        value = float(weights.pop(alias))
-        return alias, value
-
-    def _set_all_nop_loss_coefs(self, *, alias: str, value: float) -> None:
-        self._validate_nop_loss_coef(alias=alias, value=value)
-        if self.actor_nop is not None:
-            self.actor_nop.nop_loss_coef = value
-        if self.critic_nop is not None:
-            self.critic_nop.nop_loss_coef = value
-
-    def _set_nop_loss_coef(self, module: SACNOPModule | None, *, alias: str, value: float) -> None:
-        self._validate_nop_loss_coef(alias=alias, value=value)
-        if module is None:
-            raise ValueError(f"{alias} was provided but the corresponding NOP module is disabled.")
-        module.nop_loss_coef = value
-
-    @staticmethod
-    def _validate_nop_loss_coef(*, alias: str, value: float) -> None:
-        if value < 0:
-            raise ValueError(f"{alias} must be >= 0, got {value}")

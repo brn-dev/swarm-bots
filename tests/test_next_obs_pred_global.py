@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin, PredictDeltaMode
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamples
 
 
@@ -170,6 +170,28 @@ class NextObsPredGlobalTests(unittest.TestCase):
 
         self.assertAlmostEqual(loss.item(), 0.0)
         self.assertEqual(metrics["scalar_loss"], 0.0)
+
+    def test_delta_targets_retain_unscored_predecessors_and_initial_observations(self) -> None:
+        for mode in (PredictDeltaMode.PER_STEP_DELTA, PredictDeltaMode.INITIAL_DELTA):
+            with self.subTest(mode=mode):
+                harness = _make_harness(
+                    config=NextObsPredConfig(
+                        local_scalar_target_indices=[0], global_scalar_target_indices=[0], predict_delta=mode,
+                    ),
+                    local_scalars_predictor=nn.Identity(), global_scalars_predictor=nn.Identity(),
+                )
+                origin = 10.0 if mode == PredictDeltaMode.PER_STEP_DELTA else 13.0
+                loss, metrics = harness.compute_next_obs_pred_loss(
+                    local_latents=torch.full((1, 2, 1), 4.0),
+                    local_obs=torch.tensor([[[origin], [origin + 10.0]]]),
+                    global_obs=torch.tensor([[origin]]),
+                    next_local_obs=torch.tensor([[[[13.0], [23.0]], [[17.0], [27.0]]]]),
+                    next_global_obs=torch.tensor([[[13.0], [17.0]]]),
+                    actions=torch.zeros(1, 2, 2, 1), time_mask=torch.tensor([[False, True]]),
+                )
+                self.assertEqual(loss.item(), 0.0)
+                self.assertEqual(metrics["scalar_loss"], 0.0)
+                self.assertEqual(metrics["global_scalar_loss"], 0.0)
 
     def test_local_loss_uses_next_state_agent_mask(self) -> None:
         harness = _make_harness(

@@ -12,6 +12,7 @@ from swarmbots.learn.action_dists.action_dist import ActionMetricsSplitterInput
 from swarmbots.learn.algos.base_algorithm import (
     BaseAlgorithm,
     LearningRate,
+    validate_scalar_learning_rate,
 )
 from swarmbots.learn.algos.off_policy import (
     OffPolicyReplayBuffer,
@@ -509,16 +510,19 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             compile_mode=self.sac_compile_mode,
         )
 
-    def _actor_critic_learning_rate_for_update(self, update_idx: int) -> float:
+    def _actor_critic_learning_rate_for_update(
+        self, update_idx: int, *, learning_rate: float | None = None,
+    ) -> float:
+        base_rate = self.learning_rate if learning_rate is None else learning_rate
         if self.learning_rate_warmup_updates <= 0:
-            return self.learning_rate
+            return base_rate
         if update_idx >= self.learning_rate_warmup_updates:
-            return self.learning_rate
+            return base_rate
 
         progress = max(0.0, float(update_idx) / float(self.learning_rate_warmup_updates))
         factor = self.learning_rate_warmup_start_factor + (1.0 - self.learning_rate_warmup_start_factor) * progress
 
-        lr = self.learning_rate * factor
+        lr = base_rate * factor
         logger.warning(f"[Warmup] LR {lr:.3e}")
         return lr
 
@@ -797,8 +801,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         pass
 
     def _apply_learning_rate(self, lr: LearningRate) -> None:
-        assert isinstance(lr, float)
-        actor_critic_lr = self._actor_critic_learning_rate_for_update(self.n_total_updates)
+        lr = validate_scalar_learning_rate(lr)
+        actor_critic_lr = self._actor_critic_learning_rate_for_update(self.n_total_updates, learning_rate=lr)
         for optimizer in (self.actor_optimizer, self.critic_optimizer):
             for param_group in optimizer.param_groups:
                 param_group["lr"] = actor_critic_lr

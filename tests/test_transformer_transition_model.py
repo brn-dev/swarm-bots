@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from copy import deepcopy
 
 import pytest
 import torch
@@ -78,3 +79,63 @@ def test_deep_transition_compilation_preserves_multi_step_predictions_and_gradie
     actual[mask].square().mean().backward()
     for left, right in zip(eager.parameters(), compiled_model.parameters(), strict=True):
         torch.testing.assert_close(left.grad, right.grad)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("predict_delta", [False, True])
+@pytest.mark.parametrize("time_varying_mask", [False, True])
+def test_transition_padding_preserves_gradients_and_history_across_execution_modes(
+    device: str, compiled: bool, predict_delta: bool, time_varying_mask: bool,
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    torch.manual_seed(35)
+    model = TransformerTransitionModel(TransformerTransitionModelConfig(
+        n_agents=3, latent_dim=8, action_dim=2, d_model=8, nhead=2, num_layers=1,
+        dim_feedforward=16, predict_delta=predict_delta,
+    )).to(device)
+    reference = deepcopy(model)
+    masks = torch.tensor([
+        [[True, False, True], [True, True, False], [True, False, True]],
+        [[True, True, False], [True, False, True], [True, True, False]],
+    ], device=device)
+    if not time_varying_mask:
+        masks = masks[:, :1].expand(-1, 3, -1)
+    agent_mask = masks if time_varying_mask else masks[:, 0]
+    latents = torch.randn(2, 3, 8, device=device)
+    actions = torch.randn(2, 3, 3, 2, device=device)
+    clean_latents = latents.masked_fill(~masks[:, 0].unsqueeze(-1), 0.0).requires_grad_()
+    padded_latents = latents.masked_fill(~masks[:, 0].unsqueeze(-1), torch.nan).requires_grad_()
+    clean_actions = actions.masked_fill(~masks.unsqueeze(-1), 0.0).requires_grad_()
+    padded_actions = actions.masked_fill(~masks.unsqueeze(-1), torch.nan).requires_grad_()
+    predict = model.predict_n_steps
+    if compiled:
+        torch.compiler.reset()
+        predict = torch.compile(predict, backend="aot_eager", fullgraph=True)
+    try:
+        expected = reference.predict_n_steps(clean_latents, clean_actions, agent_mask)
+        actual = predict(padded_latents, padded_actions, agent_mask)
+        torch.testing.assert_close(actual, expected)
+        assert torch.count_nonzero(actual[~masks]) == 0
+        expected[masks].square().mean().backward()
+        actual[masks].square().mean().backward()
+        for (name, parameter), (_, expected_parameter) in zip(
+            model.named_parameters(), reference.named_parameters(), strict=True,
+        ):
+            assert torch.isfinite(parameter.grad).all(), name
+            torch.testing.assert_close(parameter.grad, expected_parameter.grad, msg=name)
+        for actual_input, expected_input, valid in (
+            (padded_latents, clean_latents, masks[:, 0]), (padded_actions, clean_actions, masks),
+        ):
+            assert torch.isfinite(actual_input.grad).all()
+            torch.testing.assert_close(actual_input.grad, expected_input.grad)
+            assert actual_input.grad[valid].abs().sum() > 0
+            assert torch.count_nonzero(actual_input.grad[~valid]) == 0
+        model.eval()
+        with torch.no_grad():
+            evaluated = predict(padded_latents, padded_actions, agent_mask)
+        torch.testing.assert_close(evaluated, actual.detach())
+    finally:
+        if compiled:
+            torch.compiler.reset()

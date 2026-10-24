@@ -12,6 +12,7 @@ from swarmbots.learn.algos.off_policy.actor_state_critic import (
     actor_state_critic_input,
     actor_state_input_dim,
 )
+from swarmbots.learn.algos.off_policy.critic_inputs import sanitize_critic_sequence_inputs
 
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.off_policy.replay_buffer import (
@@ -1134,13 +1135,18 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             )
             return q1, q2, None if target or self.critic_nop is None else latents, next_state
 
-        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+        critic_inputs = sanitize_critic_sequence_inputs(dict(
             local_obs=local_obs,
             global_obs=global_obs,
             actions=actions,
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+            actor_state=actor_state,
+        ), time_mask=time_mask)
+        actor_state = critic_inputs.pop("actor_state")
+        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+            **critic_inputs,
             scenario_ids=None,
         )
         flat_inputs.pop("scenario_ids")
@@ -1231,13 +1237,18 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 )
             shared_latents = precomputed_shared_latents
             next_state = precomputed_shared_state
-        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+        critic_inputs = sanitize_critic_sequence_inputs(dict(
             local_obs=shared_latents,
             global_obs=global_obs,
-            actions=actions if num_action_samples == 1 else None,
+            actions=actions,
             hidden_local_vars=hidden_local_vars,
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
+        ), time_mask=time_mask)
+        critic_actions = cast(torch.Tensor, critic_inputs.pop("actions"))
+        flat_inputs, batch_size, sequence_length = self._flatten_sequence_inputs(
+            **critic_inputs,
+            actions=critic_actions if num_action_samples == 1 else None,
             scenario_ids=None,
         )
         if num_action_samples > 1:
@@ -1245,7 +1256,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                 name: expand_action_sample_batch(value, num_action_samples)
                 for name, value in flat_inputs.items()
             }
-            flat_inputs["actions"] = actions.reshape(-1, *actions.shape[-2:])
+            flat_inputs["actions"] = critic_actions.reshape(-1, *critic_actions.shape[-2:])
         critic = self.critic_target if target else self.critic
         q1, q2, critic_latents = critic(
             local_obs=cast(torch.Tensor, flat_inputs["local_obs"]),

@@ -1,5 +1,6 @@
 import abc
 import json
+import math
 import os
 import pathlib
 import queue
@@ -47,6 +48,14 @@ MIN_ITERATIONS_FOR_BEST = 100
 
 LearningRate = float | list[float] | dict[str, float]
 LearnIterationHook = Callable[["BaseAlgorithm", dict[str, Any], int], None]
+
+
+def validate_scalar_learning_rate(learning_rate: LearningRate) -> float:
+    if not isinstance(learning_rate, float):
+        raise TypeError("learning_rate must be a float")
+    if not math.isfinite(learning_rate) or learning_rate < 0.0:
+        raise ValueError("learning_rate must be finite and nonnegative")
+    return learning_rate
 
 MEAN_STD_LOG_METRIC_KEYS = frozenset({
     "rollout_time",
@@ -374,8 +383,8 @@ class BaseAlgorithm(abc.ABC):
         return self
 
     def set_learning_rate(self, lr: LearningRate) -> None:
-        self.learning_rate = lr
         self._apply_learning_rate(lr)
+        self.learning_rate = lr
 
     def _write_run_metadata(self, run_dir: Path, extra_run_metadata: dict[str, Any] | None) -> None:
         metadata: dict[str, Any] = {

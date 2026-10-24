@@ -187,11 +187,6 @@ class TransformerTransitionModel(nn.Module):
         Returns:
             z_{t+1} prediction: (batch, n_agents, latent_dim)
         """
-        src = torch.cat([z_t, a_t], dim=-1)
-        x = self.coembed(src)
-        if self.agent_embeddings is not None:
-            x = x + self.agent_embeddings
-
         src_key_padding_mask = None
         if agent_mask is not None:
             if agent_mask.ndim != 2 or agent_mask.shape != (z_t.shape[0], self.n_agents):
@@ -204,11 +199,20 @@ class TransformerTransitionModel(nn.Module):
             # synchronize CUDA. Empty rows can make native inference attention non-finite.
             src_key_padding_mask = ~agent_mask
 
+        src = torch.cat([z_t, a_t], dim=-1)
+        if src_key_padding_mask is not None:
+            src.masked_fill_(src_key_padding_mask.unsqueeze(-1), 0.0)
+        x = self.coembed(src)
+        if self.agent_embeddings is not None:
+            x = x + self.agent_embeddings
+
         h = self.encoder(x, src_key_padding_mask=src_key_padding_mask)
         pred = self.head(h)
-        if self.predict_delta:
-            return z_t + pred
-        return pred
+        prediction = z_t + pred if self.predict_delta else pred
+        # Absent tokens can reappear later, so training and inference must carry the same masked history.
+        return prediction if src_key_padding_mask is None else prediction.masked_fill(
+            src_key_padding_mask.unsqueeze(-1), 0.0,
+        )
 
     def predict_n_steps(
         self,

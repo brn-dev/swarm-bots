@@ -18,6 +18,7 @@ from swarmbots.learn.algos.off_policy.nop import (
     SACNOPLatentSource,
     SACNOPModule,
     normalize_nop_latent_source,
+    update_nop_loss_weights,
 )
 from swarmbots.learn.algos.off_policy.actor_heads import (
     TMASACActorHeadConfig,
@@ -397,24 +398,4 @@ class TD3Policy(BasePolicy):
         }
 
     def update_loss_weights(self, **weights: float) -> None:
-        remaining = dict(weights)
-        for aliases, modules in (
-            (("nop_loss_coef", "world_model_loss_coef", "wm_loss_coef"), (self.actor_nop, self.critic_nop)),
-            (("actor_nop_loss_coef", "actor_world_model_loss_coef"), (self.actor_nop,)),
-            (("critic_nop_loss_coef", "critic_world_model_loss_coef"), (self.critic_nop,)),
-        ):
-            present = [alias for alias in aliases if alias in remaining]
-            if len(present) > 1:
-                raise ValueError(f"Use one loss weight alias: {present}")
-            if present:
-                alias = present[0]
-                value = remaining.pop(alias)
-                if not np.isfinite(value) or value < 0:
-                    raise ValueError(f"{alias} must be finite and nonnegative")
-                active = [module for module in modules if module is not None]
-                if not active:
-                    raise ValueError(f"{alias} requires an enabled NOP module")
-                for module in active:
-                    module.nop_loss_coef = value
-        if remaining:
-            raise ValueError(f"Unsupported DDPG/TD3 loss weights: {tuple(remaining)}")
+        update_nop_loss_weights(weights, actor_nop=self.actor_nop, critic_nop=self.critic_nop)

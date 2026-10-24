@@ -529,6 +529,16 @@ class NextObsPredMixin(abc.ABC):
             time_mask=time_mask,
         )
 
+        source_valid = agent_mask[:, 0] if agent_mask is not None and agent_mask.ndim == 3 else agent_mask
+        if time_mask is not None:
+            # Source features belong to the origin, including context used by unscored transitions.
+            scored_origin = time_mask.any(dim=1, keepdim=True)
+            source_valid = scored_origin if source_valid is None else source_valid & scored_origin
+            # Unscored actions still matter when a later prediction is scored.
+            needed_transitions = time_mask.flip(1).cumsum(dim=1).flip(1) > 0
+            actions = actions.masked_fill(~needed_transitions[..., None, None], 0.0)
+        if source_valid is not None:
+            local_latents = local_latents.masked_fill(~source_valid.unsqueeze(-1), 0.0)
         local_latents = self.pre_transition_transform(local_latents)
 
         latent_preds, base_shape = self._predict_latents_and_base_shape(
@@ -540,6 +550,7 @@ class NextObsPredMixin(abc.ABC):
         )
         latent_preds = self.pre_predictors_transform(latent_preds)
 
+        # Build delta bases before masking targets: an unscored predecessor can supply a scored delta.
         base_local_obs = None
         if self.has_local_next_obs_pred_targets and self.predict_delta:
             if local_obs is None:
@@ -563,6 +574,7 @@ class NextObsPredMixin(abc.ABC):
             agent_mask=effective_loss_agent_mask,
             time_mask=time_mask,
         )
+        next_local_obs, base_local_obs = self._mask_target_observations(next_local_obs, base_local_obs, valid_mask)
 
         scalar_loss = self.compute_scalar_loss(
             latent_preds=latent_preds,
@@ -601,6 +613,9 @@ class NextObsPredMixin(abc.ABC):
                 base_shape=global_latent_preds.shape[:-1],
                 time_mask=time_mask,
                 agent_mask=effective_loss_agent_mask,
+            )
+            next_global_obs, base_global_obs = self._mask_target_observations(
+                next_global_obs, base_global_obs, global_valid_mask,
             )
         global_scalar_loss = self.compute_global_scalar_loss(
             global_latent_preds=global_latent_preds,
@@ -674,6 +689,15 @@ class NextObsPredMixin(abc.ABC):
             flattened.loss_agent_mask,
             flattened.time_mask,
         )
+
+    @staticmethod
+    def _mask_target_observations(
+        next_obs: torch.Tensor, base_obs: torch.Tensor | None, valid_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if valid_mask is None:
+            return next_obs, base_obs
+        padding = ~valid_mask.unsqueeze(-1)
+        return next_obs.masked_fill(padding, 0.0), None if base_obs is None else base_obs.masked_fill(padding, 0.0)
 
     @staticmethod
     def _normalize_indices(indices: Optional[list[int]]) -> Optional[list[int]]:
