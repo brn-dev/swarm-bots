@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Separate inactive MultiPayloadGoal payloads from the full robot parking grid before physics settling, with geometry-based clearance and contact regressions across payload shapes and swarm sizes.
+- Expose episode, interval and per-agent probability gSDE noise-reset overrides in checkpoint recording CLI. Retain saved schedules by default, report missing schedules with an explicit override remedy, and verify noise refreshes while recording recycled episodes.
+- Share recurrent critic encoder/state execution and scenario reward-kernel compilation setup, and dispatch fixed model scales by policy configuration type.
 - Reject zero, negative and non-finite automatic PPO learning rates at configuration, live-update, controller-update and optimizer-restore boundaries. Revalidate mutable configurations when consumed, validate controller requests before capping, and reject invalid saved base/optimizer-group rates and parameter LR multipliers before changing trainer state.
 - Isolate caller-provided action-distribution config lists and derive Gumbel temperature metadata from its runtime buffer, keeping policy configuration reports consistent after temperature updates and checkpoint loading.
 - Consolidate device resolution and NumPy conversion, and share scenario observation/action-space construction while retaining scenario-specific public and privileged fields.

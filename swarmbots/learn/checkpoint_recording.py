@@ -95,10 +95,17 @@ def record_checkpoint(
             )
         )
         apply_env_state(env, checkpoint["env_state"])
-        if gsde_reset_mode is None and policy.gsde_enabled:
-            gsde_reset_mode = gsde_reset_mode_from_settings(
-                checkpoint["hyper_parameters"]["gsde_reset_mode"]
-            )
+        if policy.gsde_enabled:
+            if gsde_reset_mode is None:
+                saved_reset_mode = checkpoint["hyper_parameters"].get("gsde_reset_mode")
+                if saved_reset_mode is None:
+                    raise ValueError(
+                        "The gSDE checkpoint must contain hyper_parameters['gsde_reset_mode']; "
+                        "supply gsde_reset_mode explicitly or use a --gsde-reset-* recording option."
+                    )
+                gsde_reset_mode = gsde_reset_mode_from_settings(saved_reset_mode)
+        elif gsde_reset_mode is not None:
+            raise ValueError("gsde_reset_mode is only supported for gSDE checkpoint recordings")
         del checkpoint
         _record_episodes(
             env.unwrapped,

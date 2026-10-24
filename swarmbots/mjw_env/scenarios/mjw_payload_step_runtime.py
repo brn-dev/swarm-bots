@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import shutil
-import sys
 from typing import TYPE_CHECKING, Callable
 
 import torch
+
+from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 
 if TYPE_CHECKING:
     from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
@@ -135,19 +135,9 @@ class PayloadStepMJWScenarioRuntime(PayloadPlaneMJWScenarioRuntime):
             ...,
             tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
         ] = _compute_payload_step_reward_extras_kernel
-        if scenario.compile_reward_kernel:
-            if not hasattr(torch, "compile"):
-                raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")
-            if sys.platform == "win32" and shutil.which("cl") is None:
-                raise RuntimeError(
-                    "compile_reward_kernel=True on this Windows setup requires cl.exe on PATH for torch.compile."
-                )
-            self._payload_step_reward_extras_kernel = torch.compile(
-                self._payload_step_reward_extras_kernel,
-                mode=scenario.reward_kernel_compile_mode,
-                fullgraph=False,
-                dynamic=False,
-            )
+        self._payload_step_reward_extras_kernel = compile_reward_kernel(
+            self._payload_step_reward_extras_kernel, enabled=scenario.compile_reward_kernel, mode=scenario.reward_kernel_compile_mode,
+        )
 
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: PayloadPlaneResetBatch) -> None:
         super().apply_reset_batch(world_idx=world_idx, reset_batch=reset_batch)

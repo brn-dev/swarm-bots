@@ -58,9 +58,18 @@ If PopArt was customized through training's `algorithm_kwargs`, supply matching 
 | `--camera` | `-1` for the scenario camera; names and numeric IDs are accepted |
 | `--fps` | 30; changes playback speed, with every control step recorded |
 | `--stochastic` | Action sampling instead of deterministic modes |
+| `--gsde-reset-episode` | Override the saved gSDE schedule with episode-only noise resets |
+| `--gsde-reset-interval STEPS` | Override with noise resets every `STEPS` control steps, plus episode starts |
+| `--gsde-reset-probability P` | Override with independent per-agent noise resets each step, with `0 < P < 1` |
 | `--compile-policy` | Policy compilation; requires working [GPU setup](gpu_setup.md) |
 
-For DDPG/TD3 stochastic recordings, saved exploration-noise settings are restored; `--exploration-noise` overrides them. Stochastic gSDE recordings restore the saved noise-reset schedule, defaulting to episode-only resets when absent.
+For DDPG/TD3 stochastic recordings, saved exploration-noise settings are restored; `--exploration-noise` overrides them. Stochastic gSDE checkpoint recordings initialize fresh noise and restore the saved noise-reset schedule. Noise always refreshes at episode starts, including recycled recording lanes. One of the mutually exclusive `--gsde-reset-*` options can override the schedule; these options require a gSDE checkpoint. Without an override, the checkpoint must contain its saved schedule.
+
+For example, a stochastic gSDE recording with noise refreshed every six control steps:
+
+```bash
+swarmbots record SwarmBots-WallEasy-v0 --checkpoint checkpoints/gsde.pt --variant mat_qcx --continuous-action-dist gsde --stochastic --gsde-reset-interval 6
+```
 
 `--episode-length`, `--scenario-kwargs`, and `--env-kwargs` can change the task for qualitative inspection. JSON overrides accept scalar/list settings. Run `swarmbots record --help` for all options.
 
@@ -104,6 +113,8 @@ print(video_folder)
 ```
 
 Use the actual checkpoint path. Pass `model_scale`, `policy_kwargs`, `use_nop`, and `continuous_action_dist` as needed to match training.
+
+The Python `gsde_reset_mode` argument accepts `GSDEEpisodeResetMode()`, `GSDEIntervalResetMode(interval=6)`, or `GSDEProbabilityResetMode(probability=0.25)` from `swarmbots.learn.gsde_reset`. It overrides the saved checkpoint schedule.
 
 For a policy already loaded in Python:
 

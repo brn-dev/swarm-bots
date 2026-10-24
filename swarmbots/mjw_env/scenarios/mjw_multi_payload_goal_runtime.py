@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import shutil
-import sys
 from typing import TYPE_CHECKING, Callable
 
 import mujoco
 import numpy as np
 import torch
+
+from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 
 if TYPE_CHECKING:
     from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import MJWMultiPayloadGoalScenario
@@ -242,19 +242,9 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=bindings.device,
         )
         self._reward_kernel: Callable[..., MultiPayloadGoalRewardOutput] = _compute_multi_payload_goal_reward_kernel
-        if scenario.compile_reward_kernel:
-            if not hasattr(torch, "compile"):
-                raise RuntimeError("compile_reward_kernel=True requires torch.compile support.")
-            if sys.platform == "win32" and shutil.which("cl") is None:
-                raise RuntimeError(
-                    "compile_reward_kernel=True on this Windows setup requires cl.exe on PATH for torch.compile."
-                )
-            self._reward_kernel = torch.compile(
-                self._reward_kernel,
-                mode=scenario.reward_kernel_compile_mode,
-                fullgraph=False,
-                dynamic=False,
-            )
+        self._reward_kernel = compile_reward_kernel(
+            self._reward_kernel, enabled=scenario.compile_reward_kernel, mode=scenario.reward_kernel_compile_mode,
+        )
 
     @property
     def global_obs(self) -> torch.Tensor:
@@ -452,6 +442,12 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=self.bindings.device,
             dtype=torch.float32,
         ).view(1, -1) * self._payload_row_spacing(inactive_base[0])
+        payload_position[:, :, 1] = (
+            self.bindings.inactive_unit_positions[:, 1].amax()
+            + self.scenario.swarm.max_unit_extent
+            + self._goal_sampler.layout.footprint[1] / 2.0
+            + self.scenario.payload_spawn_margin
+        )
         payload_position[:, :, 2] = float(self.scenario.payload_radius)
         active_row_spacing = self._payload_row_spacing(common_reset_batch.swarm_start[:, 0])
 

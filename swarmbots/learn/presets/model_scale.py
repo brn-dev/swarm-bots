@@ -9,17 +9,29 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicyConfig
 from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicyConfig
+from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicyConfig
+from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigPolicyConfig
 from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicyConfig
 from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadKind
 from swarmbots.learn.algos.off_policy.actor_state_critic import ActorStateCriticInputConfig
+from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicyConfig
+from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicyConfig
+from swarmbots.learn.algos.td3.td3_policy import TD3PolicyConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig
 from swarmbots.learn.algos.xlstm.slstm import SLSTMTemporalSequenceModel
+from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.nn_components.feed_forward import MLPConfig
 from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 from swarmbots.learn.nn_components.residual_mlp import ResidualMLPConfig
 
 DEFAULT_MODEL_SCALE = "5M-2L NOP1M"
+PolicyConfig = (
+    PPOPolicyConfig | MAPPOPolicyConfig | MATIndPolicyConfig | MATQCXPolicyConfig
+    | MATOrigPolicyConfig | TMASACPolicyConfig | TD3PolicyConfig
+)
 
 
 @dataclass(frozen=True)
@@ -413,7 +425,7 @@ def _value_head_at_scale(config: MATCriticConfig, layout: ScaleLayout) -> MATCri
 
 def _mlp_on_policy(config: Any, layout: ScaleLayout) -> Any:
     actor = config.actor_config
-    if hasattr(actor, "latent_pi_dim_per_agent"):
+    if isinstance(config, PPOPolicyConfig):
         actor = replace(
             actor,
             hidden_dims=list(layout.ppo_backbone),
@@ -601,21 +613,23 @@ def _off_policy(config: Any, layout: ScaleLayout) -> Any:
     return replace(config, **updates)
 
 
-def model_config_at_scale(config: Any, scale: str = DEFAULT_MODEL_SCALE) -> Any:
+def model_config_at_scale(config: PolicyConfig, scale: str = DEFAULT_MODEL_SCALE) -> PolicyConfig:
     """Choose a reviewed layout by architecture, never by observed counts."""
     layout = _layout(scale)
-    if hasattr(config, "actor_config"):
+    if isinstance(config, (PPOPolicyConfig, MAPPOPolicyConfig)):
         return _mlp_on_policy(config, layout)
-    if hasattr(config, "actor_encoder_config") and not isinstance(config, MATDecPolicyConfig):
+    if isinstance(config, (TMASACPolicyConfig, TD3PolicyConfig)):
         return _off_policy(config, layout)
-    return _mat(config, layout)
+    if isinstance(config, (MATIndPolicyConfig, MATQCXPolicyConfig, MATOrigPolicyConfig)):
+        return _mat(config, layout)
+    raise TypeError(f"Unsupported policy configuration: {type(config).__name__}")
 
 
-def make_policy_at_scale(policy_class: type, env: Any, config: Any, scale: str) -> Any:
+def make_policy_at_scale(policy_class: type[BasePolicy], env: Any, config: PolicyConfig, scale: str) -> BasePolicy:
     layout = _layout(scale)
     resolved = model_config_at_scale(config, scale)
     policy = policy_class(env=env, config=resolved)
-    flattened_ppo = hasattr(config, "actor_config") and not hasattr(config, "critic_encoder_config")
+    flattened_ppo = isinstance(config, PPOPolicyConfig)
     shared = flattened_ppo or getattr(config, "shared_encoder_config", None) is not None
     policy.model_scale = {
         "name": layout.name,

@@ -135,6 +135,56 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
         initial_state: RecurrentCriticState | None = None,
         reset_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, RecurrentCriticState]:
+        primary_latents, secondary_latents, next_state = self._encode_streams(
+            local_inputs=local_inputs, global_inputs=global_inputs, actions=actions,
+            hidden_local_vars=hidden_local_vars, hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask, time_mask=time_mask, initial_state=initial_state, reset_mask=reset_mask,
+        )
+        return self._nop_latents(primary_latents, secondary_latents), next_state
+
+    def forward(
+        self,
+        *,
+        local_obs: torch.Tensor,
+        global_obs: torch.Tensor,
+        actions: torch.Tensor,
+        hidden_local_vars: torch.Tensor | None,
+        hidden_global_vars: torch.Tensor | None,
+        agent_mask: torch.Tensor | None,
+        time_mask: torch.Tensor | None = None,
+        initial_state: RecurrentCriticState | None = None,
+        reset_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RecurrentCriticState]:
+        q1_latents, q2_latents, next_state = self._encode_streams(
+            local_inputs=local_obs, global_inputs=global_obs, actions=actions,
+            hidden_local_vars=hidden_local_vars, hidden_global_vars=hidden_global_vars,
+            agent_mask=agent_mask, time_mask=time_mask, initial_state=initial_state, reset_mask=reset_mask,
+        )
+        return (
+            self._evaluate_q_head(self.q1, q1_latents, agent_mask),
+            self._evaluate_q_head(self.q2, q2_latents, agent_mask),
+            self._nop_latents(q1_latents, q2_latents),
+            next_state,
+        )
+
+    def _nop_latents(self, primary_latents: torch.Tensor, secondary_latents: torch.Tensor) -> torch.Tensor:
+        if self.encoder2 is None:
+            return primary_latents
+        return torch.cat((primary_latents, secondary_latents), dim=-1)
+
+    def _encode_streams(
+        self,
+        *,
+        local_inputs: torch.Tensor,
+        global_inputs: torch.Tensor,
+        actions: torch.Tensor,
+        hidden_local_vars: torch.Tensor | None,
+        hidden_global_vars: torch.Tensor | None,
+        agent_mask: torch.Tensor | None,
+        time_mask: torch.Tensor | None,
+        initial_state: RecurrentCriticState | None,
+        reset_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, RecurrentCriticState]:
         primary_state, secondary_state = self._split_initial_state(initial_state)
         local_encoder_inputs, global_encoder_inputs = self._encoder_inputs(
             local_inputs=local_inputs,
@@ -155,10 +205,10 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
             reset_mask=reset_mask,
         )
         if self.encoder2 is None:
-            return primary_latents, next_primary_state
+            return primary_latents, primary_latents, next_primary_state
         secondary_local_encoder_inputs = local_encoder_inputs
         if self.observation_action_encoder2 is not None:
-            secondary_local_encoder_inputs, _secondary_global_encoder_inputs = self._encoder_inputs(
+            secondary_local_encoder_inputs, _ = self._encoder_inputs(
                 local_inputs=local_inputs,
                 global_inputs=global_inputs,
                 actions=actions,
@@ -176,74 +226,7 @@ class RecurrentTransformerTwinCritic(TransformerTwinCritic):
             initial_state=secondary_state,
             reset_mask=reset_mask,
         )
-        return torch.cat((primary_latents, secondary_latents), dim=-1), (
-            next_primary_state,
-            next_secondary_state,
-        )
-
-    def forward(
-        self,
-        *,
-        local_obs: torch.Tensor,
-        global_obs: torch.Tensor,
-        actions: torch.Tensor,
-        hidden_local_vars: torch.Tensor | None,
-        hidden_global_vars: torch.Tensor | None,
-        agent_mask: torch.Tensor | None,
-        time_mask: torch.Tensor | None = None,
-        initial_state: RecurrentCriticState | None = None,
-        reset_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RecurrentCriticState]:
-        primary_state, secondary_state = self._split_initial_state(initial_state)
-        local_encoder_inputs, global_encoder_inputs = self._encoder_inputs(
-            local_inputs=local_obs,
-            global_inputs=global_obs,
-            actions=actions,
-            hidden_local_vars=hidden_local_vars,
-            hidden_global_vars=hidden_global_vars,
-            observation_action_encoder=self.observation_action_encoder,
-            agent_mask=agent_mask,
-            time_mask=time_mask,
-        )
-        q1_latents, next_primary_state = self.encoder(
-            local_encoder_inputs,
-            global_encoder_inputs,
-            agent_mask=agent_mask,
-            time_mask=time_mask,
-            initial_state=primary_state,
-            reset_mask=reset_mask,
-        )
-        if self.encoder2 is None:
-            q2_latents = q1_latents
-            next_state: RecurrentCriticState = next_primary_state
-        else:
-            secondary_local_encoder_inputs = local_encoder_inputs
-            if self.observation_action_encoder2 is not None:
-                secondary_local_encoder_inputs, _secondary_global_encoder_inputs = self._encoder_inputs(
-                    local_inputs=local_obs,
-                    global_inputs=global_obs,
-                    actions=actions,
-                    hidden_local_vars=hidden_local_vars,
-                    hidden_global_vars=hidden_global_vars,
-                    observation_action_encoder=self.observation_action_encoder2,
-                    agent_mask=agent_mask,
-                    time_mask=time_mask,
-                )
-            q2_latents, next_secondary_state = self.encoder2(
-                secondary_local_encoder_inputs,
-                global_encoder_inputs,
-                agent_mask=agent_mask,
-                time_mask=time_mask,
-                initial_state=secondary_state,
-                reset_mask=reset_mask,
-            )
-            next_state = next_primary_state, next_secondary_state
-        return (
-            self._evaluate_q_head(self.q1, q1_latents, agent_mask),
-            self._evaluate_q_head(self.q2, q2_latents, agent_mask),
-            q1_latents if self.encoder2 is None else torch.cat((q1_latents, q2_latents), dim=-1),
-            next_state,
-        )
+        return primary_latents, secondary_latents, (next_primary_state, next_secondary_state)
 
     def _encoder_inputs(
         self,

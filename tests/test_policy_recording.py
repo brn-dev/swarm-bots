@@ -17,6 +17,9 @@ import swarmbots.benchmark.recording as recording
 from swarmbots import record_policy
 from swarmbots.learn import as_benchmark_policy, make_training, record_checkpoint
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.gsde_reset import (
+    GSDEResetMode, GSDEEpisodeResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode,
+)
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 
 
@@ -266,6 +269,53 @@ def test_record_command_rejects_exploration_noise_for_custom_factories() -> None
     with pytest.raises(SystemExit, match="2"):
         cli.main([
             "record", "SwarmBots-WallEasy-v0", "--policy", "unused:factory", "--exploration-noise", "0.4",
+        ])
+
+
+@pytest.mark.parametrize(("arguments", "expected"), [
+    ([], None),
+    (["--gsde-reset-episode"], GSDEEpisodeResetMode()),
+    (["--gsde-reset-interval", "3"], GSDEIntervalResetMode(3)),
+    (["--gsde-reset-probability", "0.25"], GSDEProbabilityResetMode(0.25)),
+])
+def test_record_command_selects_gsde_noise_schedule(
+    arguments: list[str], expected: GSDEResetMode | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    options: dict[str, Any] = {}
+
+    def record(*args: Any, **kwargs: Any) -> Path:
+        options.update(kwargs)
+        return tmp_path
+
+    monkeypatch.setattr("swarmbots.learn.record_checkpoint", record)
+    cli.main([
+        "record", "SwarmBots-WallEasy-v0", "--checkpoint", "policy.pt", "--variant", "ppo",
+        "--stochastic", "--device", "cpu", "--output", str(tmp_path), *arguments,
+    ])
+    assert options["gsde_reset_mode"] == expected
+    assert options["deterministic"] is False
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--gsde-reset-interval", "0"],
+    ["--gsde-reset-interval", "-1"],
+    ["--gsde-reset-probability", "0"],
+    ["--gsde-reset-probability", "1"],
+    ["--gsde-reset-probability", "nan"],
+    ["--gsde-reset-probability", "inf"],
+    ["--gsde-reset-episode", "--gsde-reset-interval", "3"],
+])
+def test_record_command_rejects_invalid_gsde_schedules(arguments: list[str]) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        cli.main([
+            "record", "SwarmBots-WallEasy-v0", "--checkpoint", "policy.pt", "--variant", "ppo", *arguments,
+        ])
+
+
+def test_record_command_leaves_custom_factory_noise_configuration_to_the_factory() -> None:
+    with pytest.raises(SystemExit, match="2"):
+        cli.main([
+            "record", "SwarmBots-WallEasy-v0", "--policy", "unused:factory", "--gsde-reset-interval", "3",
         ])
 
 

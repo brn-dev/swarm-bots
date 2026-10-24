@@ -5,15 +5,76 @@ import math
 import numpy as np
 import pytest
 import torch
+from types import SimpleNamespace
 
 from swarmbots import make_env, make_scenario
+from swarmbots.mjw_env.mjw_swarm_bots_vector_env import _build_inactive_unit_positions
+from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWCommonResetBatch
 from swarmbots.mjw_env.scenarios.mjw_payload_goal_sampling import PayloadGoalSampler, make_payload_goal_layout
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_runtime import (
+    MultiPayloadGoalMJWScenarioRuntime,
     _compute_multi_payload_goal_reward_kernel,
     _compute_payload_progress_np,
     _compute_payload_progress_torch,
 )
+
+
+@pytest.mark.parametrize("shape", ["sphere", "box", "capsule"])
+@pytest.mark.parametrize("num_units", [2, 5, 12])
+def test_inactive_payloads_do_not_collide_with_parked_units_or_each_other(shape: str, num_units: int) -> None:
+    scenario = make_scenario(
+        "SwarmBots-MultiPayloadGoal-v0", payload_shape=shape, compile_reward_kernel=False,
+        unit_start_locations=MJWPreConnectedUnitLocationsConfig(num_units=num_units, pool_seeds=(42000,)),
+    )
+    device = torch.device("cpu")
+    parked_units = _build_inactive_unit_positions(
+        num_units=num_units, max_unit_extent=scenario.swarm.max_unit_extent,
+        inactive_area_location=scenario.inactive_area_location, device=device,
+    )
+    runtime = object.__new__(MultiPayloadGoalMJWScenarioRuntime)
+    runtime.scenario = scenario
+    runtime.bindings = SimpleNamespace(device=device, inactive_unit_positions=parked_units)
+    runtime._goal_sampler = PayloadGoalSampler(
+        layout=scenario._goal_sampling_layout, max_payloads=scenario.max_payloads,
+        payload_shape=shape, device=device,
+    )
+    active_payloads = torch.tensor([[True, False, True, False], [False, True, False, True]])
+    positions = runtime._sample_payload_positions(
+        common_reset_batch=MJWCommonResetBatch(
+            pool_idx=torch.zeros(2, dtype=torch.long), swarm_start=torch.zeros(2, 2),
+            initial_z_rotation=torch.zeros(2),
+        ),
+        active_payload_mask=active_payloads, rng=torch.Generator().manual_seed(9),
+    )
+    model = scenario.build_model()
+    metadata = scenario.build_runtime_metadata(host_model=model)
+    data = mujoco.MjData(model)
+    inactive_unit_geoms = {
+        index for index in range(model.ngeom)
+        if model.body(int(model.geom_bodyid[index])).name.startswith(tuple(f"Unit{i}-" for i in range(1, num_units)))
+    }
+    for payload_positions, active_mask in zip(positions.numpy(), active_payloads.numpy(), strict=True):
+        data.qpos[:] = model.qpos0
+        for unit_index in range(1, num_units):
+            body = model.body(f"Unit{unit_index}--main_body")
+            address = int(model.jnt_qposadr[int(body.jntadr[0])])
+            data.qpos[address:address + 3] = parked_units[unit_index].numpy()
+            data.qpos[address + 3:address + 7] = [1.0, 0.0, 0.0, 0.0]
+        data.qpos[metadata.payload_qpos_indices[:, :3]] = payload_positions
+        data.qpos[metadata.payload_qpos_indices[:, 3:7]] = [1.0, 0.0, 0.0, 0.0]
+        inactive_payload_geoms = {
+            int(model.body_geomadr[model.body(f"Payload{index}").id]) for index in np.flatnonzero(~active_mask)
+        }
+        mujoco.mj_forward(model, data)
+        for contact in data.contact:
+            first, second = map(int, contact.geom)
+            involves_inactive_payload = first in inactive_payload_geoms or second in inactive_payload_geoms
+            parked_pair = first in inactive_unit_geoms | inactive_payload_geoms and second in (
+                inactive_unit_geoms | inactive_payload_geoms
+            )
+            if involves_inactive_payload and parked_pair:
+                assert contact.dist >= -1e-6
 
 
 def _sampler(*, shape="box", rect=(-2.5, 2.5, 2.5, 4.5), max_active=4, slots=8, device="cpu"):

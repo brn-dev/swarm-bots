@@ -123,10 +123,90 @@ def test_checkpoint_recording_restores_gsde_schedule(
     trainer.save(checkpoint_path)
     monkeypatch.setattr(recording, "_make_policy_env", lambda *args, **kwargs: (env, trainer.policy))
     captured = []
-    monkeypatch.setattr(recording, "_record_episodes", lambda env, adapter, **kwargs: captured.append(adapter))
+
+    def record_episodes(env: object, adapter: BenchmarkPolicy, **kwargs: object) -> None:
+        from swarmbots.benchmark.recording import _record_episodes
+
+        captured.append(adapter)
+        observations, _ = trainer.env.reset(seed=7)
+        observations["agent_mask"] = torch.ones(2, 2, dtype=torch.bool)
+
+        class RecordingEnv:
+            num_envs = 2
+            device = torch.device("cpu")
+            autoreset_mode = AutoresetMode.SAME_STEP
+
+            def __init__(self) -> None:
+                self.steps = 0
+                self.noise: list[torch.Tensor] = []
+
+            def reset(self, *, seed: int) -> tuple[dict[str, torch.Tensor], dict]:
+                return observations, {}
+
+            def start_video_recording(self, **options: object) -> None:
+                pass
+
+            def get_video_recording_status(self) -> dict[str, bool]:
+                return {"active": self.steps < 10}
+
+            def step(self, actions: dict[str, torch.Tensor]) -> tuple:
+                self.noise.append(adapter.distribution_state[0].clone())
+                self.steps += 1
+                return observations, torch.zeros(2), torch.tensor([
+                    self.steps % 4 == 0, self.steps % 6 == 0,
+                ]), torch.zeros(2, dtype=torch.bool), {}
+
+        recording_env = RecordingEnv()
+        _record_episodes(recording_env, adapter, video_folder=tmp_path, seed=1000)
+        changed = torch.stack([
+            (current != previous).any(dim=(-2, -1))
+            for previous, current in zip(recording_env.noise[:-1], recording_env.noise[1:], strict=True)
+        ])
+        episode_starts = torch.tensor([[step % 4 == 0, step % 6 == 0] for step in range(1, 10)])
+        assert changed[episode_starts].all()
+        if isinstance(adapter.gsde_reset_mode, GSDEProbabilityResetMode):
+            between_episodes = changed[~episode_starts]
+            assert between_episodes.any() and not between_episodes.all()
+        else:
+            expected = episode_starts.unsqueeze(-1).expand_as(changed).clone()
+            if isinstance(adapter.gsde_reset_mode, GSDEIntervalResetMode):
+                expected[torch.arange(1, 10) % adapter.gsde_reset_mode.interval == 0] = True
+            torch.testing.assert_close(changed, expected)
+
+    monkeypatch.setattr(recording, "_record_episodes", record_episodes)
     selected = GSDEIntervalResetMode(7) if override else None
     recording.record_checkpoint(
         checkpoint_path, "SwarmBots-WallEasy-v0", variant, video_folder=tmp_path,
         deterministic=False, gsde_reset_mode=selected,
     )
     assert captured[0].gsde_reset_mode == (selected if override else reset_mode)
+
+
+@pytest.mark.parametrize("override", [None, GSDEIntervalResetMode(2)])
+def test_checkpoint_recording_requires_a_saved_or_explicit_gsde_schedule(
+    gsde_actor: GSDEActorFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    override: GSDEResetMode | None,
+) -> None:
+    import swarmbots.learn.checkpoint_recording as recording
+
+    env, policy, _ = gsde_actor
+    trainer = PPO(
+        policy, env, rollout_mode=StepsRolloutMode(4), sampler_config=PPOSamplerConfig(batch_size=2),
+        gsde_reset_mode=GSDEEpisodeResetMode(), train_device="cpu", rollout_device="cpu",
+    )
+    path = tmp_path / "gsde.pt"
+    trainer.save(path)
+    checkpoint = torch.load(path, weights_only=False)
+    del checkpoint["hyper_parameters"]["gsde_reset_mode"]
+    torch.save(checkpoint, path)
+    monkeypatch.setattr(recording, "_make_policy_env", lambda *args, **kwargs: (env, policy))
+    recorded: list[BenchmarkPolicy] = []
+    monkeypatch.setattr(recording, "_record_episodes", lambda env, adapter, **kwargs: recorded.append(adapter))
+    options = dict(video_folder=tmp_path, deterministic=False, gsde_reset_mode=override)
+    if override is None:
+        with pytest.raises(ValueError, match="gsde_reset_mode.*explicitly"):
+            recording.record_checkpoint(path, "SwarmBots-WallEasy-v0", "ppo", **options)
+        assert not recorded
+    else:
+        recording.record_checkpoint(path, "SwarmBots-WallEasy-v0", "ppo", **options)
+        assert recorded[0].gsde_reset_mode == override

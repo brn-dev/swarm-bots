@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import shutil
-import sys
 from typing import TYPE_CHECKING, Callable
 
 import mujoco
 import numpy as np
 import torch
+
+from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 
 if TYPE_CHECKING:
     from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import MJWFindOpeningScenario
@@ -245,19 +245,9 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             barrier_mocap_id=self._barrier_mocap_id,
         )
         self._reward_kernel: Callable[..., FindOpeningRewardOutput] = _compute_find_opening_reward_kernel
-        if scenario.compile_reward_kernel:
-            if not hasattr(torch, "compile"):
-                raise RuntimeError("compile_reward_kernel=True requires torch.compile support")
-            if sys.platform == "win32" and shutil.which("cl") is None:
-                raise RuntimeError(
-                    "compile_reward_kernel=True on this Windows setup requires cl.exe on PATH for torch.compile"
-                )
-            self._reward_kernel = torch.compile(
-                self._reward_kernel,
-                mode=scenario.reward_kernel_compile_mode,
-                fullgraph=False,
-                dynamic=False,
-            )
+        self._reward_kernel = compile_reward_kernel(
+            self._reward_kernel, enabled=scenario.compile_reward_kernel, mode=scenario.reward_kernel_compile_mode,
+        )
 
     @property
     def global_obs(self) -> torch.Tensor:

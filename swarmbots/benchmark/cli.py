@@ -99,6 +99,13 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _probability(value: str) -> float:
+    parsed = float(value)
+    if not 0.0 < parsed < 1.0:
+        raise argparse.ArgumentTypeError("expected a probability strictly between 0 and 1")
+    return parsed
+
+
 def _json_object(value: str) -> dict[str, Any]:
     try:
         parsed = json.loads(value)
@@ -137,6 +144,17 @@ def _record_command(args: argparse.Namespace) -> None:
         options["video_name_prefix"] = args.prefix
     if args.checkpoint is not None:
         from swarmbots.learn import record_checkpoint
+        from swarmbots.learn.gsde_reset import (
+            GSDEEpisodeResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode,
+        )
+
+        gsde_reset_mode = None
+        if args.gsde_reset_episode:
+            gsde_reset_mode = GSDEEpisodeResetMode()
+        elif args.gsde_reset_interval is not None:
+            gsde_reset_mode = GSDEIntervalResetMode(args.gsde_reset_interval)
+        elif args.gsde_reset_probability is not None:
+            gsde_reset_mode = GSDEProbabilityResetMode(args.gsde_reset_probability)
 
         record_checkpoint(
             args.checkpoint,
@@ -144,6 +162,7 @@ def _record_command(args: argparse.Namespace) -> None:
             args.variant,
             deterministic=not args.stochastic,
             exploration_noise=args.exploration_noise,
+            gsde_reset_mode=gsde_reset_mode,
             continuous_action_dist=args.continuous_action_dist,
             use_nop=args.use_nop,
             model_scale=None if args.model_scale == "custom" else args.model_scale,
@@ -202,6 +221,19 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument(
         "--exploration-noise", type=float, help="override DDPG/TD3 checkpoint exploration noise for --stochastic"
     )
+    gsde_schedule = record_parser.add_mutually_exclusive_group()
+    gsde_schedule.add_argument(
+        "--gsde-reset-episode", action="store_true",
+        help="override a gSDE checkpoint's saved schedule with episode-only noise resets for --stochastic",
+    )
+    gsde_schedule.add_argument(
+        "--gsde-reset-interval", type=_positive_int, metavar="STEPS",
+        help="reset gSDE checkpoint noise every STEPS control steps and at episode starts for --stochastic",
+    )
+    gsde_schedule.add_argument(
+        "--gsde-reset-probability", type=_probability, metavar="P",
+        help="reset gSDE checkpoint noise independently per agent with probability P each step for --stochastic",
+    )
     record_parser.add_argument("--fps", type=_positive_int, default=30)
     record_parser.add_argument("--width", type=_positive_int, default=DEFAULT_RECORDING_WIDTH)
     record_parser.add_argument("--height", type=_positive_int, default=DEFAULT_RECORDING_HEIGHT)
@@ -243,6 +275,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             parser.error("--policy must have the form module:function")
         if args.policy is not None and args.exploration_noise is not None:
             parser.error("--exploration-noise requires a DDPG/TD3 checkpoint")
+        if args.policy is not None and (
+            args.gsde_reset_episode or args.gsde_reset_interval is not None or args.gsde_reset_probability is not None
+        ):
+            parser.error("--gsde-reset-* requires a gSDE checkpoint; custom factories configure their own noise")
         _record_command(args)
 
 
