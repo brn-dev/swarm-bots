@@ -72,12 +72,24 @@ class AutomaticLearningRateUpdater(Protocol):
         ...
 
 
+def _validate_automatic_learning_rate(value: float, *, name: str = "learning_rate") -> None:
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"Automatic learning rate {name} must be finite and > 0, got {value}")
+
+
 @dataclass(slots=True)
 class AutomaticLearningRate:
     initial_lr: float
     updater: AutomaticLearningRateUpdater
 
     max_lr: float = 1e-2
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        _validate_automatic_learning_rate(self.initial_lr, name="initial_lr")
+        _validate_automatic_learning_rate(self.max_lr, name="max_lr")
 
 PPOLearningRate = float | AutomaticLearningRate
 
@@ -132,6 +144,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         initial_lr: float
         if isinstance(learning_rate, AutomaticLearningRate):
+            learning_rate.validate()
             if target_kl is None:
                 raise ValueError("AutomaticLearningRate requires target_kl (otherwise KL early stopping cannot happen).")
             self.automatic_lr = learning_rate
@@ -225,6 +238,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             self._make_optimizer_param_groups(self.learning_rate),
             lr=self.learning_rate,
         )
+
+    def set_learning_rate(self, lr: LearningRate) -> None:
+        if self.automatic_lr is not None:
+            _validate_automatic_learning_rate(lr)
+        super().set_learning_rate(lr)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         auto_lr: dict[str, Any] | None
@@ -721,6 +739,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         if requested_lr is None:
             return {"auto_lr_event": update_event, "auto_lr": self.learning_rate}
 
+        _validate_automatic_learning_rate(requested_lr)
+        _validate_automatic_learning_rate(self.automatic_lr.max_lr, name="max_lr")
         new_lr = min(requested_lr, self.automatic_lr.max_lr)
         ratio = new_lr / self.learning_rate
         if new_lr > self.learning_rate:
@@ -1193,6 +1213,24 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         )
         return state_dict
 
+    @staticmethod
+    def _optimizer_base_learning_rate(state_dict: dict[str, Any]) -> float:
+        param_group = state_dict["param_groups"][0]
+        return float(param_group["lr"]) / float(param_group.get("lr_multiplier", 1.0))
+
+    def _validate_optimizer_checkpoint(
+            self,
+            *,
+            learning_rate: LearningRate,
+            optimizer_state_dict: dict[str, Any],
+    ) -> None:
+        if self.automatic_lr is not None:
+            _validate_automatic_learning_rate(learning_rate)
+            for group in optimizer_state_dict["param_groups"]:
+                _validate_automatic_learning_rate(float(group["lr"]))
+                _validate_automatic_learning_rate(float(group.get("lr_multiplier", 1.0)), name="lr_multiplier")
+            _validate_automatic_learning_rate(self._optimizer_base_learning_rate(optimizer_state_dict))
+
     def _apply_optimizer_state_dict(
             self,
             state_dict: dict[str, Any],
@@ -1213,6 +1251,9 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             raise ValueError("Checkpoint automatic learning rate configuration does not match the trainer")
         if (scheduler_state is None) != (self.scheduler_manager is None):
             raise ValueError("Checkpoint schedulers do not match the trainer; configure the matching SchedulerManager")
+        lr = self._optimizer_base_learning_rate(state_dict)
+        if self.automatic_lr is not None:
+            _validate_automatic_learning_rate(lr)
         if scheduler_state is not None:
             self.scheduler_manager.load_state_dict(scheduler_state)
         self.optimizer.load_state_dict(state_dict)
@@ -1220,11 +1261,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             self._auto_lr_enabled = automatic_lr_state["enabled"]
             self._auto_lr_state = deepcopy(automatic_lr_state["state"])
         self._move_optimizer_state_to_device(self.train_device)
-        try:
-            param_group = self.optimizer.param_groups[0]
-            lr = float(param_group["lr"]) / float(param_group.get("lr_multiplier", 1.0))
-        except (KeyError, IndexError, TypeError, ValueError):
-            return
         self.learning_rate = lr
 
     def _move_optimizer_state_to_device(self, device: torch.device) -> None:
@@ -1252,8 +1288,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             multiplier = float(raw_multiplier)
             if not prefix:
                 raise ValueError("Parameter LR multiplier prefixes must not be empty.")
-            if multiplier <= 0:
-                raise ValueError(f"Parameter LR multiplier for {prefix!r} must be > 0, got {multiplier}.")
+            if not math.isfinite(multiplier) or multiplier <= 0:
+                raise ValueError(f"Parameter LR multiplier for {prefix!r} must be finite and > 0, got {multiplier}.")
             if multiplier == 1.0:
                 continue
             normalized[prefix] = multiplier

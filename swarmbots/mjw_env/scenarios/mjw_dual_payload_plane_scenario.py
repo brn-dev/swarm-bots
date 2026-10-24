@@ -10,6 +10,7 @@ import numpy as np
 from gymnasium import spaces
 
 import swarmbots.mjw_env.mujoco_utils as mj_utils
+from swarmbots.mjw_env.scenarios.scenario_spaces import make_observation_space
 from swarmbots.mjw_env.parameter_distributions import DistParams, FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import (
@@ -98,18 +99,11 @@ class MJWDualPayloadPlaneScenario(MJWPayloadPlaneScenario):
         return model
 
     def get_single_observation_space(self) -> spaces.Dict:
-        obs_space = super().get_single_observation_space()
-        spaces_dict = dict(obs_space.spaces)
-        global_obs_dim = 18 if self.payload_pos_observable else 0
-        hidden_global_vars_dim = 0 if self.payload_pos_observable else 18
-        spaces_dict["global_obs"] = spaces.Box(low=-np.inf, high=np.inf, shape=(global_obs_dim,), dtype=np.float32)
-        spaces_dict["hidden_global_vars"] = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(hidden_global_vars_dim,),
-            dtype=np.float32,
+        return make_observation_space(
+            self,
+            global_obs_dim=18 if self.payload_pos_observable else 0,
+            hidden_global_vars_dim=0 if self.payload_pos_observable else 18,
         )
-        return spaces.Dict(spaces_dict)
 
     def build_runtime_metadata(self, *, host_model: mujoco.MjModel) -> MJWPayloadPlaneRuntimeMetadata:
         payload_qpos_indices = np.stack(

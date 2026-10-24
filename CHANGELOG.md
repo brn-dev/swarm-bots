@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reject zero, negative and non-finite automatic PPO learning rates at configuration, live-update, controller-update and optimizer-restore boundaries. Revalidate mutable configurations when consumed, validate controller requests before capping, and reject invalid saved base/optimizer-group rates and parameter LR multipliers before changing trainer state.
+- Isolate caller-provided action-distribution config lists and derive Gumbel temperature metadata from its runtime buffer, keeping policy configuration reports consistent after temperature updates and checkpoint loading.
+- Consolidate device resolution and NumPy conversion, and share scenario observation/action-space construction while retaining scenario-specific public and privileged fields.
 - Honor programmatic stop/pause commands independently of the interactive prompt, clear paused state when learning exits, and cover hook-triggered stopping, checkpoint options, pause expiry, unpause and stopping while paused.
 - Share PPO transition collection across dense and segmented rollout storage, split preset policy construction into family builders with typed option groups and shared encoder/decoder settings, and build recording models lazily on first use.
 - Remove unused `epsilon` arguments/config fields from squashed and predicted-standard-deviation Gaussian distributions and the tanh bijector; retain dtype-based inverse-tanh clipping and the existing likelihood calculations.

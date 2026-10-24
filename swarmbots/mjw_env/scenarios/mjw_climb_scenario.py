@@ -8,12 +8,11 @@ import numpy as np
 from gymnasium import spaces
 from gymnasium.vector.utils import batch_space
 
-from swarmbots.utils.connector_actions import connector_action_space
+from swarmbots.mjw_env.scenarios.scenario_spaces import make_action_space, make_observation_space
 from swarmbots.mjw_env.scenarios.scenario_validation import finite_positive
 from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
-from swarmbots.mjw_env.swarm.unit import get_unit_hinge_count
 from swarmbots.scenario_presets.scenario_obs_layouts import CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT
 
 
@@ -218,50 +217,13 @@ class MJWClimbScenario(BaseMJWScenario):
         return model
 
     def get_single_observation_space(self) -> spaces.Dict:
-        limbs_per_unit = self.swarm.config.limbs_per_unit
-        num_hinges = get_unit_hinge_count(self.swarm.config.unit_config)
-        free_joint_rot_dim = 6 if self.quat_rot6d_representation else 4
-        qpos_obs_dim = 3 + free_joint_rot_dim + (2 * num_hinges)
-        qvel_dim = 6 + num_hinges
-        connector_obs_dim = limbs_per_unit * 5
-        connectors_xpos_dim = limbs_per_unit * 3 if self.include_connectors_xpos_in_obs else 0
-        local_obs_dim = qpos_obs_dim + qvel_dim + connector_obs_dim + connectors_xpos_dim
-        return spaces.Dict(
-            {
-                "local_obs": spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=(self.swarm.num_units, local_obs_dim),
-                    dtype=np.float32,
-                ),
-                "global_obs": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
-                "hidden_local_vars": spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=(self.swarm.num_units, 0),
-                    dtype=np.float32,
-                ),
-                "hidden_global_vars": spaces.Box(low=-np.inf, high=np.inf, shape=(0,), dtype=np.float32),
-                "agent_mask": spaces.MultiBinary((self.swarm.num_units,)),
-            }
+        return make_observation_space(
+            self,
+            global_obs_dim=3,
         )
 
     def get_single_action_space(self) -> spaces.Dict:
-        actuators_per_unit = get_unit_hinge_count(self.swarm.config.unit_config)
-        return spaces.Dict(
-            {
-                "actuators": spaces.Box(
-                    low=-1.0,
-                    high=1.0,
-                    shape=(self.swarm.num_units, actuators_per_unit),
-                    dtype=np.float32,
-                ),
-                "connectors": connector_action_space(
-                    (self.swarm.num_units, self.swarm.config.limbs_per_unit),
-                    continuous=self.continuous_connector_actions,
-                ),
-            }
-        )
+        return make_action_space(self)
 
     def get_batched_observation_space(self, num_envs: int) -> spaces.Dict:
         return batch_space(self.get_single_observation_space(), n=num_envs)

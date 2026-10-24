@@ -126,6 +126,14 @@ class BaseAlgorithm(abc.ABC):
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         raise NotImplementedError()
 
+    def _validate_optimizer_checkpoint(
+            self,
+            *,
+            learning_rate: LearningRate,
+            optimizer_state_dict: dict[str, Any],
+    ) -> None:
+        """Reject invalid optimizer settings before loading any trainer state."""
+
     @abc.abstractmethod
     def _apply_optimizer_state_dict(
             self,
@@ -499,6 +507,16 @@ class BaseAlgorithm(abc.ABC):
             restore_env_state: bool = True,
     ) -> None:
         checkpoint = load_checkpoint(path, map_location=map_location)
+        optimizer_state_dict = (
+            checkpoint.get("optimizer_state_dict")
+            if restore_optimizer_state
+            else None
+        )
+        if optimizer_state_dict is not None:
+            self._validate_optimizer_checkpoint(
+                learning_rate=checkpoint["hyper_parameters"]["learning_rate"],
+                optimizer_state_dict=optimizer_state_dict,
+            )
         policy_state_dict = align_torch_compile_state_dict_keys(
             checkpoint["policy_state_dict"],
             target_keys=self.policy.state_dict().keys(),
@@ -510,11 +528,6 @@ class BaseAlgorithm(abc.ABC):
         if missing_keys or unexpected_keys:
             logger.warning(f'{missing_keys = },  {unexpected_keys = }')
 
-        optimizer_state_dict = (
-            checkpoint.get("optimizer_state_dict")
-            if restore_optimizer_state
-            else None
-        )
         if optimizer_state_dict is not None:
             if missing_keys or unexpected_keys:
                 logger.warning('Skipping optimizer state dict load, as we have missing/unexpected keys')

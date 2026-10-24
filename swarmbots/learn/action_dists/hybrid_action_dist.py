@@ -140,14 +140,14 @@ class HybridActionDistribution(ActionDist):
                     f"Expected {action_space.n_spaces} continuous configs (one per action sub-space), "
                     f"got {len(continuous_config)}."
                 )
-            self.continuous_configs = continuous_config
+            self._continuous_configs = list(continuous_config)
         else:
-            self.continuous_configs = [continuous_config] * action_space.n_spaces
+            self._continuous_configs = [continuous_config] * action_space.n_spaces
         self.bernoulli_config = bernoulli_config
 
         gsde_indices = [
             i for i, (sub_space, config) in enumerate(
-                zip(action_space.sub_spaces, self.continuous_configs, strict=True)
+                zip(action_space.sub_spaces, self._continuous_configs, strict=True)
             )
             if isinstance(sub_space, spaces.Box) and isinstance(config, GSDEConfig)
         ]
@@ -171,8 +171,17 @@ class HybridActionDistribution(ActionDist):
                 bernoulli_config=bernoulli_config,
             )
             for sub_space, sub_space_dim, cont_conf
-            in zip(action_space.sub_spaces, action_space.agent_action_dims, self.continuous_configs, strict=True)
+            in zip(action_space.sub_spaces, action_space.agent_action_dims, self._continuous_configs, strict=True)
         ])
+
+    @property
+    def continuous_configs(self) -> list[ContinuousActionDistConfig | None]:
+        return [
+            replace(config, gumbel_temperature=distribution.gumbel_temperature)
+            if isinstance(distribution, GumbelSoftmaxSignMagnitudeBetaActionDist)
+            else config
+            for config, distribution in zip(self._continuous_configs, self.distributions, strict=True)
+        ]
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         for dist in self.distributions:
@@ -191,14 +200,15 @@ class HybridActionDistribution(ActionDist):
         return all(dist.compile_friendly for dist in self.distributions)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
+        continuous_configs = self.continuous_configs
         return {
             **super().get_hyper_parameters(),
             "action_dims": list(self.action_dims),
             "has_gsde": self.has_gsde,
-            "continuous_config": continuous_config_to_dicts(self.continuous_configs),
+            "continuous_config": continuous_config_to_dicts(continuous_configs),
             "continuous_gradient_estimators": [
                 None if config is None else continuous_action_gradient_estimator(config).value
-                for config in self.continuous_configs
+                for config in continuous_configs
             ],
             "bernoulli_config": bernoulli_config_to_dict(self.bernoulli_config),
             "sub_distributions": [dist.get_hyper_parameters() for dist in self.distributions],
@@ -431,9 +441,6 @@ class HybridActionDistribution(ActionDist):
             setter = getattr(dist, "set_gumbel_temperature", None)
             if callable(setter):
                 setter(value)
-        for idx, config in enumerate(self.continuous_configs):
-            if isinstance(config, GumbelSoftmaxSignMagnitudeBetaConfig):
-                self.continuous_configs[idx] = replace(config, gumbel_temperature=value)
 
     def set_sub_gumbel_temperature(self, sub_dist_idx: int, value: float) -> None:
         if value <= 0.0:
@@ -446,9 +453,6 @@ class HybridActionDistribution(ActionDist):
         if not callable(setter):
             raise ValueError(f"Action sub-dist {sub_dist_idx} does not support Gumbel temperature updates")
         setter(value)
-        config = self.continuous_configs[sub_dist_idx]
-        if isinstance(config, GumbelSoftmaxSignMagnitudeBetaConfig):
-            self.continuous_configs[sub_dist_idx] = replace(config, gumbel_temperature=value)
 
     def _resolve_action_splitters(
             self,

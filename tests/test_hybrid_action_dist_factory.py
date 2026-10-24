@@ -41,6 +41,48 @@ def _compile_with_eager_backend(
 
 
 class HybridActionDistFactoryTests(unittest.TestCase):
+    def test_reused_continuous_configs_preserve_independent_policies(self) -> None:
+        action_space = HybridActionSpace({"actions": spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)})
+        for setter in ("set_all_gumbel_temperatures", "set_sub_gumbel_temperature"):
+            with self.subTest(setter=setter):
+                config = GumbelSoftmaxSignMagnitudeBetaConfig()
+                shared_configs = [config]
+                first = HybridActionDistribution(4, action_space, shared_configs)
+                second = HybridActionDistribution(4, action_space, shared_configs)
+
+                if setter == "set_all_gumbel_temperatures":
+                    first.set_all_gumbel_temperatures(0.2)
+                else:
+                    first.set_sub_gumbel_temperature(0, 0.2)
+
+                self.assertEqual(shared_configs, [config])
+                self.assertEqual(second.continuous_configs, [config])
+                self.assertEqual(second.distributions[0].gumbel_temperature, 1.0)
+                self.assertAlmostEqual(first.continuous_configs[0].gumbel_temperature, 0.2)
+
+                shared_configs[0] = GumbelSoftmaxSignMagnitudeBetaConfig(gumbel_temperature=0.5)
+                self.assertEqual(second.continuous_configs, [config])
+
+    def test_restored_temperature_agrees_across_config_and_runtime_metadata(self) -> None:
+        action_space = HybridActionSpace([
+            ("actions", spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32)),
+            ("switches", spaces.MultiBinary((2, 1))),
+        ])
+        configs = [GumbelSoftmaxSignMagnitudeBetaConfig(), None]
+        source = HybridActionDistribution(4, action_space, configs)
+        source.set_all_gumbel_temperatures(0.2)
+        restored = HybridActionDistribution(4, action_space, configs)
+
+        restored.load_state_dict(source.state_dict())
+
+        metadata = restored.get_hyper_parameters()
+        temperature = restored.distributions[0].gumbel_temperature
+        self.assertAlmostEqual(temperature, 0.2)
+        self.assertEqual(metadata["continuous_config"][0]["gumbel_temperature"], temperature)
+        self.assertEqual(metadata["sub_distributions"][0]["gumbel_temperature"], temperature)
+        self.assertEqual(restored.continuous_configs[0].gumbel_temperature, temperature)
+        self.assertIsNone(metadata["continuous_config"][1])
+
     def test_inductor_actor_refreshes_distribution_state_for_entropy_metrics(self) -> None:
         if sys.platform == "win32":
             self.skipTest("TorchInductor's C++ backend requires a complete OpenMP toolchain on Windows")

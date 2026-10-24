@@ -7,6 +7,7 @@ import torch
 from torch.utils import dlpack
 
 from swarmbots.learn.torch_device import as_device
+from swarmbots.utils.torch_utils import to_numpy_array
 
 def to_torch_tensor(
     value: Any,
@@ -29,22 +30,6 @@ def to_torch_tensor(
                 return torch.as_tensor(np.asarray(value), device=target_device, dtype=dtype)
 
     return torch.as_tensor(value, device=target_device, dtype=dtype)
-
-
-def to_numpy_array(value: Any, *, dtype: np.dtype | type | None = None) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        return value.astype(dtype, copy=False) if dtype is not None else value
-    if isinstance(value, torch.Tensor):
-        array = value.detach().cpu().numpy()
-        return array.astype(dtype, copy=False) if dtype is not None else array
-    if hasattr(value, "__dlpack__"):
-        try:
-            tensor = dlpack.from_dlpack(value)
-            array = tensor.detach().cpu().numpy()
-            return array.astype(dtype, copy=False) if dtype is not None else array
-        except Exception:
-            pass
-    return np.asarray(value, dtype=dtype)
 
 
 def to_backend_array(

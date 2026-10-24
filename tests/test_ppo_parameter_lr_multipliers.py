@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -5,7 +7,7 @@ from gymnasium import spaces
 from torch import nn
 
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
-from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, StepsRolloutMode
+from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, AutomaticLearningRateUpdateResult, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
@@ -154,12 +156,16 @@ class _DummyEnv:
         })
 
 
-def _make_ppo(parameter_lr_multipliers: dict[str, float] | None = None, learning_rate: float = 1e-2) -> tuple[PPO, _DummyPolicy]:
+def _make_ppo(
+    parameter_lr_multipliers: dict[str, float] | None = None,
+    learning_rate: float | AutomaticLearningRate = 1e-2,
+) -> tuple[PPO, _DummyPolicy]:
     policy = _DummyPolicy()
     ppo = PPO(
         policy=policy,
         env=_DummyEnv(),
         learning_rate=learning_rate,
+        target_kl=0.002 if isinstance(learning_rate, AutomaticLearningRate) else None,
         rollout_mode=StepsRolloutMode(2),
         max_episode_length=2,
         n_epochs=1,
@@ -182,6 +188,155 @@ def test_ppo_uses_single_default_optimizer_group_when_no_multipliers_are_configu
     assert len(ppo.optimizer.param_groups) == 1
     assert ppo.optimizer.param_groups[0]["lr"] == pytest.approx(1e-2)
     assert "lr_multiplier" not in ppo.optimizer.param_groups[0]
+
+
+@pytest.mark.parametrize("name", ["initial_lr", "max_lr"])
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
+def test_automatic_learning_rate_rejects_invalid_bounds(name: str, value: float) -> None:
+    options = {"initial_lr": 1e-2, "max_lr": 1e-1}
+    options[name] = value
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        AutomaticLearningRate(updater=make_auto_lr_updater(), **options)
+
+
+@pytest.mark.parametrize("via_command", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_automatic_learning_rate_rejects_zero_without_changing_optimizer(via_command: bool, enabled: bool) -> None:
+    ppo, _ = _make_ppo(learning_rate=AutomaticLearningRate(initial_lr=1e-2, updater=make_auto_lr_updater()))
+    ppo._auto_lr_enabled = enabled
+    original_rates = [group["lr"] for group in ppo.optimizer.param_groups]
+
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        if via_command:
+            ppo._execute_command("set_lr", "0.0", None)
+        else:
+            ppo.set_learning_rate(0.0)
+
+    assert ppo.learning_rate == 1e-2
+    assert [group["lr"] for group in ppo.optimizer.param_groups] == original_rates
+    ppo._maybe_update_automatic_lr(None, None, {})
+    ppo._maybe_update_automatic_lr(None, None, {})
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf"), -float("inf")])
+def test_automatic_learning_rate_rejects_invalid_controller_requests(value: float) -> None:
+    def request_rate(**kwargs: object) -> AutomaticLearningRateUpdateResult:
+        return {"new_lr": value}
+
+    ppo, _ = _make_ppo(learning_rate=AutomaticLearningRate(initial_lr=1e-2, updater=request_rate))
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        ppo._maybe_update_automatic_lr(None, None, {})
+
+    assert ppo.learning_rate == 1e-2
+    assert all(group["lr"] == 1e-2 for group in ppo.optimizer.param_groups)
+
+
+def test_automatic_learning_rate_caps_finite_controller_requests() -> None:
+    def request_rate(**kwargs: object) -> AutomaticLearningRateUpdateResult:
+        return {"new_lr": 0.1}
+
+    ppo, _ = _make_ppo(learning_rate=AutomaticLearningRate(initial_lr=1e-4, updater=request_rate, max_lr=1e-2))
+    result = ppo._maybe_update_automatic_lr(None, None, {})
+
+    assert result["auto_lr_event"] == "lr_increase_capped"
+    assert ppo.learning_rate == 1e-2
+    assert all(group["lr"] == 1e-2 for group in ppo.optimizer.param_groups)
+
+
+@pytest.mark.parametrize("name", ["initial_lr", "max_lr"])
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
+def test_ppo_revalidates_mutated_automatic_learning_rate_config(name: str, value: float) -> None:
+    config = AutomaticLearningRate(initial_lr=1e-2, updater=make_auto_lr_updater())
+    setattr(config, name, value)
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        _make_ppo(learning_rate=config)
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
+def test_automatic_learning_rate_revalidates_mutated_maximum(value: float) -> None:
+    def request_rate(**kwargs: object) -> AutomaticLearningRateUpdateResult:
+        return {"new_lr": 2e-2}
+
+    config = AutomaticLearningRate(initial_lr=1e-2, updater=request_rate)
+    ppo, _ = _make_ppo(learning_rate=config)
+    config.max_lr = value
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        ppo._maybe_update_automatic_lr(None, None, {})
+    assert ppo.learning_rate == 1e-2
+    assert all(group["lr"] == 1e-2 for group in ppo.optimizer.param_groups)
+
+
+@pytest.mark.parametrize("field", ["base", "optimizer", "secondary_optimizer", "secondary_multiplier", "both"])
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf"), -float("inf")])
+def test_public_load_rejects_invalid_automatic_rates_without_mutating_trainer(
+    tmp_path: Path, field: str, value: float,
+) -> None:
+    multipliers = {"decoder": 0.5}
+    source, _ = _make_ppo(
+        parameter_lr_multipliers=multipliers,
+        learning_rate=AutomaticLearningRate(initial_lr=1e-2, updater=make_auto_lr_updater()),
+    )
+    with torch.no_grad():
+        for parameter in source.policy.parameters():
+            parameter.fill_(2.0)
+    source.n_total_timesteps = 42
+    path = tmp_path / "invalid_rate.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    checkpoint = torch.load(path, weights_only=False)
+    if field in {"base", "both"}:
+        checkpoint["hyper_parameters"]["learning_rate"] = value
+    if field in {"optimizer", "both"}:
+        checkpoint["optimizer_state_dict"]["param_groups"][0]["lr"] = value
+    if field == "secondary_optimizer":
+        checkpoint["optimizer_state_dict"]["param_groups"][1]["lr"] = value
+    if field == "secondary_multiplier":
+        checkpoint["optimizer_state_dict"]["param_groups"][1]["lr_multiplier"] = value
+    torch.save(checkpoint, path)
+    restored, _ = _make_ppo(
+        parameter_lr_multipliers=multipliers,
+        learning_rate=AutomaticLearningRate(initial_lr=1e-3, updater=make_auto_lr_updater()),
+    )
+    original_weights = {name: tensor.clone() for name, tensor in restored.policy.state_dict().items()}
+    original_rates = [group["lr"] for group in restored.optimizer.param_groups]
+
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        restored.load(path)
+
+    torch.testing.assert_close(restored.policy.state_dict(), original_weights)
+    assert restored.learning_rate == 1e-3
+    assert [group["lr"] for group in restored.optimizer.param_groups] == original_rates
+    assert restored.n_total_timesteps == 0
+    assert restored._auto_lr_state == {}
+    restored._maybe_update_automatic_lr(None, None, {})
+    restored._maybe_update_automatic_lr(None, None, {})
+    assert restored.learning_rate == pytest.approx(1.1e-3)
+
+
+@pytest.mark.parametrize("include_optimizer", [False, True])
+def test_public_load_ignores_saved_automatic_rates_when_optimizer_is_not_restored(
+    tmp_path: Path, include_optimizer: bool,
+) -> None:
+    source, _ = _make_ppo(learning_rate=AutomaticLearningRate(initial_lr=1e-2, updater=make_auto_lr_updater()))
+    path = tmp_path / "weights_only.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict() if include_optimizer else None)
+    checkpoint = torch.load(path, weights_only=False)
+    checkpoint["hyper_parameters"]["learning_rate"] = 0.0
+    if include_optimizer:
+        checkpoint["optimizer_state_dict"]["param_groups"][0]["lr"] = 0.0
+    torch.save(checkpoint, path)
+    restored, _ = _make_ppo(learning_rate=AutomaticLearningRate(initial_lr=1e-3, updater=make_auto_lr_updater()))
+
+    restored.load(path, restore_optimizer_state=not include_optimizer)
+
+    torch.testing.assert_close(restored.policy.state_dict(), source.policy.state_dict())
+    assert restored.learning_rate == 1e-3
+    assert all(group["lr"] == 1e-3 for group in restored.optimizer.param_groups)
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf"), -float("inf")])
+def test_parameter_lr_multipliers_reject_invalid_values(value: float) -> None:
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        _make_ppo(parameter_lr_multipliers={"decoder": value})
 
 
 def test_parameter_lr_multipliers_scale_matching_parameters_and_keep_longest_prefix() -> None:
