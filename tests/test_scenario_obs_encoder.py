@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import replace
 
 import pytest
@@ -72,6 +73,33 @@ def _observation_encoder(
         act_fn_cls=nn.ReLU,
         include_hidden_fields=include_hidden_fields,
     )
+
+
+@pytest.mark.parametrize("normalize_input", [False, True])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_field_encoder_ignores_nonfinite_padding_before_projection_and_normalization(
+    normalize_input: bool, compiled: bool,
+) -> None:
+    torch.manual_seed(10)
+    model = _field_encoder(input_dims=(0, 1, 3), output_dim=2, hidden_dims=(4,), normalize_input=normalize_input)
+    reference = deepcopy(model)
+    forward = torch.compile(model, backend="eager", fullgraph=True) if compiled else model
+    scenario_ids = torch.tensor([[0, 1, 2, 0], [2, 1, 0, 2]])
+    valid_mask = torch.tensor([[True, False, True, False], [False, True, True, False]])
+    inputs = torch.randn(2, 4, 3)
+    clean = inputs.masked_fill(~valid_mask.unsqueeze(-1), 0).requires_grad_()
+    padded = inputs.masked_fill(~valid_mask.unsqueeze(-1), torch.nan).requires_grad_()
+    expected = reference(clean, scenario_ids, valid_mask=valid_mask)
+    actual = forward(padded, scenario_ids, valid_mask=valid_mask)
+    torch.testing.assert_close(actual[valid_mask], expected[valid_mask])
+    expected[valid_mask].square().sum().backward()
+    actual[valid_mask].square().sum().backward()
+    torch.testing.assert_close(padded.grad, clean.grad)
+    assert torch.count_nonzero(padded.grad[~valid_mask]) == 0
+    assert padded.grad[valid_mask].abs().sum() > 0
+    for parameter, reference_parameter in zip(model.parameters(), reference.parameters(), strict=True):
+        assert torch.isfinite(parameter.grad).all()
+        torch.testing.assert_close(parameter.grad, reference_parameter.grad)
 
 
 def test_scenario_batched_linear_routes_each_row_to_its_parameter_bank() -> None:

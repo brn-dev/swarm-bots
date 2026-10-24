@@ -132,6 +132,74 @@ def test_learn_without_periodic_saves_still_writes_final_checkpoint(tmp_path: Pa
     assert algorithm._active_max_total_timesteps is None
 
 
+@pytest.mark.parametrize("stop_params,save_optimizer,expected_save,expected_optimizer", [
+    ("", True, True, {"optimizer_step": 1}),
+    ('{"optimizer": false}', True, True, None),
+    ('{"optimizer": true}', False, True, {"optimizer_step": 1}),
+    ('{"save": false}', True, False, None),
+])
+def test_hook_stop_without_prompt_honors_checkpoint_options(
+    tmp_path: Path, stop_params: str, save_optimizer: bool, expected_save: bool,
+    expected_optimizer: dict[str, int] | None,
+) -> None:
+    algorithm = _Algorithm()
+
+    def request_stop(trainer: BaseAlgorithm, metrics: dict[str, Any], rollout_steps: int) -> None:
+        trainer.execute_command("stop", stop_params, None)
+
+    algorithm.learn(
+        max_total_timesteps=20, run_dir=tmp_path, log_interval=None,
+        save_optimizer=save_optimizer, enable_command_prompt=False,
+        post_iteration_hooks=[request_stop],
+    )
+
+    assert algorithm.n_total_iterations == 1
+    assert algorithm.n_total_timesteps == 4
+    expected_checkpoints = [] if not expected_save else [
+        (tmp_path / "models" / "model_4_steps_stopped.pt", expected_optimizer, None),
+    ]
+    assert algorithm.saved_checkpoints == expected_checkpoints
+
+
+@pytest.mark.parametrize("resume_mode", ["timeout", "unpause", "stop"])
+def test_programmatic_pause_without_prompt_blocks_the_next_iteration(
+    monkeypatch: pytest.MonkeyPatch, resume_mode: str,
+) -> None:
+    algorithm = _Algorithm()
+    elapsed = 0.0
+    iterations_while_waiting: list[int] = []
+
+    def monotonic() -> float:
+        return elapsed
+
+    def advance_time(duration: float) -> None:
+        nonlocal elapsed
+        iterations_while_waiting.append(algorithm.n_total_iterations)
+        elapsed += duration
+        if resume_mode != "timeout":
+            algorithm.execute_command(resume_mode, "", None)
+
+    def control_training(trainer: BaseAlgorithm, metrics: dict[str, Any], rollout_steps: int) -> None:
+        if trainer.n_total_iterations == 1:
+            trainer.execute_command("pause", "1s", None)
+        else:
+            trainer.execute_command("stop", "", None)
+
+    monkeypatch.setattr("swarmbots.learn.algos.base_algorithm.time.monotonic", monotonic)
+    monkeypatch.setattr("swarmbots.learn.algos.base_algorithm.time.sleep", advance_time)
+    algorithm.learn(
+        max_total_timesteps=20, log_interval=None, enable_command_prompt=False,
+        post_iteration_hooks=[control_training],
+    )
+
+    assert iterations_while_waiting
+    assert set(iterations_while_waiting) == {1}
+    if resume_mode == "timeout":
+        assert elapsed >= 1.0
+    assert algorithm.n_total_iterations == (1 if resume_mode == "stop" else 2)
+    assert algorithm._pause_until_monotonic is None
+
+
 def test_checkpoint_round_trip_restores_policy_counters_and_optimizer(tmp_path: Path) -> None:
     source = _Algorithm()
     source.policy.weight.data.fill_(3.0)

@@ -159,6 +159,7 @@ class SLSTMTemporalSequenceModel(TemporalSequenceModel):
         batch_size, sequence_length, _ = check_sequence_inputs(inputs)
         check_mask(valid_mask, batch_size=batch_size, sequence_length=sequence_length, name="valid_mask")
         check_mask(reset_mask, batch_size=batch_size, sequence_length=sequence_length, name="reset_mask")
+        inputs = self._mask_training_inputs(inputs, valid_mask)
 
         state = (
             self.initial_state(batch_size=batch_size, device=inputs.device, dtype=inputs.dtype)

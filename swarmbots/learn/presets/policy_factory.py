@@ -1,3 +1,5 @@
+"""Resolve preset options and delegate policy-family construction."""
+
 from __future__ import annotations
 
 import math
@@ -15,48 +17,29 @@ from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.predicted_std_gaussian_action_dist import PredictedStdGaussianConfig
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
-from swarmbots.learn.algos.mappo.mappo_actor import MAPPOActorConfig
-from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy, MAPPOPolicyConfig
 from swarmbots.learn.algos.mat import FeedForwardConfig, MATEncoderConfig, MLPConfig
-from swarmbots.learn.algos.mat_qc_base_policy import MATCriticConfig
-from swarmbots.learn.algos.mat.mat_dec_policy import MATDecPolicy, MATDecPolicyConfig
-from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy, MATIndPolicyConfig
-from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoderConfig
-from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigCriticConfig, MATOrigPolicy, MATOrigPolicyConfig
-from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
-from swarmbots.learn.algos.mat_qcx.mat_qcx_policy import MATQCXPolicy, MATQCXPolicyConfig
-from swarmbots.learn.algos.ppo.ppo_policy import (
-    PopArtConfig,
-    PPOActorConfig,
-    PPOCriticConfig,
-    PPOPolicy,
-    PPOPolicyConfig,
-)
-from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
-from swarmbots.learn.algos.r_mat.r_mat_ind_policy import RMATIndPolicy, RMATIndPolicyConfig
-from swarmbots.learn.algos.r_mat.r_mat_qcx_policy import RMATQCXPolicy, RMATQCXPolicyConfig
-from swarmbots.learn.algos.sac.recurrent_tmasac_policy import (
-    ActorStateCriticInputConfig,
-    RecurrentTMASACPolicy,
-    RecurrentTMASACPolicyConfig,
-)
-from swarmbots.learn.algos.off_policy.nop import SACNOPConfig, SACNOPLatentSource
-from swarmbots.learn.algos.sac.segment_tmasac_policy import SegmentTMASACPolicy
-from swarmbots.learn.algos.off_policy.actor_heads import (
-    TMASACActorHeadConfig,
-    TMASACActorHeadKind,
-)
-from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
-from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy, TMASACPolicyConfig
+from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadKind
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig
-from swarmbots.learn.algos.td3.recurrent_td3_policy import RecurrentTD3Policy, RecurrentTD3PolicyConfig
-from swarmbots.learn.algos.sac.masac_policy import MASACPolicy, MASACPolicyConfig
-from swarmbots.learn.algos.td3.td3_policy import TD3Policy, TD3PolicyConfig
+from swarmbots.learn.algos.off_policy.nop import SACNOPConfig, SACNOPLatentSource
+from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
+from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
+from swarmbots.learn.algos.sac.recurrent_tmasac_policy import ActorStateCriticInputConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
+from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.obs_indices import ObsIndices
+from swarmbots.learn.presets.policy_builders import (
+    DecoderOptions,
+    OffPolicyOptions,
+    PolicyBuildContext,
+    PolicyEncoders,
+    build_on_policy,
+    build_sac_policy,
+    build_td3_policy,
+)
 from swarmbots.learn.presets.transformer import (
     MATInitGains,
     MATNormalizationConfig,
@@ -118,11 +101,11 @@ def wrap_vec_env(
     from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
     from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
+    from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
+    from swarmbots.learn.env_wrappers.torch_shuffle_agents_wrapper import TorchShuffleAgentsWrapper
     from swarmbots.learn.env_wrappers.torch_task_ep_stats_wrapper import (
         TorchTaskEpisodeStatsWrapper,
     )
-    from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
-    from swarmbots.learn.env_wrappers.torch_shuffle_agents_wrapper import TorchShuffleAgentsWrapper
     from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTransitionObsWrapper
 
     env = SwarmBotsLearnEnvWrapper(
@@ -412,26 +395,7 @@ def _make_base_policy(
     td3_recurrent_critic: bool = False,
     td3_actor_state_critic_input_config: ActorStateCriticInputConfig | Literal["auto"] | None = "auto",
     model_scale: str | None = None,
-) -> (
-    PPOPolicy
-    | MAPPOPolicy
-    | MATQCXPolicy
-    | MATDecPolicy
-    | MATIndPolicy
-    | MATOrigPolicy
-    | RMATQCXPolicy
-    | RMATIndPolicy
-    | TMASACPolicy
-    | RecurrentTMASACPolicy
-    | SegmentTMASACPolicy
-    | TD3Policy
-):
-    def build(policy_class: type, env: Any, config: Any) -> Any:
-        if model_scale is None:
-            return policy_class(env=env, config=config)
-        from swarmbots.learn.presets.model_scale import make_policy_at_scale
-        return make_policy_at_scale(policy_class, env, config, model_scale)
-
+) -> BasePolicy:
     sac_policy_variant = _is_sac_policy_variant(policy_variant)
     deterministic_policy_variant = _is_deterministic_policy_variant(policy_variant)
     if td3_recurrent_actor or td3_recurrent_critic:
@@ -458,7 +422,7 @@ def _make_base_policy(
         beta=popart_beta,
         init_sigma=popart_init_sigma,
     )
-    mat_encoder_config = MATEncoderConfig(
+    encoder_options = dict(
         d_model=enc_d_model,
         nhead=enc_nhead,
         num_layers=2,
@@ -475,22 +439,9 @@ def _make_base_policy(
         use_agent_attention=mat_use_agent_attention,
         joint_obs_embedding=mat_joint_obs_embedding,
     )
+    mat_encoder_config = MATEncoderConfig(**encoder_options)
     rmat_encoder_config = RMATEncoderConfig(
-        d_model=enc_d_model,
-        nhead=enc_nhead,
-        num_layers=2,
-        dim_feedforward=enc_d_model * 2,
-        act_fn_cls=act_fn_cls,
-        add_agent_embeddings=mat_add_agent_embeddings,
-        linear_init_gain=mat_init_gains.obs_encoder,
-        linear_projection_init_gain=mat_init_gains.obs_encoder_projection,
-        transformer_ff_init_gain=mat_init_gains.encoder_transformer_ff,
-        transformer_ff_config=mat_encoder_transformer_ff_config,
-        local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model, enc_d_model]),
-        global_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
-        normalize_tokens=mat_normalization.normalize_encoder_tokens,
-        use_agent_attention=mat_use_agent_attention,
-        joint_obs_embedding=mat_joint_obs_embedding,
+        **encoder_options,
         temporal_residual=rmat_temporal_residual,
         temporal_layer_norm=rmat_temporal_layer_norm,
         inter_module_mlp=False,
@@ -570,417 +521,53 @@ def _make_base_policy(
         if baseline_critic_hidden_dims is not None:
             joint_head = replace(joint_head, value_regressor_hidden_dims=list(joint_critic_config.hidden_dims))
         joint_critic_config = replace(joint_critic_config, encoder_config=joint_encoder, head_config=joint_head)
-    if deterministic_policy_variant:
-        policy_class = RecurrentTD3Policy if td3_recurrent_actor else TD3Policy
-        config_class = RecurrentTD3PolicyConfig if td3_recurrent_actor else TD3PolicyConfig
-        return build(policy_class, env, config_class(
-            **({
-                "recurrent_critic": td3_recurrent_critic,
-                "actor_state_critic_input_config": td3_actor_state_critic_input_config,
-            } if td3_recurrent_actor else {}),
-            actor_encoder_config=replace(
-                rmat_actor_encoder_config if td3_recurrent_actor else mat_encoder_config,
-                use_agent_attention=policy_variant == "tmatd3",
-            ),
-            actor_head_config=TMASACActorHeadConfig(
-                hidden_dims=[dec_d_model], normalize_input=mat_normalization.normalize_actor_head_input,
-                init_gain=mat_init_gains.actor_head,
-            ),
-            critic_encoder_config=replace(
-                rmat_critic_encoder_config if td3_recurrent_critic else mat_encoder_config, use_agent_attention=True,
-            ),
-            transformer_critic_config=critic_config,
-            critic_kind="transformer" if policy_variant.startswith("tmatd3") else joint_critic_config.kind,
-            joint_critic_config=joint_critic_config,
-            n_critics=1 if policy_variant.startswith("maddpg") else 2,
-            nop_config=_make_sac_nop_config(
-                use_nop=use_nop, obs_indices=obs_indices, source_latent_dim=enc_d_model,
-                nop_init_gains=nop_init_gains,
-                nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
-                nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
-                latent_source=_resolve_tmasac_nop_latent_source(
-                    shared_encoder_num_layers=tmasac_shared_encoder_num_layers,
-                    latent_source=tmasac_nop_latent_source,
-                ),
-                compile_world_model_modules=compile_world_model_modules,
-                policy_compile_mode=policy_compile_mode, world_model_loss_coef=world_model_loss_coef,
-                num_next_steps=world_model_num_next_steps, transition_model_d_model=transition_model_d_model,
-                transition_model_nhead=transition_model_nhead, act_fn_cls=act_fn_cls,
-            ),
-            action_net_init_gain=mat_init_gains.action_net,
-            compile_modules=compile_policy_modules, compile_mode=policy_compile_mode,
-        ))
-
-    if sac_policy_variant:
-        if use_popart:
-            raise ValueError("TMASACPolicy does not support PopArt; call with use_popart=False.")
-        resolved_tmasac_nop_latent_source = _resolve_tmasac_nop_latent_source(
-            shared_encoder_num_layers=tmasac_shared_encoder_num_layers,
-            latent_source=tmasac_nop_latent_source,
-        )
-        tmasac_config_kwargs = {
-            "actor_encoder_config": (
-                replace(
-                    (
-                        rmat_actor_encoder_config
-                        if policy_variant == "tmasac__recurrent" and not tmasac_recurrent_shared_encoder
-                        else mat_encoder_config
-                    ),
-                    num_layers=tmasac_actor_encoder_num_layers,
-                )
-            ),
-            "critic_encoder_config": replace(
-                mat_encoder_config,
-                num_layers=tmasac_critic_encoder_num_layers,
-            ),
-            "shared_encoder_config": (
-                None
-                if tmasac_shared_encoder_num_layers is None
-                else replace(
-                    (rmat_actor_encoder_config if tmasac_recurrent_shared_encoder else mat_encoder_config),
-                    num_layers=tmasac_shared_encoder_num_layers,
-                )
-            ),
-            "actor_head_config": TMASACActorHeadConfig(
-                kind=(
-                    TMASACActorHeadKind.DECENTRALIZED
-                    if policy_variant in {"tmasac_dec", "masac__mlp_critic", "masac__deepset_critic"}
-                    else tmasac_actor_head_kind
-                ),
-                hidden_dims=[dec_d_model],
-                normalize_input=mat_normalization.normalize_actor_head_input,
-                init_gain=mat_init_gains.actor_head,
-                qcx_decoder_config=MATQCXDecoderConfig(
-                    d_model=dec_d_model,
-                    nhead=dec_nhead,
-                    num_layers=2,
-                    dim_feedforward=dec_d_model * 2,
-                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
-                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
-                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
-                    context_encoder_hidden_dims=[dec_d_model],
-                    action_encoder_dims=[dec_d_model, dec_d_model],
-                    memory_dims=None,
-                    normalize_context_input=mat_normalization.normalize_context_input,
-                    normalize_context_tokens=mat_normalization.normalize_context_tokens,
-                    normalize_action_input=mat_normalization.normalize_action_input,
-                    normalize_memory_input=mat_normalization.normalize_memory_input,
-                    normalize_action_tokens=mat_normalization.normalize_action_tokens,
-                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
-                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
-                ),
-            ),
-            "critic_config": critic_config,
-            "dropout": 0.0,
-            "act_fn_cls": act_fn_cls,
-            "continuous_config": continuous_config,
-            "max_agents": env.n_agents,
-            "nop_config": _make_sac_nop_config(
-                use_nop=use_nop,
-                obs_indices=obs_indices,
-                source_latent_dim=enc_d_model,
-                nop_init_gains=nop_init_gains,
-                nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
-                nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
-                latent_source=resolved_tmasac_nop_latent_source,
-                compile_world_model_modules=compile_world_model_modules,
-                policy_compile_mode=policy_compile_mode,
-                world_model_loss_coef=world_model_loss_coef,
-                num_next_steps=world_model_num_next_steps,
-                transition_model_d_model=transition_model_d_model,
-                transition_model_nhead=transition_model_nhead,
-                act_fn_cls=act_fn_cls,
-            ),
-            "compile_modules": compile_policy_modules,
-            "compile_mode": policy_compile_mode,
-            "action_net_init_gain": mat_init_gains.action_net,
-        }
-        if policy_variant in {"masac__mlp_critic", "masac__deepset_critic"}:
-            return build(MASACPolicy, env, MASACPolicyConfig(
-                joint_critic_config=joint_critic_config, **tmasac_config_kwargs,
-            ))
-        if policy_variant == "tmasac__recurrent":
-            return build(RecurrentTMASACPolicy,
-                env=env,
-                config=RecurrentTMASACPolicyConfig(
-                    recurrent_critic=False,
-                    recurrent_shared_encoder=tmasac_recurrent_shared_encoder,
-                    actor_state_critic_input_config=tmasac_actor_state_critic_input_config,
-                    experimental_compile_lstm=rmat_experimental_compile_lstm,
-                    **tmasac_config_kwargs,
-                ),
-            )
-        if policy_variant == "tmasac__segment":
-            return build(SegmentTMASACPolicy,
-                env=env,
-                config=TMASACPolicyConfig(**tmasac_config_kwargs),
-            )
-        return build(TMASACPolicy,
-            env=env,
-            config=TMASACPolicyConfig(**tmasac_config_kwargs),
-        )
-
-    if policy_variant == "ppo":
-        return build(PPOPolicy,
-            env=env,
-            config=PPOPolicyConfig(
-                actor_config=PPOActorConfig(
-                    hidden_dims=[512, 384, 256, 256],
-                    shared_encoder_latent_dim_per_agent=192,
-                    actor_head_hidden_dims=[128],
-                    latent_pi_dim_per_agent=96,
-                    act_fun_class=act_fn_cls,
-                    actor_head_init_gain=mat_init_gains.actor_head,
-                    shared_encoder_init_gain=mat_init_gains.obs_encoder,
-                    shared_encoder_projection_init_gain=mat_init_gains.obs_encoder_projection,
-                    actor_head_hidden_init_gain=mat_init_gains.actor_head,
-                ),
-                critic_config=PPOCriticConfig(
-                    hidden_dims=[256, 256],
-                    act_fun_class=act_fn_cls,
-                    use_popart=use_popart,
-                    popart_config=popart_config,
-                    value_head_init_gain=mat_init_gains.critic_value_head,
-                    value_features_init_gain=mat_init_gains.critic_value_regressor,
-                ),
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
-        )
-
-    if policy_variant == "mappo__deepset_critic":
-        return build(MAPPOPolicy,
-            env=env,
-            config=MAPPOPolicyConfig(
-                actor_config=MAPPOActorConfig(
-                    hidden_dims=[768, 512, 512, 384],
-                    latent_dim=256,
-                    actor_head_hidden_dims=[128],
-                    latent_pi_dim=128,
-                    act_fun_class=act_fn_cls,
-                    actor_head_init_gain=mat_init_gains.actor_head,
-                    layer_norm=True,
-                ),
-                critic_encoder_config=replace(
-                    mat_encoder_config, use_agent_attention=False,
-                    local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
-                ),
-                critic_interaction_config=interaction_config,
-                critic_config=MATCriticConfig(
-                    local_projection_hidden_dims=[128],
-                    value_regressor_hidden_dims=[256, 128],
-                    interaction_config=interaction_config,
-                    use_popart=use_popart,
-                    popart_config=popart_config,
-                    local_projection_init_gain=mat_init_gains.critic_local_projection,
-                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
-                    value_head_init_gain=mat_init_gains.critic_value_head,
-                ),
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
-        )
-
-    rmat_critic_encoder_config = replace(
-        rmat_critic_encoder_config, use_agent_attention=True,
-        local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
+    context = PolicyBuildContext(
+        continuous_config=continuous_config, bernoulli_config=bernoulli_config,
+        use_popart=use_popart, popart_config=popart_config, act_fn_cls=act_fn_cls,
+        init_gains=mat_init_gains, normalization=mat_normalization,
+        compile_modules=compile_policy_modules, compile_mode=policy_compile_mode, model_scale=model_scale,
     )
-    mat_critic_config = MATCriticConfig(
-        interaction_config=interaction_config,
-        n_local_projection_hidden_layers=2,
-        n_value_regressor_hidden_layers=1,
-        use_popart=use_popart,
-        popart_config=popart_config,
-        local_projection_init_gain=mat_init_gains.critic_local_projection,
-        value_regressor_init_gain=mat_init_gains.critic_value_regressor,
-        value_head_init_gain=mat_init_gains.critic_value_head,
+    encoders = PolicyEncoders(
+        feedforward=mat_encoder_config, recurrent=rmat_encoder_config,
+        recurrent_actor=rmat_actor_encoder_config, recurrent_critic=rmat_critic_encoder_config,
     )
-
-    if policy_variant == "mat_qcx":
-        return build(MATQCXPolicy,
-            env=env,
-            config=MATQCXPolicyConfig(
-                encoder_config=mat_encoder_config,
-                decoder_config=MATQCXDecoderConfig(
-                    d_model=dec_d_model,
-                    nhead=dec_nhead,
-                    num_layers=2,
-                    dim_feedforward=dec_d_model * 2,
-                    add_agent_embeddings=mat_add_agent_embeddings,
-                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
-                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
-                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
-                    actor_head_init_gain=mat_init_gains.actor_head,
-                    context_encoder_hidden_dims=[dec_d_model],
-                    action_encoder_dims=[dec_d_model, dec_d_model],
-                    memory_dims=None,
-                    normalize_context_input=mat_normalization.normalize_context_input,
-                    normalize_context_tokens=mat_normalization.normalize_context_tokens,
-                    normalize_action_input=mat_normalization.normalize_action_input,
-                    normalize_memory_input=mat_normalization.normalize_memory_input,
-                    normalize_action_tokens=mat_normalization.normalize_action_tokens,
-                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
-                    normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
-                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
-                ),
-                critic_config=mat_critic_config,
-                dropout=0.0,
-                act_fn_cls=act_fn_cls,
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                max_agents=env.n_agents,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
+    decoder = DecoderOptions(
+        d_model=dec_d_model, nhead=dec_nhead, add_agent_embeddings=mat_add_agent_embeddings,
+        assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
+    )
+    if not (deterministic_policy_variant or sac_policy_variant):
+        return build_on_policy(
+            env=env, policy_variant=policy_variant, context=context, encoders=encoders,
+            decoder=decoder, interaction_config=interaction_config,
         )
-
-    if policy_variant == "mat_qcx__lstm":
-        return build(RMATQCXPolicy,
-            env=env,
-            config=RMATQCXPolicyConfig(
-                encoder_config=rmat_encoder_config,
-                critic_encoder_config=rmat_critic_encoder_config,
-                decoder_config=MATQCXDecoderConfig(
-                    d_model=dec_d_model,
-                    nhead=dec_nhead,
-                    num_layers=2,
-                    dim_feedforward=dec_d_model * 2,
-                    add_agent_embeddings=mat_add_agent_embeddings,
-                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
-                    token_encoder_projection_init_gain=mat_init_gains.decoder_token_encoder_projection,
-                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
-                    actor_head_init_gain=mat_init_gains.actor_head,
-                    context_encoder_hidden_dims=[dec_d_model],
-                    action_encoder_dims=[dec_d_model, dec_d_model],
-                    memory_dims=None,
-                    normalize_context_input=mat_normalization.normalize_context_input,
-                    normalize_context_tokens=mat_normalization.normalize_context_tokens,
-                    normalize_action_input=mat_normalization.normalize_action_input,
-                    normalize_memory_input=mat_normalization.normalize_memory_input,
-                    normalize_action_tokens=mat_normalization.normalize_action_tokens,
-                    normalize_memory_tokens=mat_normalization.normalize_memory_tokens,
-                    normalize_actor_head_input=mat_normalization.normalize_actor_head_input,
-                    assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
-                ),
-                critic_config=mat_critic_config,
-                dropout=0.0,
-                act_fn_cls=act_fn_cls,
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                max_agents=env.n_agents,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
-        )
-
-    if policy_variant == "mat_dec":
-        return build(MATDecPolicy,
-            env=env,
-            config=MATDecPolicyConfig(
-                encoder_config=mat_encoder_config,
-                critic_encoder_config=replace(
-                    mat_encoder_config, local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
-                ),
-                critic_config=mat_critic_config,
-                actor_head_hidden_dims=[dec_d_model, dec_d_model],
-                dropout=0.0,
-                act_fn_cls=act_fn_cls,
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                max_agents=env.n_agents,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                actor_head_init_gain=mat_init_gains.actor_head,
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
-        )
-
-    if policy_variant == "mat_ind":
-        return build(MATIndPolicy,
-            env=env,
-            config=MATIndPolicyConfig(
-                encoder_config=mat_encoder_config,
-                critic_encoder_config=replace(
-                    mat_encoder_config, use_agent_attention=True,
-                    local_obs_encoder_config=MLPConfig(hidden_dims=[enc_d_model]),
-                ),
-                critic_config=mat_critic_config,
-                actor_head_hidden_dims=[dec_d_model],
-                dropout=0.0,
-                act_fn_cls=act_fn_cls,
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                max_agents=env.n_agents,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                actor_head_init_gain=mat_init_gains.actor_head,
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
-        )
-
-    if policy_variant == "mat_ind__lstm":
-        return build(RMATIndPolicy,
-            env=env,
-            config=RMATIndPolicyConfig(
-                encoder_config=rmat_encoder_config,
-                critic_encoder_config=rmat_critic_encoder_config,
-                critic_config=mat_critic_config,
-                actor_head_hidden_dims=[dec_d_model],
-                dropout=0.0,
-                act_fn_cls=act_fn_cls,
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                max_agents=env.n_agents,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                actor_head_init_gain=mat_init_gains.actor_head,
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
-        )
-
-    if policy_variant == "mat_orig":
-        return build(MATOrigPolicy,
-            env=env,
-            config=MATOrigPolicyConfig(
-                encoder_config=mat_encoder_config,
-                decoder_config=MATOrigDecoderConfig(
-                    d_model=dec_d_model,
-                    nhead=dec_nhead,
-                    num_layers=2,
-                    latent_pi_dim=dec_d_model,
-                    token_encoder_init_gain=mat_init_gains.decoder_token_encoder,
-                    transformer_ff_init_gain=mat_init_gains.decoder_transformer_ff,
-                    actor_head_init_gain=mat_init_gains.actor_head,
-                ),
-                critic_config=MATOrigCriticConfig(
-                    use_popart=use_popart,
-                    popart_config=popart_config,
-                    pool_mode="mean",
-                    value_head_hidden_dims=[enc_d_model, enc_d_model],
-                    local_projection_init_gain=mat_init_gains.critic_local_projection,
-                    value_regressor_init_gain=mat_init_gains.critic_value_regressor,
-                    value_head_init_gain=mat_init_gains.critic_value_head,
-                ),
-                continuous_config=continuous_config,
-                bernoulli_config=bernoulli_config,
-                max_agents=env.n_agents,
-                compile_modules=compile_policy_modules,
-                compile_mode=policy_compile_mode,
-                encoder_decoder_projection_init_gain=(
-                    mat_init_gains.decoder_token_encoder
-                    if mat_init_gains.decoder_token_encoder_projection is None
-                    else mat_init_gains.decoder_token_encoder_projection
-                ),
-                action_net_init_gain=mat_init_gains.action_net,
-            ),
-        )
-
-    raise ValueError(f"Unknown policy_variant: {policy_variant}")
+    if sac_policy_variant and use_popart:
+        raise ValueError("TMASACPolicy does not support PopArt; call with use_popart=False.")
+    nop_config = _make_sac_nop_config(
+        use_nop=use_nop, obs_indices=obs_indices, source_latent_dim=enc_d_model,
+        nop_init_gains=nop_init_gains,
+        nop_add_agent_embeddings_transition_model=nop_add_agent_embeddings_transition_model,
+        nop_skip_first_transition_for_critic=nop_skip_first_transition_for_critic,
+        latent_source=_resolve_tmasac_nop_latent_source(
+            shared_encoder_num_layers=tmasac_shared_encoder_num_layers, latent_source=tmasac_nop_latent_source,
+        ),
+        compile_world_model_modules=compile_world_model_modules, policy_compile_mode=policy_compile_mode,
+        world_model_loss_coef=world_model_loss_coef, num_next_steps=world_model_num_next_steps,
+        transition_model_d_model=transition_model_d_model, transition_model_nhead=transition_model_nhead,
+        act_fn_cls=act_fn_cls,
+    )
+    off_policy_options = OffPolicyOptions(
+        nop_config=nop_config, td3_recurrent_actor=td3_recurrent_actor, td3_recurrent_critic=td3_recurrent_critic,
+        td3_actor_state_critic_input_config=td3_actor_state_critic_input_config,
+        tmasac_recurrent_shared_encoder=tmasac_recurrent_shared_encoder,
+        tmasac_shared_encoder_num_layers=tmasac_shared_encoder_num_layers,
+        tmasac_actor_encoder_num_layers=tmasac_actor_encoder_num_layers,
+        tmasac_critic_encoder_num_layers=tmasac_critic_encoder_num_layers,
+        tmasac_actor_head_kind=tmasac_actor_head_kind,
+        tmasac_actor_state_critic_input_config=tmasac_actor_state_critic_input_config,
+        rmat_experimental_compile_lstm=rmat_experimental_compile_lstm,
+    )
+    builder = build_td3_policy if deterministic_policy_variant else build_sac_policy
+    return builder(
+        env=env, policy_variant=policy_variant, context=context, encoders=encoders, decoder=decoder,
+        options=off_policy_options, critic_config=critic_config, joint_critic_config=joint_critic_config,
+    )

@@ -17,7 +17,6 @@ LogStdNetInitialization = ActionNetInitialization
 @dataclass(frozen=True)
 class PredictedStdGaussianConfig:
     base_std: float
-    epsilon: float = 1e-6
     log_std_net_initialization: LogStdNetInitialization = init_linear_orthogonal
     log_std_clamp_range: tuple[float, float] = (-20.0, 2.0)
 
@@ -31,7 +30,6 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
             action_dim: int,
             base_std: float,
             squash_output: bool = False,
-            epsilon: float = 1e-6,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
             log_std_net_initialization: LogStdNetInitialization = init_linear_orthogonal,
             log_std_clamp_range: tuple[float, float] = (-20.0, 2.0),
@@ -50,8 +48,6 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
 
         self.register_buffer("base_log_std", torch.tensor(math.log(base_std)))
         self.log_std_clamp_range = log_std_clamp_range
-
-        self.epsilon = epsilon
 
         self.distribution: Optional[torchdist.Normal] = None
         self.log_stds: Optional[torch.Tensor] = None
@@ -163,7 +159,6 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
             **super().get_hyper_parameters(),
             "base_std": math.exp(self.base_log_std),
             "squash_output": self.squash_output,
-            "epsilon": self.epsilon,
             "log_std_clamp_range": list(self.log_std_clamp_range),
             "log_std_net_initialization": (
                 self.log_std_net_initialization.__name__

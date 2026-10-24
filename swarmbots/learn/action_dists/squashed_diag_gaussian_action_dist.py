@@ -13,7 +13,6 @@ from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 class SquashedDiagGaussianConfig:
     std: float
     std_learnable: bool
-    epsilon: float = 1e-6
 
 
 # Inspired by
@@ -25,7 +24,6 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             action_dim: int,
             std: float,
             std_learnable: bool,
-            epsilon: float = 1e-6,
             action_net_initialization: ActionNetInitialization = init_linear_orthogonal,
     ) -> None:
         super().__init__(
@@ -36,7 +34,6 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             action_net_initialization=action_net_initialization,
         )
         self.squash_output = True
-        self.epsilon = epsilon
         self._last_gaussian_actions: Optional[torch.Tensor] = None
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
@@ -98,7 +95,6 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {
             **super().get_hyper_parameters(),
-            "epsilon": self.epsilon,
             "squash_output": True,
         }
 

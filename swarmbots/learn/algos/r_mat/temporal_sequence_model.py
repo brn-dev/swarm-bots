@@ -23,6 +23,13 @@ class TemporalSequenceModel(nn.Module, abc.ABC):
             raise ValueError(f"hidden_dim must be >= 1, got {hidden_dim}")
         self.hidden_dim = hidden_dim
 
+    @staticmethod
+    def _mask_training_inputs(inputs: torch.Tensor, valid_mask: torch.Tensor | None) -> torch.Tensor:
+        # Output masking cannot prevent NaN weight gradients from invalid input activations.
+        if valid_mask is not None and torch.is_grad_enabled():
+            return inputs.masked_fill(~valid_mask.unsqueeze(-1), 0.0)
+        return inputs
+
     @abc.abstractmethod
     def initial_state(
             self,
@@ -190,6 +197,7 @@ class LSTMTemporalSequenceModel(TemporalSequenceModel):
 
         valid_mask = self._normalize_mask(valid_mask, batch_size=batch_size, sequence_length=sequence_length, name="valid_mask")
         reset_mask = self._normalize_mask(reset_mask, batch_size=batch_size, sequence_length=sequence_length, name="reset_mask")
+        inputs = self._mask_training_inputs(inputs, valid_mask)
 
         if initial_state is None:
             hidden_state, cell_state = self.initial_state(

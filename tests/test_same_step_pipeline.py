@@ -709,7 +709,7 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertEqual(len(episodes), 1)
             self.assertEqual(float(_to_cpu(episodes[0].final_value).item()), 2.5)
             self.assertEqual(policy.forward_calls, 2)
-            self.assertGreaterEqual(policy.predict_value_calls, 2)
+            self.assertEqual(policy.predict_value_calls, 1)
         finally:
             env.close()
 

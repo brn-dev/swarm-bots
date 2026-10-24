@@ -5,11 +5,6 @@ from torch.nn import functional as F
 
 
 class TanhBijector:
-
-    def __init__(self, epsilon: float = 1e-6) -> None:
-        super().__init__()
-        self.epsilon = epsilon
-
     @staticmethod
     def forward(x: torch.Tensor) -> torch.Tensor:
         return torch.tanh(x)

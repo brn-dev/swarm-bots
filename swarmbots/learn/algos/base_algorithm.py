@@ -264,10 +264,9 @@ class BaseAlgorithm(abc.ABC):
             self._before_learn_loop()
 
             while self.n_total_timesteps < max_total_timesteps:
-                if enable_command_prompt:
-                    self._poll_and_execute_commands(run_dir=run_dir, extra_run_metadata=extra_run_metadata)
-                    if self._stop_requested:
-                        break
+                self._poll_and_execute_commands(run_dir=run_dir, extra_run_metadata=extra_run_metadata)
+                if self._stop_requested:
+                    break
 
                 iter_timer = PerformanceTimer().start()
                 metrics, rollout_steps = self.perform_iteration(
@@ -358,6 +357,8 @@ class BaseAlgorithm(abc.ABC):
                 self._stop_requested = False
                 self._stop_should_save = True
                 self._stop_save_optimizer = None
+                self._pause_until_monotonic = None
+                self._pause_notice_logged = False
                 self._last_return_ema = None
                 self._latest_hp_update = None
                 self._command_log_path = None

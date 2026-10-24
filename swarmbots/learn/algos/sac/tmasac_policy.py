@@ -462,6 +462,7 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
+            time_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         (
             critic_local_inputs,
@@ -476,6 +477,7 @@ class TMASACPolicy(BaseSACPolicy):
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
             target=False,
+            time_mask=time_mask,
         )
         q1, q2, _nop_latents = self.critic(
             local_obs=critic_local_inputs,
@@ -497,6 +499,7 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
+            time_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         (
             critic_local_inputs,
@@ -511,6 +514,7 @@ class TMASACPolicy(BaseSACPolicy):
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
             target=False,
+            time_mask=time_mask,
         )
         q1, q2, critic_latents = self.critic(
             local_obs=critic_local_inputs,
@@ -536,6 +540,7 @@ class TMASACPolicy(BaseSACPolicy):
             hidden_global_vars: torch.Tensor | None = None,
             agent_mask: torch.Tensor | None = None,
             scenario_ids: torch.Tensor | None = None,
+            time_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         (
             critic_local_inputs,
@@ -550,6 +555,7 @@ class TMASACPolicy(BaseSACPolicy):
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
             target=True,
+            time_mask=time_mask,
         )
         q1, q2, _nop_latents = self.critic_target(
             local_obs=critic_local_inputs,
@@ -602,12 +608,14 @@ class TMASACPolicy(BaseSACPolicy):
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
             scenario_ids: torch.Tensor | None = None,
+            time_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         actor_local_inputs, actor_global_inputs = self._actor_observation_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
+            time_mask=time_mask,
         )
         actor_encoder = (
             self._actor_encoder
@@ -818,6 +826,15 @@ class TMASACPolicy(BaseSACPolicy):
             raise RuntimeError("TMASACPolicy has no shared observation encoder configured.")
         return encoder(local_obs, global_obs, agent_mask=agent_mask)
 
+    @staticmethod
+    def _normalize_scenario_time_mask(
+            time_mask: torch.Tensor | None,
+            global_obs: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if time_mask is None or not torch.is_grad_enabled():
+            return None
+        return time_mask.reshape(global_obs.shape[:-1])
+
     def _actor_observation_inputs(
             self,
             *,
@@ -825,11 +842,13 @@ class TMASACPolicy(BaseSACPolicy):
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
             scenario_ids: torch.Tensor | None,
+            time_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         global_obs = self._encode_scenario_global_obs(
             encoder=self.actor_scenario_encoder,
             global_obs=global_obs,
             scenario_ids=scenario_ids,
+            time_mask=self._normalize_scenario_time_mask(time_mask, global_obs),
         )
         if self.shared_observation_encoder is None:
             return local_obs, global_obs
@@ -851,6 +870,7 @@ class TMASACPolicy(BaseSACPolicy):
             agent_mask: torch.Tensor | None,
             scenario_ids: torch.Tensor | None,
             target: bool,
+            time_mask: torch.Tensor | None = None,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -862,10 +882,12 @@ class TMASACPolicy(BaseSACPolicy):
             if target
             else self.critic_scenario_encoder
         )
+        time_mask = self._normalize_scenario_time_mask(time_mask, global_obs)
         global_obs = self._encode_scenario_global_obs(
             encoder=scenario_encoder,
             global_obs=global_obs,
             scenario_ids=scenario_ids,
+            time_mask=time_mask,
         )
         if scenario_encoder is not None:
             assert scenario_ids is not None
@@ -873,13 +895,20 @@ class TMASACPolicy(BaseSACPolicy):
                 raise ValueError(
                     "TMASAC scenario encoding requires hidden_local_vars and hidden_global_vars."
                 )
+            local_valid_mask = agent_mask
+            if time_mask is not None and torch.is_grad_enabled():
+                local_valid_mask = (
+                    time_mask.unsqueeze(-1) if agent_mask is None else agent_mask & time_mask.unsqueeze(-1)
+                )
             hidden_local_vars = scenario_encoder.encode_hidden_local_vars(
                 hidden_local_vars,
                 scenario_ids,
+                valid_mask=local_valid_mask,
             )
             hidden_global_vars = scenario_encoder.encode_hidden_global_vars(
                 hidden_global_vars,
                 scenario_ids,
+                valid_mask=time_mask,
             )
         encoder = self.shared_observation_encoder_target if target else self.shared_observation_encoder
         if encoder is None:
@@ -898,6 +927,7 @@ class TMASACPolicy(BaseSACPolicy):
             encoder: TMASACScenarioObservationEncoder | None,
             global_obs: torch.Tensor,
             scenario_ids: torch.Tensor | None,
+            time_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if encoder is None:
             if scenario_ids is not None:
@@ -909,7 +939,7 @@ class TMASACPolicy(BaseSACPolicy):
             raise ValueError(
                 "TMASACPolicy scenario encoding is configured, but scenario_ids were not provided."
             )
-        return encoder.encode_global_obs(global_obs, scenario_ids)
+        return encoder.encode_global_obs(global_obs, scenario_ids, valid_mask=time_mask)
 
     def _build_actor_head(self) -> TMASACActorHead:
         if self.actor_head_kind is TMASACActorHeadKind.QCX:

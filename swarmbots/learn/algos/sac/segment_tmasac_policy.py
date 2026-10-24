@@ -111,12 +111,13 @@ class SegmentTMASACPolicy(TMASACPolicy):
             time_mask: torch.Tensor | None = None,
             reset_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        _ = initial_state, time_mask, reset_mask
+        _ = initial_state, reset_mask
         flat_inputs, batch_shape = self._flatten_sequence_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
+            time_mask=time_mask,
         )
         actor_latents = self.encode_actor(**flat_inputs)
         return (
@@ -218,7 +219,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             reset_mask: torch.Tensor | None = None,
             num_action_samples: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, None]:
-        _ = initial_state, time_mask, reset_mask
+        _ = initial_state, reset_mask
         flat_inputs, batch_shape = self._flatten_sequence_inputs(
             local_obs=local_obs,
             global_obs=global_obs,
@@ -227,6 +228,7 @@ class SegmentTMASACPolicy(TMASACPolicy):
             hidden_global_vars=hidden_global_vars,
             agent_mask=agent_mask,
             scenario_ids=scenario_ids,
+            time_mask=time_mask,
         )
         if num_action_samples > 1:
             flat_inputs.pop("actions")

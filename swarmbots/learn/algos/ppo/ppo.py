@@ -3,6 +3,7 @@ import math
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Optional, Any, Literal, TypeVar, Generic, Callable, Protocol, NotRequired, TypedDict, cast
 
 import torch
@@ -1160,6 +1161,26 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             return True
         else:
             return super()._execute_command(cmd, params, extra_run_metadata)
+
+    def load(
+            self,
+            path: str | Path,
+            *,
+            map_location: Any | None = "cpu",
+            recover_best_return_ema: bool = True,
+            strict_load_state_dict: bool = True,
+            restore_optimizer_state: bool = True,
+            restore_env_state: bool = True,
+    ) -> None:
+        super().load(
+            path, map_location=map_location, recover_best_return_ema=recover_best_return_ema,
+            strict_load_state_dict=strict_load_state_dict, restore_optimizer_state=restore_optimizer_state,
+            restore_env_state=restore_env_state,
+        )
+        # Live history is not checkpointed, and cached observations may use the old normalization.
+        self._rollout_state = None
+        self.rollout_buffer.reset()
+        self._rollout_warmup_done = True
 
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         state_dict = self.optimizer.state_dict()

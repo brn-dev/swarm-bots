@@ -26,7 +26,11 @@ def _writable_temp_directory() -> object:
 
 
 class _DummyScenario:
+    def __init__(self) -> None:
+        self.model_build_count = 0
+
     def build_model(self) -> object:
+        self.model_build_count += 1
         return _FakeModel()
 
     def get_default_recording_camera_config(self) -> None:
@@ -103,6 +107,16 @@ class _FailingSceneRenderer(_FakeRenderer):
 
 
 class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
+    def test_unused_recorder_does_not_build_a_recording_model(self) -> None:
+        scenario = _DummyScenario()
+        recorder = MJWLiveEpisodeRecorder(scenario=scenario)
+        try:
+            self.assertFalse(recorder.get_status()["active"])
+            self.assertEqual(scenario.model_build_count, 0)
+        finally:
+            recorder.close()
+        self.assertEqual(scenario.model_build_count, 0)
+
     def test_writer_failure_still_shuts_down_and_can_be_closed_again(self) -> None:
         recorder = MJWLiveEpisodeRecorder(scenario=_DummyScenario())
         failed = Future()
@@ -121,6 +135,7 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
 
         scenario = _DummyScenario()
         recorder = MJWLiveEpisodeRecorder(scenario=scenario)
+        self.assertEqual(scenario.model_build_count, 0)
         snapshots_by_world = {
             0: MJWWorldSnapshot(
                 qpos=np.zeros(1, dtype=np.float64),
@@ -184,6 +199,7 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
         self.assertEqual(_FakeMjData.init_count, 1)
         self.assertEqual(_FakeRenderer.init_count, 1)
         self.assertEqual(_FakeRenderer.close_count, 1)
+        self.assertEqual(scenario.model_build_count, 1)
         self.assertTrue(status["active"])
         self.assertCountEqual(status["active_worlds"], [0, 1])
 
@@ -222,7 +238,8 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
         _FakeRenderer.close_count = 0
         _FailingSceneRenderer.init_count = 0
         _FailingSceneRenderer.close_count = 0
-        recorder = MJWLiveEpisodeRecorder(scenario=_DummyScenario())
+        scenario = _DummyScenario()
+        recorder = MJWLiveEpisodeRecorder(scenario=scenario)
         snapshots = {
             world: MJWWorldSnapshot(
                 qpos=np.zeros(1), qvel=np.zeros(1), eq_active=np.zeros(1),
@@ -258,6 +275,7 @@ class MJWLiveRecordingRendererReuseTests(unittest.TestCase):
                 self.assertEqual(write_video.call_count, 2)
                 self.assertEqual(recorder.get_status()["episodes_completed"], 2)
                 self.assertEqual(_FailingSceneRenderer.close_count, 2)
+                self.assertEqual(scenario.model_build_count, 1)
 
 
 if __name__ == "__main__":

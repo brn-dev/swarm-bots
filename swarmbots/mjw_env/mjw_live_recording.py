@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +67,6 @@ def _write_video_file(*, frames: list[np.ndarray], output_path: Path, fps: int) 
 class MJWLiveEpisodeRecorder:
     def __init__(self, *, scenario: BaseMJWScenario) -> None:
         self._scenario = scenario
-        self._model = scenario.build_model()
         self._config: MJWRecordingConfig | None = None
         self._render_context: _RenderContext | None = None
         self._active_slots_by_world: dict[int, _EpisodeSlot] = {}
@@ -75,6 +75,10 @@ class MJWLiveEpisodeRecorder:
         self._episodes_completed = 0
         self._writer_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mjw-video-write")
         self._writer_futures: list[Future[None]] = []
+
+    @cached_property
+    def _model(self) -> mujoco.MjModel:
+        return self._scenario.build_model()
 
     def start(
         self,

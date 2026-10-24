@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Honor programmatic stop/pause commands independently of the interactive prompt, clear paused state when learning exits, and cover hook-triggered stopping, checkpoint options, pause expiry, unpause and stopping while paused.
+- Share PPO transition collection across dense and segmented rollout storage, split preset policy construction into family builders with typed option groups and shared encoder/decoder settings, and build recording models lazily on first use.
+- Remove unused `epsilon` arguments/config fields from squashed and predicted-standard-deviation Gaussian distributions and the tanh bijector; retain dtype-based inverse-tanh clipping and the existing likelihood calculations.
+- Carry timestep validity through recurrent and segment actor/critic scenario encoding, combining it with the existing feature mask before learned operations. Preserve singleton timestep masks for single-step observations. Cover public globals and privileged fields across recurrent, feed-forward and actor-state critics without adding inference masking work.
+- Reset PPO's live rollout cache and buffer after checkpoint loading, so restored weights and normalization start with fresh observations and recurrent histories.
+- Bootstrap PPO critics only at truncations and unfinished rollout boundaries, reuse the recurrent final-step evaluation, and include bootstrap inference in policy timing. Retain fixed critic batch shapes and share the existing autoreset host decision.
+- Sanitize inactive scenario-critic hidden inputs and LSTM/sLSTM/mLSTM timestep padding before learned operations during gradient-enabled execution, preserving finite parameter gradients without extra inference tensor work.
 - Preserve QCX CUDA-graph inference boundaries and returned outputs across forward, bootstrap and action calls.
 - Honor MAT observation-embedding bias settings and MAT/RMAT token-normalization bias and epsilon settings.
 - Snapshot compiled recurrent PPO world-model windows before helper reuse, preserving separate episode segments and retained samplers under CUDA graphs.

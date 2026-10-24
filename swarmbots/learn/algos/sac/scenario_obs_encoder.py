@@ -139,7 +139,13 @@ class ScenarioFieldEncoder(nn.Module):
             for _ in config.hidden_dims
         ]) if encoded_scenario_ids else nn.ModuleList()
 
-    def forward(self, inputs: torch.Tensor, scenario_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+            self,
+            inputs: torch.Tensor,
+            scenario_ids: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         self._validate_inputs(inputs=inputs, scenario_ids=scenario_ids)
         if not self.layers:
             assert self.empty_scenario_vectors is not None
@@ -152,6 +158,9 @@ class ScenarioFieldEncoder(nn.Module):
             & ~selected_empty_mask.unsqueeze(-1)
         )
         input_mask = selected_input_mask.to(dtype=inputs.dtype)
+        # Mask activations before learned operations: zero output gradients still multiply NaN inputs.
+        if valid_mask is not None and torch.is_grad_enabled():
+            selected_input_mask = selected_input_mask & valid_mask.unsqueeze(-1)
         hidden = inputs.masked_fill(~selected_input_mask, 0.0)
         if self.input_norm_weight is not None and self.input_norm_bias is not None:
             active_features = input_mask.sum(dim=-1, keepdim=True)
@@ -263,8 +272,14 @@ class TMASACScenarioObservationEncoder(nn.Module):
     def hidden_global_output_dim(self) -> int:
         return self.config.hidden_global_vars.output_dim
 
-    def encode_global_obs(self, global_obs: torch.Tensor, scenario_ids: torch.Tensor) -> torch.Tensor:
-        encoded = self.global_obs_encoder(global_obs, scenario_ids)
+    def encode_global_obs(
+            self,
+            global_obs: torch.Tensor,
+            scenario_ids: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        encoded = self.global_obs_encoder(global_obs, scenario_ids, valid_mask=valid_mask)
         if self.scenario_embedding is None:
             return encoded
         return torch.cat((encoded, self.scenario_embedding(scenario_ids)), dim=-1)
@@ -273,20 +288,24 @@ class TMASACScenarioObservationEncoder(nn.Module):
             self,
             hidden_local_vars: torch.Tensor,
             scenario_ids: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.hidden_local_vars_encoder is None:
             raise RuntimeError("This scenario encoder does not own a hidden-local encoder.")
         agent_scenario_ids = scenario_ids.unsqueeze(-1).expand(*scenario_ids.shape, hidden_local_vars.shape[-2])
-        return self.hidden_local_vars_encoder(hidden_local_vars, agent_scenario_ids)
+        return self.hidden_local_vars_encoder(hidden_local_vars, agent_scenario_ids, valid_mask=valid_mask)
 
     def encode_hidden_global_vars(
             self,
             hidden_global_vars: torch.Tensor,
             scenario_ids: torch.Tensor,
+            *,
+            valid_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.hidden_global_vars_encoder is None:
             raise RuntimeError("This scenario encoder does not own a hidden-global encoder.")
-        return self.hidden_global_vars_encoder(hidden_global_vars, scenario_ids)
+        return self.hidden_global_vars_encoder(hidden_global_vars, scenario_ids, valid_mask=valid_mask)
 
 
 def _validate_config(

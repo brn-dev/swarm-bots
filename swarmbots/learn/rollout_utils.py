@@ -59,8 +59,9 @@ def extract_bootstrap_obs(
         next_obs: dict[str, torch.Tensor],
         infos: dict[str, Any],
         dones: torch.Tensor,
+        has_dones: bool | None = None,
 ) -> dict[str, torch.Tensor]:
-    if not torch.any(dones):
+    if not (bool(dones.any()) if has_dones is None else has_dones):
         return next_obs
 
     final_obs_mask = _validated_final_obs_mask(infos=infos, dones=dones)

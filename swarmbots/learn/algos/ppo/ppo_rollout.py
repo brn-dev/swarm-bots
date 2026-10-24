@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import math
-from typing import Any
+from typing import Any, TypedDict
 
 import torch
 
@@ -27,6 +27,31 @@ class PPORolloutState:
     previous_actions: torch.Tensor | None
     temporal_state: Any
     rollout_step_idx: int
+
+
+class _TransitionData(TypedDict):
+    local_obs: torch.Tensor
+    global_obs: torch.Tensor
+    hidden_local_vars: torch.Tensor
+    hidden_global_vars: torch.Tensor
+    agent_mask: torch.Tensor | None
+    actions: torch.Tensor
+    rewards: torch.Tensor
+    log_probs: torch.Tensor
+    values: torch.Tensor
+    previous_actions: torch.Tensor | None
+    episode_start_mask: torch.Tensor
+    bootstrap_obs: dict[str, torch.Tensor]
+    bootstrap_values: torch.Tensor
+    dones: torch.Tensor
+
+
+@dataclass(slots=True)
+class _RolloutTransition:
+    data: _TransitionData
+    terminations: torch.Tensor
+    truncations: torch.Tensor
+    next_state: PPORolloutState
 
 
 @dataclass(slots=True)
@@ -91,6 +116,41 @@ def _evaluate_values(
     return values.masked_fill(terminated_mask, 0.0)
 
 
+def _collect_bootstrap_values(
+        *,
+        env: BaseLearnEnvWrapper,
+        policy: BasePPOPolicy[Any, Any],
+        next_obs: dict[str, torch.Tensor],
+        infos: dict[str, Any],
+        dones: torch.Tensor,
+        terminations: torch.Tensor,
+        truncations: torch.Tensor,
+        previous_actions: torch.Tensor | None,
+        temporal_state: Any,
+        values: torch.Tensor,
+        timers: _RolloutTimers,
+        final_step: bool = False,
+) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    # Share the autoreset host decision instead of synchronizing again for truncations.
+    has_dones, has_truncations, has_ongoing = torch.stack(
+        (dones, truncations & ~terminations, ~dones),
+    ).any(dim=1).tolist()
+    bootstrap_obs = extract_bootstrap_obs(
+        env=env, next_obs=next_obs, infos=infos, dones=dones, has_dones=has_dones,
+    )
+    if not (has_truncations or (final_step and has_ongoing)):
+        return bootstrap_obs, torch.zeros_like(values)
+
+    # Full batches keep compiled critic shapes stable as the set of truncated lanes changes.
+    with timers.policy_forward_timer:
+        bootstrap_values = _evaluate_values(
+            policy=policy, obs=bootstrap_obs, previous_actions=previous_actions,
+            temporal_state=temporal_state, terminated_mask=terminations,
+        )
+    timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
+    return bootstrap_obs, bootstrap_values
+
+
 def _prepare_rollout_device(
         *,
         env: BaseLearnEnvWrapper,
@@ -147,31 +207,27 @@ def _collect_rollout_step(
         *,
         env: BaseLearnEnvWrapper,
         policy: BasePPOPolicy[Any, Any],
-        buffer: PPORolloutBuffer,
-        obs: dict[str, torch.Tensor],
-        episode_start_mask: torch.Tensor,
-        previous_actions: torch.Tensor | None,
-        temporal_state: Any,
-        rollout_step_idx: int,
+        state: PPORolloutState,
         timers: _RolloutTimers,
         episode_infos: list[dict[str, Any]],
         gsde_reset_mode: GSDEResetMode | None,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, Any, int]:
-    obs_snapshot = snapshot_obs(obs)
+        final_step: bool,
+) -> _RolloutTransition:
+    obs_snapshot = snapshot_obs(state.obs)
     local_obs = obs_snapshot["local_obs"]
     batch_shape = tuple(local_obs.shape[:-1])
     step_reset_mask = build_gsde_step_reset_mask(
         gsde_reset_mode=gsde_reset_mode,
-        rollout_step_idx=rollout_step_idx,
+        rollout_step_idx=state.rollout_step_idx,
         batch_shape=batch_shape,
-        rollout_device=buffer.rollout_device,
-        initialize=rollout_step_idx == 0,
+        rollout_device=local_obs.device,
+        initialize=state.rollout_step_idx == 0,
     )
 
     with timers.reset_noise_timer:
         _reset_temporal_correlations(
             policy=policy,
-            episode_start_mask=episode_start_mask,
+            episode_start_mask=state.episode_start_mask,
             step_reset_mask=step_reset_mask,
         )
     timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())
@@ -183,9 +239,9 @@ def _collect_rollout_step(
             hidden_local_vars=obs_snapshot["hidden_local_vars"],
             hidden_global_vars=obs_snapshot["hidden_global_vars"],
             agent_mask=obs_snapshot.get("agent_mask", None),
-            previous_actions=previous_actions,
-            temporal_state=temporal_state,
-            episode_start_mask=episode_start_mask,
+            previous_actions=state.previous_actions,
+            temporal_state=state.temporal_state,
+            episode_start_mask=state.episode_start_mask,
         )
     timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
 
@@ -196,49 +252,38 @@ def _collect_rollout_step(
     dones = torch.logical_or(terminations, truncations)
     append_episode_infos(episode_infos=episode_infos, infos=infos, dones=dones)
 
-    bootstrap_obs = extract_bootstrap_obs(
-        env=env,
-        next_obs=next_obs,
-        infos=infos,
-        dones=dones,
-    )
-    bootstrap_previous_actions = None if previous_actions is None else actions.detach()
-    bootstrap_values = _evaluate_values(
-        policy=policy,
-        obs=bootstrap_obs,
-        previous_actions=bootstrap_previous_actions,
-        temporal_state=next_temporal_state,
-        terminated_mask=terminations,
+    bootstrap_previous_actions = None if state.previous_actions is None else actions.detach()
+    bootstrap_obs, bootstrap_values = _collect_bootstrap_values(
+        env=env, policy=policy, next_obs=next_obs, infos=infos, dones=dones,
+        terminations=terminations, truncations=truncations,
+        previous_actions=bootstrap_previous_actions, temporal_state=next_temporal_state,
+        values=values, timers=timers, final_step=final_step,
     )
 
     _reset_temporal_correlations(policy=policy, episode_start_mask=dones)
 
-    with timers.buffer_add_timer:
-        buffer.add(
+    next_previous_actions: torch.Tensor | None = None
+    if state.previous_actions is not None:
+        next_previous_actions = actions.detach().masked_fill(dones.unsqueeze(-1).unsqueeze(-1), 0.0)
+
+    return _RolloutTransition(
+        data=_TransitionData(
             local_obs=obs_snapshot["local_obs"],
             global_obs=obs_snapshot["global_obs"],
             hidden_local_vars=obs_snapshot["hidden_local_vars"],
             hidden_global_vars=obs_snapshot["hidden_global_vars"],
-            agent_mask=obs_snapshot.get("agent_mask", None),
-            actions=actions,
-            rewards=rewards,
-            log_probs=log_probs,
-            values=values,
-            previous_actions=previous_actions,
-            episode_start_mask=episode_start_mask,
-            temporal_state=temporal_state,
-            rollout_step_idx=rollout_step_idx,
-            bootstrap_obs=bootstrap_obs,
-            bootstrap_values=bootstrap_values,
-            dones=dones,
-        )
-    timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
-
-    next_previous_actions: torch.Tensor | None = None
-    if previous_actions is not None:
-        next_previous_actions = actions.detach().masked_fill(dones.unsqueeze(-1).unsqueeze(-1), 0.0)
-
-    return next_obs, dones, next_previous_actions, next_temporal_state, rollout_step_idx + 1
+            agent_mask=obs_snapshot.get("agent_mask"),
+            actions=actions, rewards=rewards, log_probs=log_probs, values=values,
+            previous_actions=state.previous_actions, episode_start_mask=state.episode_start_mask,
+            bootstrap_obs=bootstrap_obs, bootstrap_values=bootstrap_values, dones=dones,
+        ),
+        terminations=terminations,
+        truncations=truncations,
+        next_state=PPORolloutState(
+            obs=next_obs, episode_start_mask=dones, previous_actions=next_previous_actions,
+            temporal_state=next_temporal_state, rollout_step_idx=state.rollout_step_idx + 1,
+        ),
+    )
 
 
 def _warmup_rollout_step(
@@ -407,12 +452,6 @@ def collect_step_rollout_batch(
                 env=env, policy=policy, n_agent_actions=buffer.n_agent_actions,
             )
         env_reset_time = env_reset_timer.get_duration()
-    obs = rollout_state.obs
-    episode_start_mask = rollout_state.episode_start_mask
-    previous_actions = rollout_state.previous_actions
-    temporal_state = rollout_state.temporal_state
-    rollout_step_idx = rollout_state.rollout_step_idx
-
     vector_steps = math.ceil(n_steps / buffer.n_envs)
     with PerformanceTimer() as batch_builder_init_timer:
         batch_builder = PPORolloutBatchBuilder(
@@ -436,93 +475,20 @@ def collect_step_rollout_batch(
     timers = _init_rollout_timers()
 
     for batch_step_idx in range(vector_steps):
-        obs_snapshot = snapshot_obs(obs)
-        local_obs = obs_snapshot["local_obs"]
-        batch_shape = tuple(local_obs.shape[:-1])
-        step_reset_mask = build_gsde_step_reset_mask(
-            gsde_reset_mode=gsde_reset_mode,
-            rollout_step_idx=rollout_step_idx,
-            batch_shape=batch_shape,
-            rollout_device=buffer.rollout_device,
-            initialize=rollout_step_idx == 0,
+        transition = _collect_rollout_step(
+            env=env, policy=policy, state=rollout_state, timers=timers,
+            episode_infos=episode_infos, gsde_reset_mode=gsde_reset_mode,
+            final_step=batch_step_idx == vector_steps - 1,
         )
-
-        with timers.reset_noise_timer:
-            _reset_temporal_correlations(
-                policy=policy,
-                episode_start_mask=episode_start_mask,
-                step_reset_mask=step_reset_mask,
-            )
-        timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())
-
-        with timers.policy_forward_timer:
-            actions, log_probs, values, next_temporal_state = policy.forward_with_temporal_state(
-                local_obs=obs_snapshot["local_obs"],
-                global_obs=obs_snapshot["global_obs"],
-                hidden_local_vars=obs_snapshot["hidden_local_vars"],
-                hidden_global_vars=obs_snapshot["hidden_global_vars"],
-                agent_mask=obs_snapshot.get("agent_mask", None),
-                previous_actions=previous_actions,
-                temporal_state=temporal_state,
-                episode_start_mask=episode_start_mask,
-            )
-        timers.policy_forward_timings.append(timers.policy_forward_timer.get_duration())
-
-        with timers.env_step_timer:
-            next_obs, rewards, terminations, truncations, infos = env.step(actions)
-        timers.env_step_timings.append(timers.env_step_timer.get_duration())
-
-        dones = torch.logical_or(terminations, truncations)
-        append_episode_infos(episode_infos=episode_infos, infos=infos, dones=dones)
-
-        bootstrap_obs = extract_bootstrap_obs(
-            env=env,
-            next_obs=next_obs,
-            infos=infos,
-            dones=dones,
-        )
-        bootstrap_previous_actions = None if previous_actions is None else actions.detach()
-        bootstrap_values = _evaluate_values(
-            policy=policy,
-            obs=bootstrap_obs,
-            previous_actions=bootstrap_previous_actions,
-            temporal_state=next_temporal_state,
-            terminated_mask=terminations,
-        )
-
-        _reset_temporal_correlations(policy=policy, episode_start_mask=dones)
-
         with timers.buffer_add_timer:
             batch_builder.add(
                 step_idx=batch_step_idx,
-                local_obs=obs_snapshot["local_obs"],
-                global_obs=obs_snapshot["global_obs"],
-                hidden_local_vars=obs_snapshot["hidden_local_vars"],
-                hidden_global_vars=obs_snapshot["hidden_global_vars"],
-                agent_mask=obs_snapshot.get("agent_mask", None),
-                previous_actions=previous_actions,
-                actions=actions,
-                rewards=rewards,
-                log_probs=log_probs,
-                values=values,
-                bootstrap_obs=bootstrap_obs,
-                bootstrap_values=bootstrap_values,
-                terminations=terminations,
-                truncations=truncations,
-                dones=dones,
-                episode_start_mask=episode_start_mask,
+                terminations=transition.terminations,
+                truncations=transition.truncations,
+                **transition.data,
             )
         timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
-
-        next_previous_actions: torch.Tensor | None = None
-        if previous_actions is not None:
-            next_previous_actions = actions.detach().masked_fill(dones.unsqueeze(-1).unsqueeze(-1), 0.0)
-
-        obs = next_obs
-        episode_start_mask = dones
-        previous_actions = next_previous_actions
-        temporal_state = next_temporal_state
-        rollout_step_idx += 1
+        rollout_state = transition.next_state
 
     with PerformanceTimer() as batch_finalize_timer:
         rollout_batch = batch_builder.build().to(device=buffer.train_device, dtype=buffer.train_dtype)
@@ -537,14 +503,7 @@ def collect_step_rollout_batch(
     metrics["step_rollout_batch_path"] = True
     metrics["rollout_batch_builder_init_time"] = batch_builder_init_timer.get_duration()
     metrics["rollout_batch_finalize_time"] = batch_finalize_timer.get_duration()
-    new_state = PPORolloutState(
-        obs=obs,
-        episode_start_mask=episode_start_mask,
-        previous_actions=previous_actions,
-        temporal_state=temporal_state,
-        rollout_step_idx=rollout_step_idx,
-    )
-    return rollout_batch, episode_infos, metrics, new_state
+    return rollout_batch, episode_infos, metrics, rollout_state
 
 
 @torch.no_grad()
@@ -574,12 +533,6 @@ def collect_steps(
                 env=env, policy=policy, n_agent_actions=buffer.n_agent_actions,
             )
         env_reset_time = env_reset_timer.get_duration()
-    obs = rollout_state.obs
-    episode_start_mask = rollout_state.episode_start_mask
-    previous_actions = rollout_state.previous_actions
-    temporal_state = rollout_state.temporal_state
-    rollout_step_idx = rollout_state.rollout_step_idx
-
     episode_infos: list[dict[str, Any]] = []
     timers = _init_rollout_timers()
 
@@ -589,34 +542,27 @@ def collect_steps(
     transitions_collected = 0
     while transitions_collected < n_steps:
         transitions_collected += buffer.n_envs
-        obs, episode_start_mask, previous_actions, temporal_state, rollout_step_idx = _collect_rollout_step(
-            env=env,
-            policy=policy,
-            buffer=buffer,
-            obs=obs,
-            episode_start_mask=episode_start_mask,
-            previous_actions=previous_actions,
-            temporal_state=temporal_state,
-            rollout_step_idx=rollout_step_idx,
-            timers=timers,
-            episode_infos=episode_infos,
-            gsde_reset_mode=gsde_reset_mode,
+        transition = _collect_rollout_step(
+            env=env, policy=policy, state=rollout_state, timers=timers,
+            episode_infos=episode_infos, gsde_reset_mode=gsde_reset_mode,
+            final_step=transitions_collected >= n_steps,
         )
-
-    final_values = _evaluate_values(
-        policy=policy,
-        obs=obs,
-        previous_actions=previous_actions,
-        temporal_state=temporal_state,
-        episode_start_mask=episode_start_mask,
-    )
+        with timers.buffer_add_timer:
+            buffer.add(
+                temporal_state=rollout_state.temporal_state,
+                rollout_step_idx=rollout_state.rollout_step_idx,
+                **transition.data,
+            )
+        timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
+        rollout_state = transition.next_state
+        final_values = transition.data["bootstrap_values"]
 
     with PerformanceTimer() as rollout_finalize_timer:
         completed_episodes = buffer.get_completed_episodes()
     rollout_finalize_time = rollout_finalize_timer.get_duration()
     with PerformanceTimer() as buffer_dump_partial_episodes_timer:
         partial_episodes = buffer.dump_partial_episodes(
-            final_obs=obs,
+            final_obs=rollout_state.obs,
             final_values=final_values,
             clone_tensors=False,
         )
@@ -631,11 +577,4 @@ def collect_steps(
         rollout_finalize_time=rollout_finalize_time,
         episode_infos=episode_infos,
     )
-    new_state = PPORolloutState(
-        obs=obs,
-        episode_start_mask=episode_start_mask,
-        previous_actions=previous_actions,
-        temporal_state=temporal_state,
-        rollout_step_idx=rollout_step_idx,
-    )
-    return episodes, episode_infos, metrics, new_state
+    return episodes, episode_infos, metrics, rollout_state
