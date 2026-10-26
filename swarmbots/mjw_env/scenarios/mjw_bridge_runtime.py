@@ -9,7 +9,7 @@ import torch
 
 from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 
-from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_bounded_dist
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_, masked_mean, sample_float_or_bounded_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
     BaseMJWScenarioRuntime,
@@ -258,7 +258,7 @@ class BridgeMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.potential_reward_discount_factor),
             float(self.scenario.platform_top_z),
         )
-        self.progress[stable_mask] = new_progress[stable_mask]
+        copy_masked_rows_(self.progress, new_progress, stable_mask)
         return MJWStepResult(
             reward=progress_reward + success_reward + fell_off_bridge_reward,
             info={

@@ -288,6 +288,8 @@ class OffPolicyReplayBuffer:
             dtype=torch.long,
             device=self.storage_device,
         )
+        # Host metadata avoids synchronizing CUDA to discover that a slot has no terminal rows.
+        self._transition_slot_has_terminal_obs: list[bool] = [False] * self.capacity_per_env
         initial_terminal_capacity = min(self.total_capacity, max(64, self.n_envs * 4))
         self._terminal_obs_slots_in_use = self._new_storage_tensor(
             (initial_terminal_capacity,),
@@ -370,6 +372,7 @@ class OffPolicyReplayBuffer:
             self._temporal_state_slots_in_use.zero_()
         self.temporal_states = None
         self._terminal_obs_indices.fill_(-1)
+        self._transition_slot_has_terminal_obs = [False] * self.capacity_per_env
         self._terminal_obs_slots_in_use.zero_()
         self._segment_candidate_cache.clear()
         self._size_per_env = 0
@@ -728,10 +731,13 @@ class OffPolicyReplayBuffer:
             )
 
     def _clear_terminal_obs_for_slot_(self, slot: int) -> None:
+        if not self._transition_slot_has_terminal_obs[slot]:
+            return
         terminal_slots = self._terminal_obs_indices[:, slot]
         occupied_terminal_slots = terminal_slots[terminal_slots >= 0]
         self._terminal_obs_slots_in_use[occupied_terminal_slots] = False
         self._terminal_obs_indices[:, slot] = -1
+        self._transition_slot_has_terminal_obs[slot] = False
 
     def _store_terminal_obs_at_slot_(
             self,
@@ -789,6 +795,7 @@ class OffPolicyReplayBuffer:
 
         terminal_slots = self._allocate_terminal_obs_slots(int(done_env_indices.numel()))
         self._terminal_obs_indices[done_env_indices, slot] = terminal_slots
+        self._transition_slot_has_terminal_obs[slot] = True
         self._terminal_local_obs[terminal_slots] = terminal_rows["local_obs"]
         self._terminal_global_obs[terminal_slots] = terminal_rows["global_obs"]
         self._terminal_hidden_local_vars[terminal_slots] = terminal_rows["hidden_local_vars"]

@@ -12,7 +12,7 @@ from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 if TYPE_CHECKING:
     from swarmbots.mjw_env.scenarios.mjw_climb_scenario import MJWClimbScenario
 
-from swarmbots.mjw_env.mjw_torch_utils import masked_mean
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_, masked_mean
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
     BaseMJWScenarioRuntime,
@@ -235,8 +235,8 @@ class ClimbMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.height_reward_weight),
             float(self.scenario.potential_reward_discount_factor),
         )
-        self.horizontal_progress[stable_mask] = new_horizontal_progress[stable_mask]
-        self.height_progress[stable_mask] = new_height_progress[stable_mask]
+        copy_masked_rows_(self.horizontal_progress, new_horizontal_progress, stable_mask)
+        copy_masked_rows_(self.height_progress, new_height_progress, stable_mask)
         success_terminations = _compute_climb_goal_success_terminations(
             unit_position=unit_position,
             goal_position=self._global_obs,

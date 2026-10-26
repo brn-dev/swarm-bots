@@ -5,6 +5,11 @@ from torch import nn
 
 from swarmbots.learn.algos.mat_qc_base_policy import MATQCBasePolicy
 from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
+from swarmbots.learn.nn_components.attention import (
+    AttentionKeysValues,
+    attention_with_projected_keys_values,
+    project_attention_keys_values,
+)
 from swarmbots.learn.nn_components.nn_init import (
     init_transformer_feedforward,
     reinitialize_multihead_attention,
@@ -43,6 +48,16 @@ class MATQCXDecoderConfig:
     normalize_memory_tokens: bool = False
     normalize_actor_head_input: bool = False
     assume_agent_mask_is_active_prefix: bool = True
+
+
+@dataclass
+class MATQCXLayerCache:
+    memory: AttentionKeysValues
+    context: AttentionKeysValues | None = None
+    previous_input: torch.Tensor | None = None
+
+
+MATQCXDecoderCache = list[MATQCXLayerCache]
 
 
 class MATQCXDecoderLayer(nn.Module):
@@ -210,6 +225,50 @@ class MATQCXDecoderLayer(nn.Module):
     def _encode_query_tokens(self, x: torch.Tensor) -> torch.Tensor:
         return self.query_encoder(x)
 
+    def forward_cached_step(
+            self,
+            x: torch.Tensor,
+            previous_action_token: torch.Tensor,
+            cache: MATQCXLayerCache,
+            *,
+            context_mask: torch.Tensor | None,
+            memory_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if cache.previous_input is not None:
+            context_token = self.context_token_norm(self.context_encoder(self.context_input_norm(
+                torch.cat((cache.previous_input, previous_action_token), dim=-1),
+            )))
+            keys_values = project_attention_keys_values(self.query_context_attn, context_token)
+            cache.context = keys_values if cache.context is None else (
+                torch.cat((cache.context[0], keys_values[0]), dim=2),
+                torch.cat((cache.context[1], keys_values[1]), dim=2),
+            )
+        # The sampled action arrives afterward; its context uses this layer's
+        # input, before attention, on the next decoding step.
+        cache.previous_input = x
+
+        query_tokens = self._encode_query_tokens(x)
+        if self.norm_first:
+            query_tokens = self.norm1(query_tokens)
+        if cache.context is not None:
+            context_output = attention_with_projected_keys_values(
+                self.query_context_attn, query_tokens, cache.context, context_mask,
+            )
+            if context_mask is not None:
+                context_output = context_output.masked_fill(~context_mask.any(dim=1, keepdim=True).unsqueeze(-1), 0.0)
+            x = x + self.dropout1(context_output)
+        if not self.norm_first:
+            x = self.norm1(x)
+
+        memory_query = self.norm2(x) if self.norm_first else x
+        x = x + self.dropout2(attention_with_projected_keys_values(
+            self.memory_attn, memory_query, cache.memory, memory_mask,
+        ))
+        if self.norm_first:
+            return x + self._ff_block(self.norm3(x))
+        x = self.norm2(x)
+        return self.norm3(x + self._ff_block(x))
+
     def _context_attn_block(
             self,
             query_tokens: torch.Tensor,
@@ -334,6 +393,12 @@ class MATQCXDecoder(nn.Module):
             ]
         )
         self.norm = nn.LayerNorm(self.d_model, eps=config.layer_norm_eps, bias=config.bias)
+        modules = tuple(self.modules())
+        self._dropout_modules = tuple(module for module in modules if isinstance(module, (
+            nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d, nn.AlphaDropout, nn.FeatureAlphaDropout,
+        )))
+        self._randomized_activations = tuple(module for module in modules if isinstance(module, nn.RReLU))
+        self._attention_modules = tuple(module for module in modules if isinstance(module, nn.MultiheadAttention))
 
         if config.transformer_ff_init_gain is not None:
             self._reinitialize_layers(feedforward_init_gain=config.transformer_ff_init_gain)
@@ -405,6 +470,7 @@ class MATQCXDecoder(nn.Module):
             query_prefix_mask: torch.Tensor | None = None,
             query_mask: torch.Tensor | None = None,
             memory_mask: torch.Tensor | None = None,
+            cache: MATQCXDecoderCache | None = None,
     ) -> torch.Tensor:
         _ = query_prefix_mask, query_mask
         if query_prefix_tokens is None:
@@ -415,6 +481,15 @@ class MATQCXDecoder(nn.Module):
             )
         if query_prefix_tokens.shape[1] != action_tokens.shape[1]:
             raise ValueError("query_prefix_tokens and action_tokens must have the same sequence length")
+
+        if cache is not None:
+            x = self.input_projection(query_token)
+            for layer, layer_cache in zip(self.layers, cache):
+                x = layer.forward_cached_step(
+                    x, action_tokens[:, -1:, :], layer_cache,
+                    context_mask=context_mask, memory_mask=memory_mask,
+                )
+            return self.norm(x)
 
         x = torch.cat((query_prefix_tokens, query_token), dim=1)
         combined_context_mask = context_mask
@@ -436,6 +511,20 @@ class MATQCXDecoder(nn.Module):
             context_key_padding_mask=context_key_padding_mask,
             memory_mask=memory_mask,
         )[:, -1:, :]
+
+    def create_step_cache(self, memory_tokens: torch.Tensor) -> MATQCXDecoderCache | None:
+        # Prefix recomputation redraws activation noise, including modules nested
+        # inside activation factories. Reusing that noise changes the joint policy.
+        if any(module.training and module.p > 0.0 for module in self._dropout_modules) or any(
+            module.training for module in self._randomized_activations
+        ) or any(
+            module.training and module.dropout > 0.0 for module in self._attention_modules
+        ):
+            return None
+        return [
+            MATQCXLayerCache(memory=project_attention_keys_values(layer.memory_attn, memory_tokens))
+            for layer in self.layers
+        ]
 
     def _decode(
             self,

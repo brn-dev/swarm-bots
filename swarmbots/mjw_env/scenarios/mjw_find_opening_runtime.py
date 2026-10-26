@@ -12,7 +12,7 @@ from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 if TYPE_CHECKING:
     from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import MJWFindOpeningScenario
 
-from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_bounded_dist
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_, masked_mean, sample_float_or_bounded_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
     BaseMJWScenarioRuntime,
@@ -386,9 +386,13 @@ class FindOpeningMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.side_wall_x),
             float(self.scenario.wall_y - (self.scenario.wall_thickness / 2.0)),
         )
-        self.opening_potential[stable_mask] = new_opening_potential[stable_mask]
-        self.wall_exploration_visited_cells[stable_mask] = new_wall_exploration_visited_cells[stable_mask]
-        self._sync_wall_exploration_hidden_obs(world_idx=stable_mask)
+        copy_masked_rows_(self.opening_potential, new_opening_potential, stable_mask)
+        copy_masked_rows_(self.wall_exploration_visited_cells, new_wall_exploration_visited_cells, stable_mask)
+        copy_masked_rows_(
+            self._hidden_global_obs[:, 1:],
+            self.wall_exploration_visited_cells.to(dtype=self._hidden_global_obs.dtype),
+            stable_mask,
+        )
         progress_reward = opening_reward + exploration_reward + success_reward
         return MJWStepResult(
             reward=progress_reward,

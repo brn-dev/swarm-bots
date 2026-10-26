@@ -85,6 +85,44 @@ def test_wall_pass_reward_is_only_issued_once_per_threshold() -> None:
     assert int(runtime.next_threshold_for_unit[0, 0]) == 1
 
 
+@pytest.mark.parametrize("wall_climb_reward_weight", [0.0, 1.0])
+def test_wall_rewards_preserve_unstable_world_history_without_blocking_stable_worlds(
+    wall_climb_reward_weight: float,
+) -> None:
+    runtime = _make_runtime(num_units=2)
+    runtime.scenario.wall_climb_reward_weight = wall_climb_reward_weight
+    runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
+    runtime.bindings.num_envs = 2
+    runtime.bindings.units_active_mask = torch.ones((2, 2), dtype=torch.bool)
+    state_names = (
+        "progress", "forward_progress_unit_y", "next_threshold_for_unit", "passed_thresholds_mask",
+        "wall_climb_potential", "wall_climb_done_mask", "_hidden_local_obs",
+    )
+    for name in (*state_names, "wall_y", "wall_pass_absolute_thresholds"):
+        value = getattr(runtime, name)
+        setattr(runtime, name, value.repeat(2, *((1,) * (value.ndim - 1))))
+    runtime.progress[1] = torch.nan
+    runtime.forward_progress_unit_y[1] = 0.25
+    runtime.next_threshold_for_unit[1] = 1
+    runtime.passed_thresholds_mask[1] = True
+    runtime._hidden_local_obs[1] = 7.0
+    runtime.wall_climb_potential[1] = 0.75
+    runtime.wall_climb_done_mask[1] = True
+    original_states = {name: getattr(runtime, name).clone() for name in state_names}
+    original_buffers = {name: getattr(runtime, name) for name in state_names}
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6], [torch.nan, torch.nan]])
+    runtime._get_unit_z = lambda: torch.tensor([[0.5, 0.5], [torch.nan, torch.nan]])
+
+    result = runtime.compute_step_rewards(stable_mask=torch.tensor([True, False]))
+
+    assert result.info["wall_pass_reward"][0] > 0.0
+    torch.testing.assert_close(runtime.next_threshold_for_unit[0], torch.ones(2, dtype=torch.long))
+    assert runtime.passed_thresholds_mask[0].all()
+    for name, original in original_states.items():
+        assert getattr(runtime, name) is original_buffers[name]
+        torch.testing.assert_close(getattr(runtime, name)[1], original[1], equal_nan=True)
+
+
 def test_forward_reward_cap_uses_wall_success_threshold_in_mjw() -> None:
     runtime = _make_runtime()
     runtime.scenario.progress_reward_weight = 1.0

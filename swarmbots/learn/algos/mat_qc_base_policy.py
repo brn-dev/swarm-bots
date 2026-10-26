@@ -2,7 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import shutil
 import sys
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 from torch import nn
@@ -30,6 +30,9 @@ from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
+
+if TYPE_CHECKING:
+    from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderCache
 
 
 @dataclass(frozen=True)
@@ -322,6 +325,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             query_prefix_mask: torch.Tensor | None,
             query_mask: torch.Tensor | None,
             memory_mask: torch.Tensor | None,
+            decoder_cache: "MATQCXDecoderCache | None" = None,
     ) -> torch.Tensor:
         raise NotImplementedError
 
@@ -367,15 +371,11 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         query_tokens = self._encode_query_tokens(augmented_observations)
         memory_tokens = self._encode_memory_tokens(augmented_observations)
+        decoder_cache = self.decoder.create_step_cache(memory_tokens)
 
         actions_list: list[torch.Tensor] = []
         log_probs_list: list[torch.Tensor] = []
         decoder_context_tokens = query_tokens.new_zeros((batch_size, 0, self._initial_decoder_context_token_dim()))
-        context_mask: torch.Tensor | None
-        if agent_mask is None:
-            context_mask = None
-        else:
-            context_mask = agent_mask[:, :0]
 
         for i in range(self.n_agents):
             query_token_i = query_tokens[:, i:i + 1, :]
@@ -385,10 +385,11 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 query_token=query_token_i,
                 memory_tokens=memory_tokens,
                 query_prefix_tokens=query_tokens[:, :i, :],
-                context_mask=context_mask,
+                context_mask=None if agent_mask is None else agent_mask[:, :i],
                 query_prefix_mask=None if agent_mask is None else agent_mask[:, :i],
                 query_mask=query_mask_i,
                 memory_mask=agent_mask,
+                decoder_cache=decoder_cache,
             )
             latent_pi = self.actor_head(self.actor_head_input_norm(out)).contiguous()
             sample_agent_idx = i if self.action_dist.sampling_depends_on_agent else None
@@ -421,8 +422,6 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 agent_embeddings=agent_embeddings_i,
             )
             decoder_context_tokens = torch.cat((decoder_context_tokens, decoder_context_token_i), dim=AGENTS_DIM)
-            if context_mask is not None:
-                context_mask = torch.cat((context_mask, agent_mask[:, i:i + 1]), dim=AGENTS_DIM)
 
         actions = torch.cat(actions_list, dim=AGENTS_DIM)
         if return_log_probs:

@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from swarmbots.learn.algos.mat_qc_base_policy import MATQCBasePolicy, MATQCBasePolicyConfig
-from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoder, MATQCXDecoderConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoder, MATQCXDecoderCache, MATQCXDecoderConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.serialization_utils import serialize_dataclass
 
@@ -170,6 +170,7 @@ class MATQCXPolicy(MATQCBasePolicy):
             query_prefix_mask: torch.Tensor | None,
             query_mask: torch.Tensor | None,
             memory_mask: torch.Tensor | None,
+            decoder_cache: MATQCXDecoderCache | None = None,
     ) -> torch.Tensor:
         return self.decoder.forward_step(
             action_tokens=decoder_context_tokens,
@@ -180,6 +181,7 @@ class MATQCXPolicy(MATQCBasePolicy):
             query_prefix_mask=query_prefix_mask,
             query_mask=query_mask,
             memory_mask=memory_mask,
+            cache=decoder_cache,
         )
 
     def _decode_parallel(

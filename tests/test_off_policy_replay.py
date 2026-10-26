@@ -352,6 +352,76 @@ def _add_direct_step(
     )
 
 
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize(("storage_device", "train_device"), [
+    ("cpu", "cpu"),
+    pytest.param("cpu", "cuda", marks=pytest.mark.cuda),
+    pytest.param("cuda", "cpu", marks=pytest.mark.cuda),
+])
+def test_terminal_observations_follow_retained_transitions_after_reuse_and_reset(
+        packed: bool,
+        storage_device: str,
+        train_device: str,
+) -> None:
+    if "cuda" in (storage_device, train_device) and not torch.cuda.is_available():
+        pytest.skip("requires CUDA replay transfer")
+    env = _make_multi_env((), (), (), include_agent_mask=True)
+    try:
+        buffer = _make_buffer(
+            env, capacity_per_env=4, storage_device=storage_device, train_device=train_device,
+            compile_tensor_operations=False,
+        )
+        input_device = "cuda" if "cuda" in (storage_device, train_device) else "cpu"
+
+        def observations(value: float) -> dict[str, torch.Tensor]:
+            return {
+                **_multi_obs((value, value + 100.0, value + 200.0)),
+                "agent_mask": torch.tensor([[True, int(value + row) % 2 == 0] for row in range(3)]),
+            }
+
+        for phase in range(2):
+            if phase:
+                buffer.reset()
+            current_obs = observations(float(phase * 1_000))
+            expected_per_env: list[list[dict[str, torch.Tensor]]] = [[], [], []]
+            for step in range(17):
+                next_obs = observations(float(phase * 1_000 + step + 1))
+                terminal_obs = observations(float(-phase * 1_000 - step - 1))
+                terminations = torch.tensor([step % 3 != 0 and (step + row) % 4 == 0 for row in range(3)])
+                truncations = torch.tensor([step % 3 != 0 and (step + 2 * row) % 5 == 1 for row in range(3)])
+                dones = terminations | truncations
+                actions = torch.full((3, 2, 2), float(step + phase * 1_000))
+                rewards = torch.arange(3, dtype=torch.float32) + step
+                for env_idx, done in enumerate(dones.tolist()):
+                    successor = terminal_obs if done else next_obs
+                    expected_per_env[env_idx].append({
+                        **{name: tensor[env_idx].clone() for name, tensor in current_obs.items()},
+                        **{f"next_{name}": tensor[env_idx].clone() for name, tensor in successor.items()},
+                        "actions": actions[env_idx], "rewards": rewards[env_idx],
+                        "terminations": terminations[env_idx], "truncations": truncations[env_idx],
+                    })
+                    expected_per_env[env_idx] = expected_per_env[env_idx][-buffer.capacity_per_env:]
+
+                terminal_rows = {name: tensor[dones] for name, tensor in terminal_obs.items()} if packed else terminal_obs
+                buffer.add(
+                    obs={name: tensor.to(input_device) for name, tensor in current_obs.items()},
+                    next_obs={name: tensor.to(input_device) for name, tensor in next_obs.items()},
+                    terminal_obs={name: tensor.to(input_device) for name, tensor in terminal_rows.items()},
+                    actions=actions.to(input_device), rewards=rewards.to(input_device),
+                    terminations=terminations.to(input_device), truncations=truncations.to(input_device),
+                )
+                current_obs = next_obs
+
+            batch = buffer.get_all()
+            expected_rows = [row for rows in expected_per_env for row in rows]
+            for field in fields(batch):
+                actual = getattr(batch, field.name)
+                if actual is not None:
+                    torch.testing.assert_close(actual.cpu(), torch.stack([row[field.name] for row in expected_rows]))
+    finally:
+        env.close()
+
+
 class _PreviousActionPolicy(BasePolicy):
     @property
     def gsde_enabled(self) -> bool:
@@ -1062,7 +1132,7 @@ class OffPolicyReplayTests(unittest.TestCase):
                         capacity_per_env=70,
                         storage_device=storage_device,
                     )
-                    for step in range(70):
+                    for step in range(140):
                         _add_direct_step(
                             buffer,
                             obs_values=(float(step),),
@@ -1075,7 +1145,7 @@ class OffPolicyReplayTests(unittest.TestCase):
                     batch = buffer.get_all()
                     self.assertEqual(
                         batch.next_local_obs[:, 0, 0].tolist(),
-                        [float(1_000 + step) for step in range(70)],
+                        [float(1_000 + step) for step in range(70, 140)],
                     )
         finally:
             env.close()

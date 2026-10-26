@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 import swarmbots.mjw_env.mujoco_utils as mj_utils
 from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
-from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_, masked_mean, sample_float_or_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
     BaseMJWScenarioRuntime,
@@ -310,8 +310,8 @@ class PayloadPlaneMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.payload_centering_penalty_power),
             float(self.scenario.payload_centering_tolerance),
         )
-        self.progress[stable_mask] = new_progress[stable_mask]
-        self.towards_payload_progress[stable_mask] = new_towards_payload_progress[stable_mask]
+        copy_masked_rows_(self.progress, new_progress, stable_mask)
+        copy_masked_rows_(self.towards_payload_progress, new_towards_payload_progress, stable_mask)
 
         return MJWStepResult(
             reward=progress_reward,

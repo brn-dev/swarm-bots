@@ -1,6 +1,7 @@
 import shutil
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 from unittest.mock import patch
 
@@ -403,6 +404,61 @@ def test_qcx_policy_compile_modules_constructs_when_supported() -> None:
     policy = _make_policy(compile_modules=True)
 
     assert policy.config.compile_modules
+
+
+def test_qcx_joint_sampling_preserves_actions_and_log_probs_with_local_cache() -> None:
+    torch.manual_seed(171)
+    policy = _make_policy().eval()
+    agent_mask = torch.tensor([
+        [False, True, False, True, True], [True, True, False, False, False], [False] * 5,
+    ])
+    previous_actions = _random_valid_actions(3)
+    for offset in (0.0, 0.5):
+        observations = torch.randn(3, 5, policy.d_model_encoder) + offset
+        kwargs = dict(
+            augmented_observations=observations, batch_size=3, agent_mask=agent_mask,
+            previous_actions=previous_actions, deterministic=False, return_log_probs=True,
+        )
+        with torch.no_grad():
+            torch.manual_seed(763)
+            with patch.object(policy.decoder, "create_step_cache", return_value=None):
+                expected = policy._generate_actions(**kwargs)
+            torch.manual_seed(763)
+            outputs = policy._generate_actions(**kwargs)
+        for actual, reference in zip(outputs, expected):
+            torch.testing.assert_close(actual, reference, atol=2e-5, rtol=1e-5)
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_qcx_reduce_overhead_act_preserves_outputs_across_joint_action_calls() -> None:
+    if sys.platform == "win32" and shutil.which("cl") is None:
+        pytest.skip("torch.compile requires cl.exe on this Windows setup")
+    torch.manual_seed(419)
+    eager = _make_policy().cuda().eval()
+    compiled = MATQCXPolicy(
+        env=_DummyMATQCXEnv(),
+        config=replace(eager.config, compile_modules=True, compile_mode="reduce-overhead"),
+    ).cuda().eval()
+    mask = torch.tensor([
+        [False, True, False, True, True], [True, True, False, False, False], [False] * 5,
+    ], device="cuda")
+    previous_actions = torch.zeros(3, 5, 3, device="cuda")
+    retained_outputs = []
+    with torch.no_grad():
+        reference_state = eager.state_dict()
+        for name, target in compiled.state_dict().items():
+            target.copy_(reference_state[name.replace("_orig_mod.", "")])
+        for offset in (0.0, 0.4, -0.3, 0.2):
+            local_obs = torch.randn(3, 5, 6, device="cuda") + offset
+            global_obs = torch.randn(3, 3, device="cuda")
+            kwargs = dict(agent_mask=mask, previous_actions=previous_actions, deterministic=True)
+            expected = eager.act(local_obs, global_obs, **kwargs)
+            actual = compiled.act(local_obs, global_obs, **kwargs)
+            torch.testing.assert_close(actual, expected, atol=3e-5, rtol=3e-5)
+            retained_outputs.append((actual, actual.clone()))
+        for actual, snapshot in retained_outputs:
+            torch.testing.assert_close(actual, snapshot, atol=0.0, rtol=0.0)
 
 
 def test_compiled_qc_evaluation_matches_eager_log_probs_values_and_gradients() -> None:

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Callable
 
 import torch
 
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_
 from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 
 if TYPE_CHECKING:
@@ -206,10 +207,10 @@ class PayloadStepMJWScenarioRuntime(PayloadPlaneMJWScenarioRuntime):
             float(self.scenario.potential_reward_discount_factor),
         )
 
-        self.progress[stable_mask] = new_progress[stable_mask]
-        self.towards_payload_progress[stable_mask] = new_towards_payload_progress[stable_mask]
-        self.payload_step_height_potential[stable_mask] = payload_step_height_potential[stable_mask]
-        self.payload_step_height_done[stable_mask] = payload_step_height_done[stable_mask]
+        copy_masked_rows_(self.progress, new_progress, stable_mask)
+        copy_masked_rows_(self.towards_payload_progress, new_towards_payload_progress, stable_mask)
+        copy_masked_rows_(self.payload_step_height_potential, payload_step_height_potential, stable_mask)
+        copy_masked_rows_(self.payload_step_height_done, payload_step_height_done, stable_mask)
         progress_reward = progress_reward + payload_step_height_reward + payload_success_reward
 
         return MJWStepResult(

@@ -6,7 +6,7 @@ from torch import nn
 
 from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.algos.mat_qc_base_policy import MATQCBasePolicy
-from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoder, MATQCXDecoderConfig
+from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoder, MATQCXDecoderCache, MATQCXDecoderConfig
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
@@ -253,6 +253,7 @@ class TMASACQCXActorHead(TMASACActorHead):
         flat_actor_latents = actor_latents.reshape(-1, self.n_agents, actor_latents.shape[-1])
         flat_agent_mask = None if agent_mask is None else agent_mask.reshape(-1, self.n_agents)
         memory_tokens = self.encode_memory_tokens(flat_actor_latents)
+        decoder_cache = self.decoder.create_step_cache(memory_tokens)
         action_tokens = flat_actor_latents.new_zeros(
             (flat_actor_latents.shape[0], 0, self.action_token_dim)
         )
@@ -267,6 +268,7 @@ class TMASACQCXActorHead(TMASACActorHead):
                 query_agent_idx=agent_idx,
                 action_tokens=action_tokens,
                 agent_mask=flat_agent_mask,
+                decoder_cache=decoder_cache,
             )
             latent_pi = flat_latent_pi.reshape(*leading_shape, 1, self.latent_dim)
             sample_agent_idx = agent_idx if action_dist.sampling_depends_on_agent else None
@@ -333,6 +335,7 @@ class TMASACQCXActorHead(TMASACActorHead):
             query_agent_idx: int,
             action_tokens: torch.Tensor,
             agent_mask: torch.Tensor | None,
+            decoder_cache: MATQCXDecoderCache | None = None,
     ) -> torch.Tensor:
         decoder_output = self.decoder.forward_step(
             action_tokens=action_tokens,
@@ -343,6 +346,7 @@ class TMASACQCXActorHead(TMASACActorHead):
             query_prefix_mask=None if agent_mask is None else agent_mask[:, :query_agent_idx],
             query_mask=None if agent_mask is None else agent_mask[:, query_agent_idx],
             memory_mask=agent_mask,
+            cache=decoder_cache,
         )
         return self.output_head(decoder_output)
 

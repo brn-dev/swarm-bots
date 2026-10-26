@@ -22,7 +22,7 @@ from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     MJWStepResult,
     mjw_forward,
 )
-from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_, masked_mean, sample_float_or_dist
 
 
 @dataclass(slots=True)
@@ -701,14 +701,14 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             forward_reward_wall_boost_height_margin,
             unit_ground_z,
         )
-        self.progress[stable_mask] = new_progress[stable_mask]
-        self.forward_progress_unit_y[stable_mask] = forward_progress_unit_y[stable_mask]
+        copy_masked_rows_(self.progress, new_progress, stable_mask)
+        copy_masked_rows_(self.forward_progress_unit_y, forward_progress_unit_y, stable_mask)
         if wall_climb_reward_weight != 0.0:
-            self.wall_climb_potential[stable_mask] = wall_climb_potential[stable_mask]
-            self.wall_climb_done_mask[stable_mask] = wall_climb_done_mask[stable_mask]
-        self.next_threshold_for_unit[stable_mask] = latched_thresholds[stable_mask]
-        self.passed_thresholds_mask[stable_mask] = passed_thresholds_mask[stable_mask]
-        self._hidden_local_obs[stable_mask] = self.passed_thresholds_mask[stable_mask].to(dtype=torch.float32)
+            copy_masked_rows_(self.wall_climb_potential, wall_climb_potential, stable_mask)
+            copy_masked_rows_(self.wall_climb_done_mask, wall_climb_done_mask, stable_mask)
+        copy_masked_rows_(self.next_threshold_for_unit, latched_thresholds, stable_mask)
+        copy_masked_rows_(self.passed_thresholds_mask, passed_thresholds_mask, stable_mask)
+        copy_masked_rows_(self._hidden_local_obs, self.passed_thresholds_mask.to(dtype=torch.float32), stable_mask)
         success_terminations = self._compute_wall_success_terminations(unit_y=unit_y, stable_mask=stable_mask)
         wall_success_reward = success_terminations.to(dtype=progress_reward.dtype) * (
             float(self.scenario.wall_success_reward) * float(self.scenario.progress_reward_weight)

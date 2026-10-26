@@ -215,6 +215,38 @@ def _make_segment_batch(batch_size: int = 3, num_next_steps: int = 4) -> OffPoli
     )
 
 
+def test_qcx_cached_sampling_preserves_pathwise_actor_gradients() -> None:
+    torch.manual_seed(516)
+    config = _make_config(actor_head_kind=TMASACActorHeadKind.QCX)
+    config = replace(config, actor_head_config=replace(
+        config.actor_head_config,
+        qcx_decoder_config=replace(config.actor_head_config.qcx_decoder_config, num_layers=3),
+    ))
+    policy = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
+    reference = TMASACPolicy(env=_DummyContinuousEnv(), config=config)
+    reference.load_state_dict(policy.state_dict())
+    batch = _make_batch(batch_size=3)
+    mask = torch.tensor([[False, True, True], [True, False, True], [False, False, False]])
+    kwargs = dict(
+        local_obs=batch.local_obs, global_obs=batch.global_obs,
+        agent_mask=mask, deterministic=False, use_rsample=True,
+    )
+    torch.manual_seed(394)
+    with patch.object(reference.actor_head.decoder, "create_step_cache", return_value=None):
+        expected = reference.action_log_prob(**kwargs)
+    torch.manual_seed(394)
+    outputs = policy.action_log_prob(**kwargs)
+    for actual, previous in zip(outputs, expected):
+        torch.testing.assert_close(actual, previous, atol=2e-5, rtol=1e-5)
+    (outputs[0].square().sum() + 0.1 * outputs[1].sum()).backward()
+    (expected[0].square().sum() + 0.1 * expected[1].sum()).backward()
+    torch.testing.assert_close(
+        {name: parameter.grad for name, parameter in policy.named_parameters()},
+        {name: parameter.grad for name, parameter in reference.named_parameters()},
+        atol=5e-5, rtol=1e-4,
+    )
+
+
 def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:
     return [
         BetaConfig(),

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 import swarmbots.mjw_env.mujoco_utils as mj_utils
 from swarmbots.mjw_env.mjw_torch_quat import quat_to_rot6d_torch
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
     BaseMJWScenarioRuntime,
@@ -377,7 +378,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.goal_radius),
             float(self.scenario.success_reward),
         )
-        self.payload_progress[stable_mask] = new_payload_progress[stable_mask]
+        copy_masked_rows_(self.payload_progress, new_payload_progress, stable_mask)
 
         return MJWStepResult(
             reward=progress_reward,
@@ -408,19 +409,31 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
         )
         sampled_count_indices = torch.multinomial(probabilities, n_reset, replacement=True, generator=rng)
         active_counts = counts[sampled_count_indices]
+        payload_rank = self._sample_payload_ranks(n_reset=n_reset, rng=rng)
+        return payload_rank < active_counts.view(-1, 1)
+
+    def _sample_payload_ranks(
+        self,
+        *,
+        n_reset: int,
+        rng: torch.Generator,
+        active_payload_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         random_scores = torch.rand(
             (n_reset, self.scenario.max_payloads),
             device=self.bindings.device,
             dtype=torch.float32,
             generator=rng,
         )
+        if active_payload_mask is not None:
+            random_scores.masked_fill_(~active_payload_mask, float("inf"))
         payload_rank = torch.empty_like(random_scores, dtype=torch.long)
         payload_rank.scatter_(
             dim=1,
-            index=torch.argsort(random_scores, dim=1),
+            index=random_scores.argsort(dim=1),
             src=torch.arange(self.scenario.max_payloads, device=self.bindings.device).view(1, -1).expand(n_reset, -1),
         )
-        return payload_rank < active_counts.view(-1, 1)
+        return payload_rank
 
     def _sample_payload_positions(
         self,
@@ -451,22 +464,15 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
         payload_position[:, :, 2] = float(self.scenario.payload_radius)
         active_row_spacing = self._payload_row_spacing(common_reset_batch.swarm_start[:, 0])
 
-        for reset_idx in range(n_reset):
-            active_payload_indices = torch.nonzero(active_payload_mask[reset_idx], as_tuple=False).flatten()
-            active_count = int(active_payload_indices.numel())
-            if active_count == 0:
-                continue
-            centered_slots = torch.arange(active_count, device=self.bindings.device, dtype=torch.float32)
-            centered_slots -= float(active_count - 1) / 2.0
-            slot_x = centered_slots * active_row_spacing[reset_idx]
-            slot_x = slot_x[torch.randperm(active_count, device=self.bindings.device, generator=rng)]
-            payload_position[reset_idx, active_payload_indices, 0] = (
-                common_reset_batch.swarm_start[reset_idx, 0] + slot_x
-            )
-            payload_position[reset_idx, active_payload_indices, 1] = (
-                common_reset_batch.swarm_start[reset_idx, 1] + float(self.scenario.payload_spawn_y)
-            )
-            payload_position[reset_idx, active_payload_indices, 2] = float(self.scenario.payload_radius)
+        slot_rank = self._sample_payload_ranks(
+            n_reset=n_reset, rng=rng, active_payload_mask=active_payload_mask,
+        )
+        active_counts = active_payload_mask.sum(dim=1, keepdim=True).to(dtype=torch.float32)
+        centered_slots = slot_rank.to(dtype=torch.float32) - (active_counts - 1.0) / 2.0
+        active_x = common_reset_batch.swarm_start[:, 0:1] + centered_slots * active_row_spacing.unsqueeze(1)
+        active_y = common_reset_batch.swarm_start[:, 1:2] + float(self.scenario.payload_spawn_y)
+        payload_position[..., 0] = torch.where(active_payload_mask, active_x, payload_position[..., 0])
+        payload_position[..., 1] = torch.where(active_payload_mask, active_y, payload_position[..., 1])
 
         return payload_position
 

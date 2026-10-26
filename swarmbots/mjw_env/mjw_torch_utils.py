@@ -110,3 +110,9 @@ def masked_mean(values: torch.Tensor, mask: torch.Tensor, *, dim: int) -> torch.
     mask_f = mask.to(dtype=values.dtype)
     denom = torch.clamp(mask_f.sum(dim=dim), min=1.0)
     return (values * mask_f).sum(dim=dim) / denom
+
+
+def copy_masked_rows_(destination: torch.Tensor, source: torch.Tensor, mask: torch.Tensor) -> None:
+    # Boolean indexing compacts rows and synchronizes CUDA with the host.
+    row_mask = mask.reshape(mask.shape[0], *((1,) * (destination.ndim - 1)))
+    destination.copy_(torch.where(row_mask, source, destination))

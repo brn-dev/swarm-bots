@@ -12,7 +12,7 @@ from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 if TYPE_CHECKING:
     from swarmbots.mjw_env.scenarios.mjw_move_to_goal_scenario import MJWMoveToGoalScenario
 
-from swarmbots.mjw_env.mjw_torch_utils import masked_mean, sample_float_or_dist
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_, masked_mean, sample_float_or_dist
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
     BaseMJWScenarioRuntime,
@@ -223,7 +223,7 @@ class MoveToGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.forward_reward_weight),
             float(self.scenario.potential_reward_discount_factor),
         )
-        self.progress[stable_mask] = new_progress[stable_mask]
+        copy_masked_rows_(self.progress, new_progress, stable_mask)
 
         return MJWStepResult(
             reward=progress_reward,

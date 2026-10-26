@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Avoid CUDA row compaction in scenario reward-state and exploration-observation updates, preserving unstable-world history and existing buffers. Skip replay terminal-slot cleanup when the overwritten slot has no terminal observations, retaining slot reuse and reset behavior.
+- Batch MultiPayloadGoal payload placement across reset worlds while retaining centered, separated active slots and inactive parking positions. Exact trajectories for existing seeds change because the batched sampler consumes random numbers differently.
+- Cache per-layer QCX memory and action-context attention projections during MAT/RMAT and TMASAC autoregressive action generation. Preserve training gradients, agent masks, checkpoint parameters and parallel action evaluation; retain prefix recomputation for training dropout and RReLU activations, including nested activation factories.
 - Batch completed-episode statistics by device and dtype before CPU conversion, preserving numeric types, scenario metadata and field-presence masks. Use fused Adam for CUDA PPO/SAC/DDPG/TD3 training and select destination-device execution and capture settings when restoring optimizer state. Defer PPO loss, ratio and gradient-norm diagnostics until aggregation while retaining minibatch KL early stopping and non-finite gradient checks. Preserve metric dtypes, exact sample counts and low-precision standard deviations through aggregation.
 - Validate live learning-rate and SAC entropy-coefficient updates before mutation, preserving trainer and optimizer settings on rejection while retaining zero fixed learning rates.
 - Apply PPO/SAC/TD3 loss-weight requests atomically through shared alias and finite-value validation, including disabled NOP modules and delegated policy keys.

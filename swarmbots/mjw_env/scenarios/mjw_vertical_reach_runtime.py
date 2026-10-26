@@ -7,6 +7,7 @@ import mujoco
 import numpy as np
 import torch
 
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_
 from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 
 if TYPE_CHECKING:
@@ -293,9 +294,9 @@ class VerticalReachMJWScenarioRuntime(BaseMJWScenarioRuntime):
             float(self.scenario.reach_column_max_y),
             float(self.scenario.potential_reward_discount_factor),
         )
-        self.horizontal_progress[stable_mask] = new_horizontal_progress[stable_mask]
-        self.height_progress[stable_mask] = new_height_progress[stable_mask]
-        self.reach_column_progress[stable_mask] = new_reach_column_progress[stable_mask]
+        copy_masked_rows_(self.horizontal_progress, new_horizontal_progress, stable_mask)
+        copy_masked_rows_(self.height_progress, new_height_progress, stable_mask)
+        copy_masked_rows_(self.reach_column_progress, new_reach_column_progress, stable_mask)
         success_terminations = _compute_vertical_reach_goal_success_terminations(
             unit_position=unit_position,
             goal_position=self._global_obs,
