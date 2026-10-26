@@ -1,10 +1,41 @@
 import math
 import unittest
+from unittest.mock import patch
 
 import pytest
 import torch
 
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=[
+    pytest.mark.cuda, pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"),
+])])
+@pytest.mark.parametrize("full_std", [False, True])
+@pytest.mark.parametrize("squash_output", [False, True])
+def test_gsde_sampling_and_likelihood_gradients_stay_on_device(
+    device: str, full_std: bool, squash_output: bool,
+) -> None:
+    dist = GSDEActionDist(
+        latent_dim=4, action_dim=2, base_std=0.5, full_std=full_std, squash_output=squash_output,
+    ).to(device)
+    # Bounded features and noise keep float32 tanh inversion away from saturation.
+    latent_pi = torch.linspace(-0.5, 0.5, 24, device=device).reshape(2, 3, 4).requires_grad_()
+    dist.set_temporal_correlation_state(torch.linspace(-1.0, 1.0, 48, device=device).reshape(2, 3, 4, 2))
+
+    with (
+        patch.object(torch.Tensor, "__bool__", side_effect=AssertionError("sampling must stay on device")),
+        patch.object(torch.Tensor, "item", side_effect=AssertionError("sampling must stay on device")),
+        patch.object(torch.Tensor, "cpu", side_effect=AssertionError("sampling must stay on device")),
+    ):
+        actions, log_probs = dist.get_actions_with_log_probs(latent_pi, use_rsample=True)
+        evaluated_log_probs = dist.log_prob(actions)
+        (actions.square().mean() + log_probs.mean()).backward()
+
+    torch.testing.assert_close(evaluated_log_probs, log_probs, rtol=1e-4, atol=1e-5)
+    assert torch.isfinite(actions).all() and torch.isfinite(log_probs).all()
+    for gradient in (latent_pi.grad, dist.action_net.weight.grad, dist.log_stds.grad):
+        assert gradient is not None and torch.isfinite(gradient).all()
 
 
 @pytest.mark.parametrize("full_std", [False, True])

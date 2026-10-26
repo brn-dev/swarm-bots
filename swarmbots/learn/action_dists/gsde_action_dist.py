@@ -174,7 +174,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         variance = torch.matmul(latent_sde_sq, std_matrix ** 2)
         action_std = torch.sqrt(variance + self.epsilon)
 
-        self.distribution = torchdist.Normal(loc=means, scale=action_std)
+        self.distribution = torchdist.Normal(loc=means, scale=action_std, validate_args=False)
         return self
 
     def sample(

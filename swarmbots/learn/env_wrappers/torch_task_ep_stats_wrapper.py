@@ -25,6 +25,7 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
         self._stats_key = stats_key
         self.episode_progress_rewards = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
         self.prev_dones = torch.zeros((self._n_envs,), device=self.device, dtype=torch.bool)
+        self._previous_step_had_dones = False
 
     def reset(self, **kwargs: Any) -> tuple[TorchObs, dict[str, Any]]:
         obs, info = super().reset(**kwargs)
@@ -32,9 +33,11 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
         if reset_mask is None:
             self.episode_progress_rewards.zero_()
             self.prev_dones.zero_()
+            self._previous_step_had_dones = False
         else:
             self.episode_progress_rewards[reset_mask] = 0.0
             self.prev_dones[reset_mask] = False
+            self._previous_step_had_dones = bool(self.prev_dones.any())
         return obs, info
 
     def step(
@@ -48,7 +51,8 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
                 f"got {type(infos)}."
             )
 
-        self.episode_progress_rewards[self.prev_dones] = 0.0
+        if self._previous_step_had_dones:
+            self.episode_progress_rewards[self.prev_dones] = 0.0
 
         progress_values = self._extract_step_values(infos, self.progress_key)
         if progress_values is not None:
@@ -56,7 +60,8 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
 
         dones = torch.logical_or(terminations, truncations)
         self.prev_dones = dones
-        if torch.any(dones):
+        self._previous_step_had_dones = bool(dones.any())
+        if self._previous_step_had_dones:
             self._inject_episode_stats(infos=infos, dones=dones)
 
         return self.observations(observations), self.rewards(rewards), terminations, truncations, infos
@@ -74,6 +79,8 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
         return to_torch_tensor(options["reset_mask"], device=self.device, dtype=torch.bool).reshape(self._n_envs)
 
     def _extract_step_values(self, infos: dict[str, Any], key: str) -> torch.Tensor | None:
+        if not isinstance(infos.get("final_info"), dict):
+            return self._extract_values_from_info_dict(infos, key)
         return self._extract_step_values_with_mask(infos, key)[0]
 
     def _extract_step_values_with_mask(
@@ -86,10 +93,7 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
             return values, present_mask
         if values is None:
             values = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
-        else:
-            values = values.clone()
-        values[final_mask] = final_values[final_mask]
-        return values, present_mask | final_mask
+        return torch.where(final_mask, final_values, values), present_mask | final_mask
 
     def _info_value_mask(self, infos: dict[str, Any], key: str) -> torch.Tensor:
         if key not in infos:
@@ -115,10 +119,7 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
         if present_mask is None:
             return values
 
-        masked_values = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
-        if torch.any(present_mask):
-            masked_values[present_mask] = values[present_mask]
-        return masked_values
+        return torch.where(present_mask, values, 0.0)
 
     def _info_values_to_tensor(
         self,

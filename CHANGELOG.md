@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Stabilize the gSDE sampling and likelihood gradient test with bounded features and exploration noise to avoid intermittent float32 tanh round-trip failures.
+- Batch segmented PPO rollout metadata transfers and partial-episode advantage calculations across equal-length segments, preserving episode boundaries, recurrent histories and tensor ownership. Disable redundant gSDE distribution validation during sampling and likelihood evaluation, and reuse episode-statistics decisions while avoiding masked info compaction in learning wrappers.
 - Avoid CUDA row compaction in scenario reward-state and exploration-observation updates, preserving unstable-world history and existing buffers. Skip replay terminal-slot cleanup when the overwritten slot has no terminal observations, retaining slot reuse and reset behavior.
 - Batch MultiPayloadGoal payload placement across reset worlds while retaining centered, separated active slots and inactive parking positions. Exact trajectories for existing seeds change because the batched sampler consumes random numbers differently.
 - Cache per-layer QCX memory and action-context attention projections during MAT/RMAT and TMASAC autoregressive action generation. Preserve training gradients, agent masks, checkpoint parameters and parallel action evaluation; retain prefix recomputation for training dropout and RReLU activations, including nested activation factories.

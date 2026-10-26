@@ -16,6 +16,32 @@ from swarmbots.learn.torch_device import as_device
 MaybeTensor = Optional[torch.Tensor]
 
 
+def _compute_episode_advantages(
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        final_values: torch.Tensor,
+        gamma: float,
+        gae_lambda: float,
+) -> torch.Tensor:
+    advantages = torch.empty_like(rewards)
+    final_values = final_values.reshape(values.shape[:-1])
+    last_gae_lam = 0.0
+    num_steps = rewards.shape[-1]
+    for step in reversed(range(num_steps)):
+        next_values = final_values if step == num_steps - 1 else values[..., step + 1]
+        delta = rewards[..., step] + gamma * next_values - values[..., step]
+        last_gae_lam = delta + gamma * gae_lambda * last_gae_lam
+        advantages[..., step] = last_gae_lam
+    return advantages
+
+
+@dataclass(frozen=True, slots=True)
+class _EpisodeMetadata:
+    step: int
+    is_true_episode_start: bool
+    rollout_start_step: int
+
+
 @dataclass
 class PPOEpisodeSegment:
     local_obs: torch.Tensor  # (n_steps, n_agents, n_local_obs)
@@ -48,20 +74,9 @@ class PPOEpisodeSegment:
         assert self.values is not None
         assert self.final_value is not None
 
-        self.advantages = torch.zeros_like(self.rewards)
-        last_gae_lam = 0.0
-        num_steps = len(self.rewards)
-
-        for step in reversed(range(num_steps)):
-            if step == num_steps - 1:
-                next_val = self.final_value
-            else:
-                next_val = self.values[step + 1]
-
-            delta = self.rewards[step] + gamma * next_val - self.values[step]
-            last_gae_lam = delta + gamma * gae_lambda * last_gae_lam
-            self.advantages[step] = last_gae_lam
-
+        self.advantages = _compute_episode_advantages(
+            self.rewards, self.values, self.final_value, gamma, gae_lambda,
+        )
         self.returns = self.advantages + self.values
 
 
@@ -188,7 +203,8 @@ class PPOEpisodeAccumulator:
 
         bootstrap_agent_mask = bootstrap_obs.get("agent_mask", None)
         done_env_indices = torch.where(dones)[0]
-        for done_env_idx in done_env_indices.tolist():
+        done_metadata = self._episode_metadata(done_env_indices) if len(done_env_indices) else []
+        for done_env_idx, metadata in zip(done_env_indices.tolist(), done_metadata, strict=True):
             yield self.construct_episode(
                 done_env_idx,
                 final_local_obs=bootstrap_obs["local_obs"][done_env_idx],
@@ -197,6 +213,7 @@ class PPOEpisodeAccumulator:
                 final_hidden_global_vars=bootstrap_obs["hidden_global_vars"][done_env_idx],
                 final_agent_mask=None if bootstrap_agent_mask is None else bootstrap_agent_mask[done_env_idx],
                 final_value=bootstrap_values[done_env_idx],
+                metadata=metadata,
             )
             self.initial_previous_actions[done_env_idx].zero_()
             self.is_true_episode_start[done_env_idx] = False
@@ -212,8 +229,11 @@ class PPOEpisodeAccumulator:
             final_agent_mask: MaybeTensor,
             final_value: torch.Tensor,
             clone_tensors: bool = True,
+            metadata: _EpisodeMetadata | None = None,
     ) -> PPOEpisodeSegment:
-        step = int(self.step[env].item())
+        if metadata is None:
+            metadata = self._episode_metadata(env)[0]
+        step = metadata.step
         def maybe_clone(tensor: torch.Tensor) -> torch.Tensor:
             return tensor.clone() if clone_tensors else tensor
 
@@ -235,13 +255,25 @@ class PPOEpisodeAccumulator:
             final_agent_mask=None if final_agent_mask is None else maybe_clone(final_agent_mask),
             final_value=maybe_clone(final_value),
             initial_previous_actions=maybe_clone(self.initial_previous_actions[env]),
-            is_true_episode_start=bool(self.is_true_episode_start[env].item()),
+            is_true_episode_start=metadata.is_true_episode_start,
             initial_temporal_state=clone_detach_temporal_state(
                 index_temporal_state(self.initial_temporal_state, slice(env, env + 1))
             ),
             rollout_env_idx=env,
-            rollout_start_step=int(self.rollout_start_steps[env].item()),
+            rollout_start_step=metadata.rollout_start_step,
         )
+
+    def _episode_metadata(
+            self,
+            env_indices: int | slice | torch.Tensor = slice(None),
+    ) -> list[_EpisodeMetadata]:
+        metadata = torch.stack((
+            self.step[env_indices], self.is_true_episode_start[env_indices], self.rollout_start_steps[env_indices],
+        ), dim=-1).reshape(-1, 3)
+        return [
+            _EpisodeMetadata(step, bool(is_true_episode_start), rollout_start_step)
+            for step, is_true_episode_start, rollout_start_step in metadata.cpu().tolist()
+        ]
 
     def reset(self) -> None:
         self.initial_previous_actions.zero_()
@@ -366,10 +398,26 @@ class PPORolloutBuffer:
             clone_tensors: bool = True,
     ) -> list[PPOEpisodeSegment]:
         final_agent_mask = final_obs.get("agent_mask", None)
+        metadata = self.accumulator._episode_metadata()
+        envs_by_length: dict[int, list[int]] = {}
+        for env_idx, episode_metadata in enumerate(metadata):
+            if episode_metadata.step > 0:
+                envs_by_length.setdefault(episode_metadata.step, []).append(env_idx)
+        gae_by_env: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+        for length, env_indices in envs_by_length.items():
+            indices = torch.tensor(env_indices, device=self.accumulator.rewards.device)
+            rewards = self.accumulator.rewards[indices, :length]
+            values = self.accumulator.values[indices, :length]
+            advantages = _compute_episode_advantages(
+                rewards, values, final_values[indices], self.gamma, self.gae_lambda,
+            )
+            returns = advantages + values
+            for row, env_idx in enumerate(env_indices):
+                gae_by_env[env_idx] = advantages[row], returns[row]
+
         partial_episodes: list[PPOEpisodeSegment] = []
-        for env_idx in range(self.n_envs):
-            step = int(self.accumulator.step[env_idx].item())
-            if step == 0:
+        for env_idx, episode_metadata in enumerate(metadata):
+            if episode_metadata.step == 0:
                 continue
             episode = self.accumulator.construct_episode(
                 env=env_idx,
@@ -380,8 +428,9 @@ class PPORolloutBuffer:
                 final_agent_mask=None if final_agent_mask is None else final_agent_mask[env_idx],
                 final_value=final_values[env_idx],
                 clone_tensors=clone_tensors,
+                metadata=episode_metadata,
             )
-            episode.compute_gae(self.gamma, self.gae_lambda)
+            episode.advantages, episode.returns = gae_by_env[env_idx]
             partial_episodes.append(episode)
         return self._episodes_to_train_dev(partial_episodes)
 
