@@ -34,23 +34,64 @@ def append_episode_infos(
     ).reshape(-1)
     if tuple(episode_mask.shape) != tuple(dones.shape):
         raise ValueError(f"Expected infos['_episode'] shape {tuple(dones.shape)}, got {tuple(episode_mask.shape)}")
-    if not torch.equal(episode_mask, dones):
+    episode_mask_cpu, dones_cpu = torch.stack((episode_mask, dones)).detach().cpu()
+    if not torch.equal(episode_mask_cpu, dones_cpu):
         raise ValueError("Expected infos['_episode'] to match computed dones.")
 
-    for env_idx in torch.nonzero(episode_mask, as_tuple=False).flatten().tolist():
+    completed_indices = torch.nonzero(episode_mask_cpu, as_tuple=False).flatten().tolist()
+    if not completed_indices:
+        return
+    statistic_names = tuple(key for key in episode_stats if not key.startswith("_"))
+    columns = {key: episode_stats[key] for key in statistic_names}
+    for key in statistic_names:
+        mask_key = f"_{key}"
+        if episode_stats.get(mask_key) is not None:
+            columns[mask_key] = episode_stats[mask_key]
+    scenario_columns = {
+        key: info_source.get(key, infos.get(key))
+        for key in ("scenario_id", "scenario_name")
+        if info_source.get(key, infos.get(key)) is not None
+    }
+    columns.update(scenario_columns)
+    completed_columns = _episode_columns_to_cpu(columns, completed_indices)
+
+    for row_idx in range(len(completed_indices)):
         episode_info = {}
-        for key, values in episode_stats.items():
-            if key.startswith("_"):
+        for key in statistic_names:
+            value_mask = completed_columns.get(f"_{key}")
+            if value_mask is not None and not bool(to_python_episode_stat(value_mask[row_idx])):
                 continue
-            value_mask = episode_stats.get(f"_{key}", None)
-            if value_mask is not None and not bool(to_python_episode_stat(value_mask[env_idx])):
-                continue
-            episode_info[key] = to_python_episode_stat(values[env_idx])
-        for scenario_key in ("scenario_id", "scenario_name"):
-            scenario_values = info_source.get(scenario_key, infos.get(scenario_key, None))
-            if scenario_values is not None:
-                episode_info[scenario_key] = to_python_episode_stat(scenario_values[env_idx])
+            episode_info[key] = to_python_episode_stat(completed_columns[key][row_idx])
+        for key in scenario_columns:
+            episode_info[key] = to_python_episode_stat(completed_columns[key][row_idx])
         episode_infos.append(episode_info)
+
+
+def _episode_columns_to_cpu(columns: dict[str, Any], indices: list[int]) -> dict[str, Any]:
+    completed_columns: dict[str, Any] = {}
+    tensor_groups: dict[tuple[torch.device, torch.dtype], list[tuple[str, torch.Tensor]]] = {}
+    device_indices: dict[torch.device, torch.Tensor] = {}
+    for key, values in columns.items():
+        if isinstance(values, torch.Tensor) and values.device.type != "cpu":
+            if values.device not in device_indices:
+                device_indices[values.device] = torch.tensor(indices, device=values.device)
+            selected = values.detach().index_select(0, device_indices[values.device])
+            tensor_groups.setdefault((values.device, values.dtype), []).append((key, selected))
+        else:
+            completed_columns[key] = [values[index] for index in indices]
+
+    # Group by dtype so integer counts and Boolean presence masks retain their
+    # types without one device transfer per completed episode and field.
+    for fields in tensor_groups.values():
+        packed = torch.cat([values.reshape(-1) for _, values in fields]).cpu()
+        offset = 0
+        for key, values in fields:
+            completed = packed[offset:offset + values.numel()].reshape(values.shape)
+            completed_columns[key] = (
+                completed.flatten().tolist() if values.numel() == len(indices) else completed.numpy()
+            )
+            offset += values.numel()
+    return completed_columns
 
 
 def extract_bootstrap_obs(

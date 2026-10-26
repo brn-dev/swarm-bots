@@ -53,6 +53,38 @@ class SummaryStatistics:
     data: Optional[np.ndarray] = None
     histogram: Optional[Histogram | NoData] = None
 
+
+@dataclass(frozen=True)
+class TensorSummaryStatistics:
+    n: int
+    moments: torch.Tensor
+
+    def materialize(self, moments: list[float]) -> SummaryStatistics:
+        mean, std, minimum, maximum = moments
+        if self.n == 0:
+            return _no_data_stats(find_min=True, find_max=True)
+        return SummaryStatistics(n=self.n, mean=mean, std=std, min_value=minimum, max_value=maximum)
+
+
+@torch.no_grad()
+def compute_tensor_summary_statistics(
+    values: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> TensorSummaryStatistics:
+    values = values.detach()
+    if valid_mask is not None:
+        # Native moment reduction was faster than several dense masked reductions in
+        # eager benchmarks. Compaction retains one CUDA synchronization.
+        values = values[valid_mask]
+    if values.numel() == 0:
+        return TensorSummaryStatistics(0, values.new_zeros(4))
+    std, mean = torch.std_mean(values, correction=0)
+    minimum, maximum = torch.aminmax(values)
+    if values.numel() == 1:
+        std = torch.zeros_like(mean)
+    return TensorSummaryStatistics(values.numel(), torch.stack((mean, std, minimum, maximum)))
+
+
 @dataclass
 class SummaryStatisticsFormat:
     n: Optional[str] = None

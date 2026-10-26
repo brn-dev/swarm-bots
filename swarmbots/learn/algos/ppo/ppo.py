@@ -36,10 +36,11 @@ from swarmbots.learn.gsde_reset import (
 )
 from swarmbots.learn.masking import masked_mean
 from swarmbots.learn.metrics_list import MetricsLists, materialize_scalar_metrics
+from swarmbots.learn.optimizers import make_adam, move_adam_state_to_device
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_fn
 from swarmbots.learn.scheduling.schedulers import SchedulerManager
-from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.summary_statistics import compute_summary_statistics, compute_tensor_summary_statistics
 from swarmbots.learn.torch_device import as_device
 
 TARGET_KL_MARGIN = 1.5
@@ -236,9 +237,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self._policy_num_trainable_params = self.policy.num_parameters()
         self._detailed_grad_norm_metric_keys: tuple[str, ...] = tuple(self.policy.get_grad_norms().keys())
 
-        self.optimizer = torch.optim.Adam(
+        self.optimizer = make_adam(
             self._make_optimizer_param_groups(self.learning_rate),
             lr=self.learning_rate,
+            device=self.train_device,
         )
 
     def set_learning_rate(self, lr: LearningRate) -> None:
@@ -296,7 +298,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             values: torch.Tensor,
             *,
             normalize_advantage: bool = True,
-    ) -> tuple[torch.Tensor, float, dict[str, Any]]:
+            materialize_metrics: bool = True,
+    ) -> tuple[torch.Tensor, float | torch.Tensor, dict[str, Any]]:
         log_prob, old_log_prob = self.reduce_agents(batch, log_probs)
         valid_mask = self._build_batch_valid_mask(batch, log_prob)
 
@@ -359,21 +362,21 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         with torch.no_grad():
             log_ratio = log_prob - old_log_prob
-            approx_kl_div = masked_mean((torch.exp(log_ratio) - 1) - log_ratio, valid_mask).item()
-
-        clip_fraction = masked_mean((torch.abs(ratio - 1) > self.clip_range).float(), valid_mask).item()
-        ratio_for_metrics = ratio if valid_mask is None else ratio[valid_mask]
+            approx_kl_div = masked_mean((torch.exp(log_ratio) - 1) - log_ratio, valid_mask)
+            clip_fraction = masked_mean((torch.abs(ratio - 1) > self.clip_range).float(), valid_mask)
         metrics = {
-            'act_loss': policy_loss.item(),
-            'mc_ent_loss': mc_entropy_loss.item(),
-            'mc_ent_loss_scaled': mc_entropy_loss_scaled.item(),
-            'val_loss': value_loss.item(),
-            'val_loss_scaled': value_loss_scaled.item(),
+            'act_loss': policy_loss.detach(),
+            'mc_ent_loss': mc_entropy_loss.detach(),
+            'mc_ent_loss_scaled': mc_entropy_loss_scaled.detach(),
+            'val_loss': value_loss.detach(),
+            'val_loss_scaled': value_loss_scaled.detach(),
             'approx_kl': approx_kl_div,
             'clip_frac': clip_fraction,
-            'ratio': compute_summary_statistics(ratio_for_metrics, find_min=True, find_max=True),
+            'ratio': compute_tensor_summary_statistics(ratio, valid_mask),
         }
-
+        if materialize_metrics:
+            metrics = materialize_scalar_metrics(metrics)
+            approx_kl_div = metrics['approx_kl']
         return loss, approx_kl_div, metrics
 
     def _compute_masked_value_loss(
@@ -441,7 +444,8 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             batch: PPOSamplesType,
             *,
             normalize_advantage: bool = True,
-    ) -> tuple[torch.Tensor, float, dict[str, Any]]:
+            materialize_metrics: bool = True,
+    ) -> tuple[torch.Tensor, float | torch.Tensor, dict[str, Any]]:
         log_probs, values, extra_losses, extra_loss_metrics = self.policy.evaluate_actions(
             batch=batch,
             action_splitter=self.metrics_action_splitters,
@@ -452,14 +456,17 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             log_probs=log_probs,
             values=values,
             normalize_advantage=normalize_advantage,
+            materialize_metrics=False,
         )
 
         reduced_extra_losses = self._reduce_extra_losses(batch, extra_losses)
         if reduced_extra_losses:
             loss = loss + torch.stack(tuple(reduced_extra_losses.values())).sum()
-            metrics.update({f"{name}_loss_scaled": value.item() for name, value in reduced_extra_losses.items()})
+            metrics.update({f"{name}_loss_scaled": value.detach() for name, value in reduced_extra_losses.items()})
         metrics.update(extra_loss_metrics)
-
+        if materialize_metrics:
+            metrics = materialize_scalar_metrics(metrics)
+            approx_kl_div = metrics['approx_kl']
         return loss, approx_kl_div, metrics
 
     def perform_iteration(
@@ -579,8 +586,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         early_stop_kl_div: float | None = None
         n_updates = 0
         distribution_agent_mask: torch.Tensor | None = None
-        grad_norms: list[float] = []
-        n_grad_clipped = 0
+        grad_norms: list[torch.Tensor] = []
 
         sampling_timings: list[float] = []
         sample_timer = PerformanceTimer()
@@ -603,12 +609,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
                 update_timer.start()
 
-                loss, approx_kl_div, metrics = self.compute_loss(batch)
+                loss, approx_kl_div, metrics = self.compute_loss(batch, materialize_metrics=False)
                 distribution_agent_mask = self._build_action_metrics_valid_mask(batch)
                 if distribution_agent_mask is not None and batch.local_obs.ndim == 4:
                     distribution_agent_mask = distribution_agent_mask.flatten(0, 1)
                 loss_metrics.add(metrics)
 
+                if self.target_kl is not None:
+                    approx_kl_div = float(approx_kl_div)
                 if self.target_kl is not None and approx_kl_div > TARGET_KL_MARGIN * self.target_kl:
                     continue_training = False
                     early_stop_epoch = epoch
@@ -637,11 +645,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                     self.max_grad_norm,
                     error_if_nonfinite=True,
                 )
-                total_grad_norm_f = float(total_grad_norm)
-                grad_norms.append(total_grad_norm_f)
-
-                if total_grad_norm_f > self.max_grad_norm:
-                    n_grad_clipped += 1
+                grad_norms.append(total_grad_norm.detach().clone())
 
                 self.optimizer.step()
                 self._after_optimizer_step()
@@ -669,13 +673,19 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
+            if grad_norms:
+                grad_norm_values = torch.stack(grad_norms).cpu().double().numpy()
+                grad_clip_fraction = float((grad_norm_values > self.max_grad_norm).mean())
+            else:
+                grad_norm_values = []
+                grad_clip_fraction = 0.0
             metrics: dict[str, Any] = {
                 **loss_metrics.compute_summary_statistics(),
                 'updates': n_updates,
                 'total_updates': self.n_total_updates,
                 'expl_var': explained_var,
-                'grad_norm': compute_summary_statistics(grad_norms, find_max=True, find_min=True),
-                'grad_clip_frac': (n_grad_clipped / len(grad_norms)) if grad_norms else 0.0,
+                'grad_norm': compute_summary_statistics(grad_norm_values, find_max=True, find_min=True),
+                'grad_clip_frac': grad_clip_fraction,
                 **detailed_grad_norm_metrics,
                 'total_compute_grad_norms_time': sum(compute_grad_norms_timings),
                 'compute_grad_norms_time': compute_summary_statistics(compute_grad_norms_timings)
@@ -987,14 +997,13 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         valid_f = step_valid_mask.to(dtype=advantages.dtype)
-        num_valid = int(valid_f.sum().item())
-        if num_valid <= 1:
-            return advantages
-
-        mean = (advantages * valid_f).sum() / valid_f.sum()
-        variance = ((advantages - mean) ** 2 * valid_f).sum() / valid_f.sum()
+        num_valid = valid_f.sum()
+        denominator = num_valid.clamp_min(1)
+        mean = (advantages * valid_f).sum() / denominator
+        variance = ((advantages - mean) ** 2 * valid_f).sum() / denominator
         normalized = (advantages - mean) / torch.sqrt(variance + 1e-8)
-        return torch.where(step_valid_mask, normalized, torch.zeros_like(normalized))
+        normalized = torch.where(step_valid_mask, normalized, torch.zeros_like(normalized))
+        return torch.where(num_valid > 1, normalized, advantages)
 
     @staticmethod
     def _get_time_mask(batch: PPOSamples) -> torch.Tensor | None:
@@ -1266,10 +1275,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self.learning_rate = lr
 
     def _move_optimizer_state_to_device(self, device: torch.device) -> None:
-        for state in self.optimizer.state.values():
-            for k, v in state.items():
-                if torch.is_tensor(v) and v.device != device:
-                    state[k] = v.to(device)
+        move_adam_state_to_device(self.optimizer, device)
 
     def _apply_learning_rate(self, lr: LearningRate) -> None:
         lr = validate_scalar_learning_rate(lr)

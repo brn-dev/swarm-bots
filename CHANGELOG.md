@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Batch completed-episode statistics by device and dtype before CPU conversion, preserving numeric types, scenario metadata and field-presence masks. Use fused Adam for CUDA PPO/SAC/DDPG/TD3 training and select destination-device execution and capture settings when restoring optimizer state. Defer PPO loss, ratio and gradient-norm diagnostics until aggregation while retaining minibatch KL early stopping and non-finite gradient checks. Preserve metric dtypes, exact sample counts and low-precision standard deviations through aggregation.
 - Validate live learning-rate and SAC entropy-coefficient updates before mutation, preserving trainer and optimizer settings on rejection while retaining zero fixed learning rates.
 - Apply PPO/SAC/TD3 loss-weight requests atomically through shared alias and finite-value validation, including disabled NOP modules and delegated policy keys.
 - Sanitize agent and timestep padding independently before feed-forward critic projections in recurrent SAC/TD3 APIs. Protect actor-state projections across direct forward and encode entry points; cover optional masks, empty swarms, shared/precomputed features, action candidates and compiled CPU/CUDA gradients while preserving detached states and no-grad fast paths.

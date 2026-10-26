@@ -30,6 +30,7 @@ from swarmbots.learn.algos.off_policy.action_noise import (
     bounded_action_coordinates,
 )
 from swarmbots.learn.base_policy import BasePolicy
+from swarmbots.learn.optimizers import make_adam, move_adam_state_to_device
 from swarmbots.learn.algos.off_policy.tensor_ops import (
     build_optimizer_step,
     build_sac_tensor_operations,
@@ -162,8 +163,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         self.policy.to(self.train_device)
         initial_actor_critic_lr = self._actor_critic_learning_rate_for_update(self.n_total_updates)
-        self.actor_optimizer = torch.optim.Adam(self.policy.actor_parameters(), lr=initial_actor_critic_lr)
-        self.critic_optimizer = torch.optim.Adam(self.policy.critic_parameters(), lr=initial_actor_critic_lr)
+        self.actor_optimizer = make_adam(
+            self.policy.actor_parameters(), lr=initial_actor_critic_lr, device=self.train_device,
+        )
+        self.critic_optimizer = make_adam(
+            self.policy.critic_parameters(), lr=initial_actor_critic_lr, device=self.train_device,
+        )
         self._setup_extra_optimizers()
         self._rebuild_optimizer_steps()
         self._policy_num_params = self.policy.num_parameters(learnable_only=False)
@@ -734,11 +739,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         return metrics
 
     @staticmethod
-    def _move_optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
-        for state in optimizer.state.values():
-            for key, value in state.items():
-                if torch.is_tensor(value) and value.device != device:
-                    state[key] = value.to(device)
+    def _move_optimizer_state_to_device(optimizer: torch.optim.Adam, device: torch.device) -> None:
+        move_adam_state_to_device(optimizer, device)
 
     def _execute_command(
         self,

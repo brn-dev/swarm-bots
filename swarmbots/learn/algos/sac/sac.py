@@ -24,6 +24,7 @@ from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
 )
 from swarmbots.learn.metrics_list import materialize_scalar_metrics
+from swarmbots.learn.optimizers import make_adam
 
 
 from swarmbots.learn.algos.off_policy.base_algorithm import (
@@ -393,9 +394,10 @@ class SAC(OffPolicyAlgorithm):
             self.log_ent_coef = torch.log(
                 torch.ones((), device=self.train_device, dtype=torch.float32) * init_value
             ).requires_grad_(True)
-            self.ent_coef_optimizer = torch.optim.Adam(
+            self.ent_coef_optimizer = make_adam(
                 [self.log_ent_coef],
                 lr=self._resolved_ent_coef_learning_rate(),
+                device=self.train_device,
             )
             return
 
@@ -494,9 +496,10 @@ class SAC(OffPolicyAlgorithm):
         optimizer_replaced = False
         if self.log_ent_coef is not None and self.log_ent_coef.device != self.train_device:
             self.log_ent_coef = self.log_ent_coef.detach().to(self.train_device).requires_grad_(True)
-            self.ent_coef_optimizer = torch.optim.Adam(
+            self.ent_coef_optimizer = make_adam(
                 [self.log_ent_coef],
                 lr=self._resolved_ent_coef_learning_rate(),
+                device=self.train_device,
             )
             optimizer_replaced = True
         if self.ent_coef_tensor is not None and self.ent_coef_tensor.device != self.train_device:
@@ -534,9 +537,10 @@ class SAC(OffPolicyAlgorithm):
             raise ValueError("Invalid SAC optimizer state: both log_ent_coef and ent_coef_tensor are set.")
         if log_ent_coef is not None:
             self.log_ent_coef = log_ent_coef.to(self.train_device).detach().requires_grad_(True)
-            self.ent_coef_optimizer = torch.optim.Adam(
+            self.ent_coef_optimizer = make_adam(
                 [self.log_ent_coef],
                 lr=self._resolved_ent_coef_learning_rate(),
+                device=self.train_device,
             )
             self.ent_coef_optimizer.load_state_dict(state_dict["ent_coef_optimizer"])
             self._apply_entropy_coefficient_learning_rate()

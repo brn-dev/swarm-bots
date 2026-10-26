@@ -11,6 +11,7 @@ from swarmbots.learn.algos.off_policy.tensor_ops import (
     build_optimizer_step,
     build_sac_tensor_operations,
 )
+from swarmbots.learn.optimizers import make_adam
 
 
 _REAL_TORCH_COMPILE = torch.compile
@@ -223,8 +224,8 @@ class SACTensorOperationsTests(unittest.TestCase):
     def test_compiled_adam_step_matches_eager_across_stateful_updates(self) -> None:
         eager_parameter = torch.nn.Parameter(torch.tensor([1.0, -2.0], device="cuda"))
         compiled_parameter = torch.nn.Parameter(eager_parameter.detach().clone())
-        eager_optimizer = torch.optim.Adam([eager_parameter], lr=3e-3)
-        compiled_optimizer = torch.optim.Adam([compiled_parameter], lr=3e-3)
+        eager_optimizer = make_adam([eager_parameter], lr=3e-3, device=eager_parameter.device)
+        compiled_optimizer = make_adam([compiled_parameter], lr=3e-3, device=compiled_parameter.device)
         compiled_step = build_optimizer_step(
             compiled_optimizer,
             compile_step=True,
