@@ -29,11 +29,17 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
         return self.action_dist.has_gsde
 
     def validate_ppo_dropout(self) -> None:
+        """Reject stochastic core layers that invalidate rollout likelihoods."""
         dropout_modules = (
             nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d,
             nn.AlphaDropout, nn.FeatureAlphaDropout,
         )
         for name, module in self.named_modules():
+            if isinstance(module, nn.RReLU) and module.lower != module.upper:
+                raise ValueError(
+                    "PPO requires deterministic policy activations to preserve rollout likelihoods; "
+                    f"{name or type(module).__name__} uses randomized RReLU."
+                )
             if isinstance(module, dropout_modules):
                 probability = module.p
             elif isinstance(module, (nn.MultiheadAttention, nn.RNNBase)):

@@ -255,6 +255,8 @@ class MATEncoder(nn.Module):
             raise ValueError(f"Expected local_obs second dim <= {self.max_agents}, got {n_agents}")
         if self.joint_obs_embedding:
             local_obs = torch.cat((local_obs, global_obs.unsqueeze(1).expand(-1, n_agents, -1)), dim=-1)
+        if agent_mask is not None:
+            local_obs = local_obs.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
         local_embeddings = self.local_obs_encoder(local_obs)
         if self.agent_embeddings is not None:
             local_embeddings = local_embeddings + self.agent_embeddings[:, :n_agents, :]

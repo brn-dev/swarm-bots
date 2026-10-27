@@ -1,4 +1,4 @@
-"""Bounded target-action smoothing shared by stochastic and deterministic learners."""
+"""Action bounds and normalized noise shared by stochastic and deterministic learners."""
 
 import numpy as np
 import torch
@@ -12,15 +12,15 @@ def bounded_action_coordinates(action_space: HybridActionSpace) -> tuple[torch.T
     lows, highs = [], []
     for space in action_space.sub_spaces:
         if not isinstance(space, spaces.Box):
-            raise ValueError("Target-action smoothing requires continuous Box action spaces")
+            raise ValueError("Bounded actions require continuous Box action spaces")
         if not np.isfinite(space.low).all() or not np.isfinite(space.high).all():
-            raise ValueError("Target-action smoothing requires finite action bounds")
+            raise ValueError("Bounded actions require finite action bounds")
         if not (space.high > space.low).all():
-            raise ValueError("Target-action smoothing requires upper bounds greater than lower bounds")
+            raise ValueError("Bounded actions require upper bounds greater than lower bounds")
         low, high = space.low, space.high
         if low.ndim == 3:
             if not ((low == low[0]).all() and (high == high[0]).all()):
-                raise ValueError("Target-action smoothing requires identical bounds across environments")
+                raise ValueError("Bounded actions require identical action bounds across environments")
             low, high = low[0], high[0]
         lows.append(torch.as_tensor(low, dtype=torch.float32))
         highs.append(torch.as_tensor(high, dtype=torch.float32))

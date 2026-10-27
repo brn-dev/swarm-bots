@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Align the MAT encoder reference-stack test with inactive observation masking.
+- Reject randomized RReLU activations in core PPO policies while allowing deterministic RReLU and independent NOP dropout. Synchronize SAC entropy metadata with restored automatic/fixed coefficient state, sanitize inactive feed-forward actor and PPO critic observations before projection, and share deterministic actor action-bound validation with target-action smoothing.
 - Stabilize the gSDE sampling and likelihood gradient test with bounded features and exploration noise to avoid intermittent float32 tanh round-trip failures.
 - Batch segmented PPO rollout metadata transfers and partial-episode advantage calculations across equal-length segments, preserving episode boundaries, recurrent histories and tensor ownership. Disable redundant gSDE distribution validation during sampling and likelihood evaluation, and reuse episode-statistics decisions while avoiding masked info compaction in learning wrappers.
 - Avoid CUDA row compaction in scenario reward-state and exploration-observation updates, preserving unstable-world history and existing buffers. Skip replay terminal-slot cleanup when the overwritten slot has no terminal observations, retaining slot reuse and reset behavior.

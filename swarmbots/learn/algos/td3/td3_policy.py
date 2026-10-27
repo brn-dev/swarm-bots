@@ -4,14 +4,12 @@ import copy
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Self
 
-import numpy as np
 import torch
-from gymnasium import spaces
 from torch import nn
 
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoder, MATEncoderConfig
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig, JointQNetwork, JointTwinCritic
-from swarmbots.learn.algos.off_policy.action_noise import add_normalized_action_noise
+from swarmbots.learn.algos.off_policy.action_noise import add_normalized_action_noise, bounded_action_coordinates
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.off_policy.nop import (
     SACNOPConfig,
@@ -53,7 +51,7 @@ class TD3PolicyConfig:
 
 
 class DeterministicActor(nn.Module):
-    def __init__(self, env, config: TD3PolicyConfig) -> None:
+    def __init__(self, env: Any, config: TD3PolicyConfig) -> None:
         super().__init__()
         self.encoder = self._build_encoder(env, config)
         self.head = TMASACIndependentActorHead(
@@ -63,26 +61,11 @@ class DeterministicActor(nn.Module):
         )
         self.action_net = nn.Linear(self.head.latent_dim, env.action_space.total_agent_action_dim)
         make_init_linear_orthogonal(config.action_net_init_gain)(self.action_net)
-        lows, highs = [], []
-        for space in env.action_space.sub_spaces:
-            if not isinstance(space, spaces.Box):
-                raise ValueError("DDPG/TD3 require continuous Box action spaces")
-            if not np.isfinite(space.low).all() or not np.isfinite(space.high).all():
-                raise ValueError("DDPG/TD3 require finite action bounds")
-            if not (space.high > space.low).all():
-                raise ValueError("DDPG/TD3 action upper bounds must exceed lower bounds")
-            low, high = space.low, space.high
-            if low.ndim == 3:
-                if not ((low == low[0]).all() and (high == high[0]).all()):
-                    raise ValueError("DDPG/TD3 require identical action bounds across environments")
-                low, high = low[0], high[0]
-            lows.append(torch.as_tensor(low, dtype=torch.float32))
-            highs.append(torch.as_tensor(high, dtype=torch.float32))
-        low, high = torch.cat(lows, -1), torch.cat(highs, -1)
-        self.register_buffer("action_center", (high + low) / 2)
-        self.register_buffer("action_scale", (high - low) / 2)
+        action_center, action_scale = bounded_action_coordinates(env.action_space)
+        self.register_buffer("action_center", action_center)
+        self.register_buffer("action_scale", action_scale)
 
-    def _build_encoder(self, env, config: TD3PolicyConfig) -> nn.Module:
+    def _build_encoder(self, env: Any, config: TD3PolicyConfig) -> nn.Module:
         return MATEncoder(
             config.actor_encoder_config,
             max_agents=env.n_agents,

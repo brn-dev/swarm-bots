@@ -210,7 +210,7 @@ class PPOCritic(nn.Module):
                 raise ValueError(
                     f"Expected agent_mask shape {tuple(local_obs.shape[:2])}, got {tuple(agent_mask.shape)}"
                 )
-            local_obs = local_obs * agent_mask.to(dtype=local_obs.dtype).unsqueeze(-1)
+            local_obs = local_obs.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
         critic_input = torch.flatten(local_obs, start_dim=1)
         if self.has_global_obs:
             if global_obs is None:
@@ -443,7 +443,7 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             raise ValueError(
                 f"Expected agent_mask shape {tuple(local_obs.shape[:2])}, got {tuple(agent_mask.shape)}"
             )
-        return local_obs * agent_mask.to(dtype=local_obs.dtype).unsqueeze(-1)
+        return local_obs.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
 
     @staticmethod
     def _build_critic_local_obs(

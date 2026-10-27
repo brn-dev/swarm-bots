@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import torch
+import pytest
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.action_dists.action_sampling import expand_action_samples
@@ -124,6 +125,41 @@ def _make_policy(
             compile_modules=compile_modules,
         ),
     )
+
+
+@pytest.mark.parametrize("saved_coefficient,initial_coefficient", [
+    ("auto_0.1", 0.2), (0.3, "auto_0.2"), (0.3, 0.7), ("auto_0.1", "auto_0.8"),
+])
+def test_restored_entropy_metadata_reconstructs_the_running_coefficient(
+    tmp_path: Path, saved_coefficient: float | str, initial_coefficient: float | str,
+) -> None:
+    env = _make_env()
+    try:
+        options = dict(
+            env=env, buffer_capacity_per_env=4, batch_size=2, learning_starts=0,
+            train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
+        )
+        source = SAC(policy=_make_policy(env), ent_coef=saved_coefficient, **options)
+        if source.log_ent_coef is not None:
+            with torch.no_grad():
+                source.log_ent_coef.fill_(math.log(0.17))
+        checkpoint_path = tmp_path / "source.pt"
+        source.save(checkpoint_path, optimizer_state_dict=source._get_optimizer_state_dict())
+        restored = SAC(policy=_make_policy(env), ent_coef=initial_coefficient, **options)
+        restored.load(checkpoint_path)
+        metadata_coefficient = restored.get_hyper_parameters()["ent_coef"]
+        reconstructed = SAC(policy=_make_policy(env), ent_coef=metadata_coefficient, **options)
+        automatic = isinstance(saved_coefficient, str)
+        assert (restored.ent_coef_optimizer is not None) == automatic
+        assert (reconstructed.ent_coef_optimizer is not None) == automatic
+        actual = restored.log_ent_coef.detach().exp() if automatic else restored.ent_coef_tensor
+        expected = reconstructed.log_ent_coef.detach().exp() if automatic else reconstructed.ent_coef_tensor
+        torch.testing.assert_close(actual, expected)
+        restored.save(tmp_path / "restored.pt", optimizer_state_dict=restored._get_optimizer_state_dict())
+        saved_metadata = torch.load(tmp_path / "restored.pt", weights_only=False)["hyper_parameters"]
+        assert saved_metadata["ent_coef"] == metadata_coefficient
+    finally:
+        env.close()
 
 
 def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:

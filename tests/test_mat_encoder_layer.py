@@ -177,7 +177,7 @@ def test_mat_encoder_forward_matches_reference_stack_with_embedding_options() ->
         [True, False, True, True],
         [False, True, True, True],
     ])
-    tokens = mat_encoder.local_obs_encoder(local_obs)
+    tokens = mat_encoder.local_obs_encoder(local_obs.masked_fill(~agent_mask.unsqueeze(-1), 0.0))
     assert mat_encoder.agent_embeddings is not None
     tokens = tokens + mat_encoder.agent_embeddings[:, :local_obs.shape[1], :]
     global_tokens = mat_encoder.global_obs_encoder(global_obs)

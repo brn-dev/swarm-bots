@@ -544,8 +544,10 @@ class SAC(OffPolicyAlgorithm):
             )
             self.ent_coef_optimizer.load_state_dict(state_dict["ent_coef_optimizer"])
             self._apply_entropy_coefficient_learning_rate()
+            self.ent_coef = f"auto_{self.log_ent_coef.detach().exp().item()}"
         if ent_coef_tensor is not None:
             self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach()
+            self.ent_coef = float(self.ent_coef_tensor.item())
         self._move_optimizer_state_to_device(self.actor_optimizer, self.train_device)
         self._move_optimizer_state_to_device(self.critic_optimizer, self.train_device)
         if self.ent_coef_optimizer is not None:

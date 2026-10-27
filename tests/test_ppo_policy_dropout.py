@@ -14,6 +14,7 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots.learn.nn_components.activations import ActivationFactory
 
 
 def _make_env() -> SimpleNamespace:
@@ -33,11 +34,14 @@ def _make_env() -> SimpleNamespace:
     )
 
 
-def _make_policy(env: SimpleNamespace, *, dropout: float = 0.0) -> MATIndPolicy:
+def _make_policy(
+    env: SimpleNamespace, *, dropout: float = 0.0, act_fn_cls: ActivationFactory = nn.GELU,
+) -> MATIndPolicy:
     return MATIndPolicy(env, MATIndPolicyConfig(
-        encoder_config=MATEncoderConfig(d_model=8, nhead=2, num_layers=1, dim_feedforward=16),
+        encoder_config=MATEncoderConfig(d_model=8, nhead=2, num_layers=1, dim_feedforward=16, act_fn_cls=act_fn_cls),
         continuous_config=SignMagnitudeBetaConfig(),
         dropout=dropout,
+        act_fn_cls=act_fn_cls,
     ))
 
 
@@ -69,9 +73,26 @@ def test_ppo_rechecks_actual_dropout_modules_before_training(dropout_module: Cal
         algorithm.train([])
 
 
-def test_zero_dropout_keeps_rollout_likelihoods_when_training_mode_changes() -> None:
+@pytest.mark.parametrize("activation", [nn.RReLU, lambda: nn.Sequential(nn.Identity(), nn.RReLU())])
+def test_ppo_rejects_randomized_policy_activations(activation: ActivationFactory) -> None:
+    env = _make_env()
+    with pytest.raises(ValueError, match="RReLU"):
+        _make_ppo(env, _make_policy(env, act_fn_cls=activation))
+
+
+def test_ppo_rechecks_randomized_activations_before_training() -> None:
     env = _make_env()
     policy = _make_policy(env)
+    algorithm = _make_ppo(env, policy)
+    policy.actor_head = nn.Sequential(nn.RReLU())
+    with pytest.raises(ValueError, match="RReLU"):
+        algorithm.train([])
+
+
+@pytest.mark.parametrize("activation", [nn.GELU, lambda: nn.RReLU(lower=0.2, upper=0.2)])
+def test_zero_dropout_keeps_rollout_likelihoods_when_training_mode_changes(activation: ActivationFactory) -> None:
+    env = _make_env()
+    policy = _make_policy(env, act_fn_cls=activation)
     _make_ppo(env, policy)
     observations = {
         "local_obs": torch.randn(2, 2, 3),
