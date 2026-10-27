@@ -263,6 +263,24 @@ def test_experiment_exports_each_metric_and_closes_figures(tmp_path: Path, train
     assert plt.get_fignums() == before
 
 
+@pytest.mark.parametrize(
+    "columns",
+    [("loss", "LOSS"), ("loss/value", "loss:value"), ("loss/value", "LOSS:value")],
+)
+def test_experiment_rejects_filename_collisions_before_export(
+    tmp_path: Path, columns: tuple[str, str],
+) -> None:
+    source = write_log(tmp_path / "log.csv", f"timesteps;{columns[0]};{columns[1]}\n0;1;10\n1;2;20\n")
+    output_dir = tmp_path / "plots"
+    before = plt.get_fignums()
+
+    with pytest.raises(ValueError, match="conflicting output filenames"):
+        plot_experiment_results({"Method": source}, output_dir, columns=columns)
+
+    assert not output_dir.exists()
+    assert plt.get_fignums() == before
+
+
 @pytest.mark.parametrize("module", ["plot_logs", "plot_experiment_results"])
 def test_tools_run_on_training_logs(tmp_path: Path, training_csv: str, module: str) -> None:
     source = write_log(tmp_path / "method" / "log.csv", training_csv).parent

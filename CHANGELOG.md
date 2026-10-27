@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Support per-feature activations in scenario field encoder hidden layers through the shared activation builder.
+- Reject case-insensitive metric filename collisions before exporting experiment plots, preventing silent overwrites on Windows.
 - Align the MAT encoder reference-stack test with inactive observation masking.
 - Reject randomized RReLU activations in core PPO policies while allowing deterministic RReLU and independent NOP dropout. Synchronize SAC entropy metadata with restored automatic/fixed coefficient state, sanitize inactive feed-forward actor and PPO critic observations before projection, and share deterministic actor action-bound validation with target-action smoothing.
 - Stabilize the gSDE sampling and likelihood gradient test with bounded features and exploration noise to avoid intermittent float32 tanh round-trip failures.

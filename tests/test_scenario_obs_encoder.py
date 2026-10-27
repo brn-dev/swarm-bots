@@ -13,6 +13,11 @@ from swarmbots.learn.algos.sac.scenario_obs_encoder import (
     TMASACScenarioEncoderConfig,
     TMASACScenarioObservationEncoder,
 )
+from swarmbots.learn.nn_components.activations import (
+    ParameterLearnMode,
+    SignedSquaredLeakyRelu,
+    SignedSquaredLeakyReluFactory,
+)
 
 
 def _field_encoder(
@@ -73,6 +78,35 @@ def _observation_encoder(
         act_fn_cls=nn.ReLU,
         include_hidden_fields=include_hidden_fields,
     )
+
+
+@pytest.mark.parametrize("hidden_dims", [(5,), (5, 2)])
+def test_field_encoder_trains_per_feature_activations(hidden_dims: tuple[int, ...]) -> None:
+    model = ScenarioFieldEncoder(
+        input_dims=(1, 3),
+        padded_input_dim=3,
+        config=ScenarioFieldEncoderConfig(output_dim=1, hidden_dims=hidden_dims),
+        act_fn_cls=SignedSquaredLeakyReluFactory(negative_slope_mode=ParameterLearnMode.PER_FEATURE),
+    )
+    with torch.no_grad():
+        for layer in model.layers:
+            layer.weight.fill_(0.5)
+            layer.bias.zero_()
+
+    output = model(-torch.ones(2, 3), torch.tensor([0, 1]))
+    assert output.shape == (2, 1)
+    assert torch.isfinite(output).all()
+    output.sum().backward()
+
+    activations = [module for module in model.modules() if isinstance(module, SignedSquaredLeakyRelu)]
+    assert [tuple(activation.negative_slope.shape) for activation in activations] == [
+        (width,) for width in hidden_dims
+    ]
+    for activation in activations:
+        gradient = activation.negative_slope.grad
+        assert gradient is not None
+        assert torch.isfinite(gradient).all()
+        assert (gradient != 0).all()
 
 
 @pytest.mark.parametrize("normalize_input", [False, True])

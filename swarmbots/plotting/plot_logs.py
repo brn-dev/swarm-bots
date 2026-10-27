@@ -313,6 +313,7 @@ def plot_experiment_results(
     ``sources`` is either an experiment root or a mapping of display names to
     files/run directories. Figures are closed after saving. There is no implicit
     training-length cutoff. Use load_groups()/plot_groups() to customize figures.
+    Metric filenames must be distinct ignoring case after sanitization.
     """
     plt = _pyplot()
     if not formats or any(fmt not in {"png", "pdf", "svg"} for fmt in formats):
@@ -320,7 +321,7 @@ def plot_experiment_results(
     groups = load_groups(sources, columns=columns, x_column=x_column, delimiter=delimiter, max_steps=max_steps)
     selected_columns = _selected_columns([run for runs in groups.values() for run in runs], columns)
     stems = [re.sub(r"[^\w.-]+", "_", column) for column in selected_columns]
-    if len(set(stems)) != len(stems):
+    if len({stem.casefold() for stem in stems}) != len(stems):
         raise ValueError("Metric names produce conflicting output filenames")
     output_paths: list[Path] = []
     for column, stem in zip(selected_columns, stems, strict=True):

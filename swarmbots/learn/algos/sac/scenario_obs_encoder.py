@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from swarmbots.learn.nn_components.activations import ActivationFactory
+from swarmbots.learn.nn_components.activations import ActivationFactory, make_activation
 
 
 @dataclass(frozen=True)
@@ -135,8 +135,8 @@ class ScenarioFieldEncoder(nn.Module):
             for input_dim, output_dim in zip(layer_dims[:-1], layer_dims[1:], strict=True)
         ]) if encoded_scenario_ids else nn.ModuleList()
         self.activations = nn.ModuleList([
-            act_fn_cls()
-            for _ in config.hidden_dims
+            make_activation(act_fn_cls, num_features=hidden_dim)
+            for hidden_dim in config.hidden_dims
         ]) if encoded_scenario_ids else nn.ModuleList()
 
     def forward(
