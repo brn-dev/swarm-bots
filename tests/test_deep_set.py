@@ -1,5 +1,7 @@
 from collections.abc import Iterator
+from copy import deepcopy
 from dataclasses import asdict, replace
+from functools import partial
 
 import pytest
 import torch
@@ -11,6 +13,7 @@ from swarmbots.learn.nn_components.deep_set import (
     DeepSetInteraction,
     DeepSetInteractionConfig,
     GatedDeepSetInteraction,
+    mask_numeric_elements,
 )
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
@@ -125,6 +128,229 @@ def test_context_and_unpooled_latents_remain_differentiable(set_dim, context_in_
         assert context.grad is None
 
 
+@pytest.mark.parametrize("padding", [torch.nan, torch.inf])
+@pytest.mark.parametrize("pool_mode", ["mean", "sum", "max"])
+@pytest.mark.parametrize("context_in_elements", [False, True])
+@pytest.mark.parametrize("set_dim", [1, 2])
+def test_direct_deep_set_padding_preserves_outputs_and_gradients(
+    padding: float, pool_mode: str, context_in_elements: bool, set_dim: int,
+) -> None:
+    torch.manual_seed(7)
+    model = DeepSet(
+        element_encoder=nn.Sequential(nn.Linear(5 if context_in_elements else 3, 8), nn.Tanh()),
+        set_decoder=nn.Linear(8, 1), set_dim=set_dim, pool_mode=pool_mode,
+        context_features=2, context_in_elements=context_in_elements, context_after_pool=False,
+        input_masker=mask_numeric_elements,
+    )
+    reference = deepcopy(model)
+    mask = torch.tensor([[True, False, True], [False, False, False]])
+    elements = torch.randn(2, 3, 3)
+    context = torch.randn(2, 2)
+    clean = elements.masked_fill(~mask.unsqueeze(-1), 0.0)
+    padded = elements.masked_fill(~mask.unsqueeze(-1), padding)
+    empty_rows = ~mask.any(dim=1, keepdim=True)
+    clean_context = context.masked_fill(empty_rows, 0.0)
+    padded_context = context.masked_fill(empty_rows, padding)
+    if set_dim == 2:
+        mask, clean, padded = mask.unsqueeze(1), clean.unsqueeze(1), padded.unsqueeze(1)
+        clean_context, padded_context = clean_context.unsqueeze(1), padded_context.unsqueeze(1)
+    clean.requires_grad_()
+    padded.requires_grad_()
+    clean_context.requires_grad_()
+    padded_context.requires_grad_()
+    original_elements, original_context = padded.detach().clone(), padded_context.detach().clone()
+
+    expected_values, expected_latents = reference.forward_with_latents(
+        clean, context=clean_context, element_mask=mask,
+    )
+    values, latents = model.forward_with_latents(padded, context=padded_context, element_mask=mask)
+    torch.testing.assert_close(values, expected_values)
+    torch.testing.assert_close(latents[mask], expected_latents[mask])
+    (expected_values.sum() + expected_latents[mask].square().sum()).backward()
+    (values.sum() + latents[mask].square().sum()).backward()
+
+    assert torch.isfinite(latents).all()
+    torch.testing.assert_close(padded.grad, clean.grad)
+    assert not padded.grad[~mask].count_nonzero()
+    torch.testing.assert_close(padded_context.grad, clean_context.grad)
+    for (name, parameter), (_, expected_parameter) in zip(
+        model.named_parameters(), reference.named_parameters(), strict=True,
+    ):
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all(), name
+        torch.testing.assert_close(parameter.grad, expected_parameter.grad, msg=name)
+    torch.testing.assert_close(padded, original_elements, equal_nan=True)
+    torch.testing.assert_close(padded_context, original_context, equal_nan=True)
+
+
+@pytest.mark.parametrize("input_layout", ["tokens", "structured"])
+@pytest.mark.parametrize("pool_mode", ["mean", "sum", "max"])
+@pytest.mark.parametrize("extra_batch_axis", [False, True])
+def test_custom_element_encoders_preserve_masked_outputs_and_gradients(
+    input_layout: str, pool_mode: str, extra_batch_axis: bool,
+) -> None:
+    torch.manual_seed(7)
+    set_dim = 2 if extra_batch_axis else 1
+    encoder = (
+        nn.Embedding(8, 5) if input_layout == "tokens" else
+        nn.Sequential(nn.Flatten(start_dim=set_dim + 1), nn.Linear(4, 5), nn.Tanh())
+    )
+    model = DeepSet(element_encoder=encoder, set_decoder=nn.Linear(5, 1), set_dim=set_dim, pool_mode=pool_mode)
+    reference = deepcopy(model)
+    mask = torch.tensor([[True, False, True], [False, False, False]])
+    if input_layout == "tokens":
+        clean = torch.tensor([[1, 2, 3], [4, 5, 6]])
+        padded = clean.clone()
+    else:
+        clean = torch.randn(2, 3, 2, 2, requires_grad=True)
+        padded = clean.detach().clone().requires_grad_()
+    original = padded.detach().clone()
+    active_inputs = clean[:1, [0, 2]]
+    inputs = padded
+    if extra_batch_axis:
+        inputs, active_inputs, mask = inputs.unsqueeze(1), active_inputs.unsqueeze(1), mask.unsqueeze(1)
+
+    active_features = reference.element_encoder(active_inputs)
+    if pool_mode == "mean":
+        pooled = active_features.mean(dim=set_dim)
+    elif pool_mode == "sum":
+        pooled = active_features.sum(dim=set_dim)
+    else:
+        pooled = active_features.max(dim=set_dim).values
+    expected = reference.set_decoder(torch.cat((pooled, torch.zeros_like(pooled)), dim=0))
+    actual = model(inputs, element_mask=mask)
+    torch.testing.assert_close(actual, expected)
+    assert torch.isfinite(actual).all()
+    expected.sum().backward()
+    actual.sum().backward()
+
+    if input_layout == "structured":
+        torch.testing.assert_close(padded.grad, clean.grad)
+        assert not padded.grad[1].count_nonzero()
+        assert not padded.grad[0, 1].count_nonzero()
+    for (name, parameter), (_, expected_parameter) in zip(
+        model.named_parameters(), reference.named_parameters(), strict=True,
+    ):
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all(), name
+        torch.testing.assert_close(parameter.grad, expected_parameter.grad, msg=name)
+    torch.testing.assert_close(padded, original, equal_nan=True)
+
+
+class _ChannelFirstElementEncoder(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.projection = nn.Conv1d(channels, 4, kernel_size=1)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.projection(inputs).transpose(1, 2)
+
+
+def _mask_channel_first_inputs(elements: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    return elements.masked_fill(~mask.unsqueeze(1), 0.0)
+
+
+def _assert_matching_parameter_gradients(model: nn.Module, reference: nn.Module) -> None:
+    for (name, parameter), (_, expected_parameter) in zip(
+        model.named_parameters(), reference.named_parameters(), strict=True,
+    ):
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all(), name
+        torch.testing.assert_close(parameter.grad, expected_parameter.grad, msg=name)
+
+
+@pytest.mark.parametrize("channels", [2, 3])
+@pytest.mark.parametrize("padding", [None, torch.nan, torch.inf])
+@pytest.mark.parametrize("pool_mode", ["mean", "sum", "max"])
+def test_channel_first_encoder_preserves_active_outputs_and_gradients(
+    channels: int, padding: float | None, pool_mode: str,
+) -> None:
+    torch.manual_seed(7)
+    model = DeepSet(
+        element_encoder=_ChannelFirstElementEncoder(channels), set_decoder=nn.Linear(4, 1), pool_mode=pool_mode,
+        input_masker=None if padding is None else _mask_channel_first_inputs,
+    )
+    reference = deepcopy(model)
+    mask = torch.tensor([[True, False, True], [False, False, False]])
+    clean = torch.randn(2, channels, 3, requires_grad=True)
+    inputs = clean.detach().clone()
+    if padding is not None:
+        inputs = inputs.masked_fill(~mask.unsqueeze(1), padding)
+    inputs.requires_grad_()
+    original = inputs.detach().clone()
+    active_features = reference.element_encoder(clean[:1, :, [0, 2]])
+    if pool_mode == "mean":
+        pooled = active_features.mean(dim=1)
+    elif pool_mode == "sum":
+        pooled = active_features.sum(dim=1)
+    else:
+        pooled = active_features.max(dim=1).values
+    expected = reference.set_decoder(torch.cat((pooled, torch.zeros_like(pooled)), dim=0))
+
+    actual = model(inputs, element_mask=mask)
+    torch.testing.assert_close(actual, expected)
+    expected.sum().backward()
+    actual.sum().backward()
+    torch.testing.assert_close(inputs.grad, clean.grad)
+    assert not inputs.grad[1].count_nonzero() and not inputs.grad[0, :, 1].count_nonzero()
+    _assert_matching_parameter_gradients(model, reference)
+    torch.testing.assert_close(inputs, original, equal_nan=True)
+
+
+@pytest.mark.parametrize("scale_grad_by_freq", [False, True])
+@pytest.mark.parametrize("padding_count", [2, 5])
+def test_embedding_mask_preserves_token_frequencies(scale_grad_by_freq: bool, padding_count: int) -> None:
+    model = DeepSet(
+        element_encoder=nn.Embedding(3, 1, scale_grad_by_freq=scale_grad_by_freq),
+        set_decoder=nn.Identity(), pool_mode="sum",
+    )
+    tokens = torch.ones(1, padding_count + 1, dtype=torch.long)
+    tokens[0, 0] = 0
+    mask = tokens == 0
+    original = tokens.clone()
+    expected = model.element_encoder.weight[0].detach().clone()
+
+    actual = model(tokens, element_mask=mask)
+    torch.testing.assert_close(actual[0], expected)
+    actual.sum().backward()
+    torch.testing.assert_close(model.element_encoder.weight.grad, torch.tensor([[1.0], [0.0], [0.0]]))
+    torch.testing.assert_close(tokens, original)
+
+
+class _PositiveElementEncoder(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.projection = nn.Linear(2, 4)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.projection(inputs.log())
+
+
+@pytest.mark.parametrize("padding", [None, torch.nan, torch.inf])
+def test_encoder_input_masker_respects_positive_input_domain(padding: float | None) -> None:
+    torch.manual_seed(7)
+    model = DeepSet(
+        element_encoder=_PositiveElementEncoder(), set_decoder=nn.Linear(4, 1), pool_mode="sum",
+        input_masker=None if padding is None else partial(mask_numeric_elements, fill_value=1.0),
+    )
+    reference = deepcopy(model)
+    mask = torch.tensor([[True, False, True], [False, False, False]])
+    clean = torch.rand(2, 3, 2).add_(1).requires_grad_()
+    inputs = clean.detach().clone()
+    if padding is not None:
+        inputs = inputs.masked_fill(~mask.unsqueeze(-1), padding)
+    inputs.requires_grad_()
+    original = inputs.detach().clone()
+    encoded = reference.element_encoder(clean)
+    expected = reference.set_decoder(encoded.masked_fill(~mask.unsqueeze(-1), 0.0).sum(dim=1))
+
+    actual = model(inputs, element_mask=mask)
+    torch.testing.assert_close(actual, expected)
+    expected.sum().backward()
+    actual.sum().backward()
+    torch.testing.assert_close(inputs.grad, clean.grad)
+    assert not inputs.grad[~mask].count_nonzero()
+    _assert_matching_parameter_gradients(model, reference)
+    torch.testing.assert_close(inputs, original, equal_nan=True)
+
+
 @pytest.mark.parametrize("learned_encoder", [False, True])
 @pytest.mark.parametrize("context_in_elements", [False, True])
 @pytest.mark.parametrize("use_popart", [False, True])
@@ -174,7 +400,7 @@ def test_critic_latents_follow_permutations_and_share_value_gradients(
     (torch.ones(2, 3, 1, dtype=torch.bool), "ndim"),
     (torch.ones(2, 2, dtype=torch.bool), "shape"),
 ])
-def test_invalid_pooling_masks_are_rejected(mask, message):
+def test_invalid_pooling_masks_are_rejected(mask: torch.Tensor, message: str) -> None:
     model = DeepSet(element_encoder=nn.Identity(), set_decoder=nn.Identity())
     with pytest.raises(ValueError, match=message):
         model(torch.zeros(2, 3, 2), element_mask=mask)

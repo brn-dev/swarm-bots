@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Sanitize inactive Original MAT encoder/decoder inputs before learned operations, preserving finite outputs and gradients with NaN/inf padding without mutating caller inputs.
+- Make Deep Set input sanitization explicit through an optional `input_masker`. Numeric builders retain direct zero masking; custom encoders preserve their input layouts, valid domains and embedding frequency gradients by default. Provide `mask_numeric_elements` for explicit feature masking with a suitable fill value.
 - Support per-feature activations in scenario field encoder hidden layers through the shared activation builder.
 - Reject case-insensitive metric filename collisions before exporting experiment plots, preventing silent overwrites on Windows.
 - Align the MAT encoder reference-stack test with inactive observation masking.

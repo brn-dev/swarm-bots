@@ -128,17 +128,21 @@ class MATOrigDecoder(nn.Module):
                 f"got {tuple(shifted_actions.shape)} and {tuple(obs_rep.shape)}"
             )
 
+        padding_mask = None if agent_mask is None else ~agent_mask.unsqueeze(-1)
+        if padding_mask is not None:
+            shifted_actions = shifted_actions.masked_fill(padding_mask, 0.0)
+            obs_rep = obs_rep.masked_fill(padding_mask, 0.0)
         x = self.action_encoder(shifted_actions)
-        if agent_mask is not None:
-            x = x.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        if padding_mask is not None:
+            x = x.masked_fill(padding_mask, 0.0)
         x = self.ln(x)
-        if agent_mask is not None:
-            x = x.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        if padding_mask is not None:
+            x = x.masked_fill(padding_mask, 0.0)
 
         for block in self.blocks:
             x = block(x, obs_rep, agent_mask=agent_mask)
 
         latent_pi = self.head(x)
-        if agent_mask is not None:
-            latent_pi = latent_pi.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        if padding_mask is not None:
+            latent_pi = latent_pi.masked_fill(padding_mask, 0.0)
         return latent_pi

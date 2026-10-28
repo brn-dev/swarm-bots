@@ -198,12 +198,15 @@ class MATOrigEncoder(nn.Module):
         else:
             obs_input = local_obs
 
+        padding_mask = None if agent_mask is None else ~agent_mask.unsqueeze(-1)
+        if padding_mask is not None:
+            obs_input = obs_input.masked_fill(padding_mask, 0.0)
         x = self.obs_encoder(obs_input)
-        if agent_mask is not None:
-            x = x.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        if padding_mask is not None:
+            x = x.masked_fill(padding_mask, 0.0)
         x = self.ln(x)
-        if agent_mask is not None:
-            x = x.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
+        if padding_mask is not None:
+            x = x.masked_fill(padding_mask, 0.0)
 
         for block in self.blocks:
             x = block(x, agent_mask=agent_mask)

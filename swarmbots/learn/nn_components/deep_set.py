@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal, TypedDict
 
@@ -46,6 +47,13 @@ class DeepSetInteractionConfig:
             raise ValueError(f"Unknown Deep Set local update: {self.local_update!r}")
 
 
+def mask_numeric_elements(
+    elements: torch.Tensor, mask: torch.Tensor, *, fill_value: float = 0.0,
+) -> torch.Tensor:
+    """Mask final-axis features with a fill value valid for the receiving encoder."""
+    return elements.masked_fill(~mask.unsqueeze(-1), fill_value)
+
+
 def _pool_over_set(
     x: torch.Tensor,
     *,
@@ -68,9 +76,8 @@ def _pool_over_set(
         raise ValueError(f"Expected mask ndim {x.ndim - 1}, got {mask.ndim}")
     if mask.shape != x.shape[:-1]:
         raise ValueError(f"Expected mask shape {x.shape[:-1]}, got {mask.shape}")
-
+    x = mask_numeric_elements(x, mask)
     mask_f = mask.to(dtype=x.dtype).unsqueeze(-1)
-    x = x.masked_fill(~mask.unsqueeze(-1), 0.0)
     if mode == "sum":
         return (x * mask_f).sum(dim=set_dim)
     if mode == "mean":
@@ -204,6 +211,14 @@ class GatedDeepSetInteraction(DeepSetInteraction):
 
 
 class DeepSet(nn.Module):
+    """Pool encoded tokens while allowing arbitrary custom element encoders.
+
+    Custom encoder inputs remain unchanged unless ``input_masker`` is supplied.
+    The masker receives assembled element/context inputs and the encoded-token
+    mask; its layout and fill value must suit the encoder. Numeric builders opt
+    into zero masking of final-axis features.
+    """
+
     def __init__(
         self,
         *,
@@ -215,11 +230,13 @@ class DeepSet(nn.Module):
         context_in_elements: bool = False,
         context_after_pool: bool | None = None,
         interactions: list[DeepSetInteraction] | None = None,
+        input_masker: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
         self.element_encoder = element_encoder
         self.set_decoder = set_decoder
         self.interactions = nn.ModuleList(interactions or [])
+        self.input_masker = input_masker
         self.set_dim = int(set_dim)
         self.pool_mode: PoolMode = pool_mode
         self.context_features = int(context_features)
@@ -258,6 +275,7 @@ class DeepSet(nn.Module):
             element_encoder=element_encoder, set_decoder=set_decoder,
             set_dim=set_dim, pool_mode=pool_mode, context_features=context_features,
             context_in_elements=context_in_elements, context_after_pool=context_after_pool,
+            input_masker=mask_numeric_elements,
             interactions=[
                 interaction_cls(
                     features, config=interaction_config, set_dim=set_dim, pool_mode=pool_mode,
@@ -272,11 +290,11 @@ class DeepSet(nn.Module):
         element_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Return the final equivariant features, sharing all interaction masks with the readout."""
-        if self.interactions and element_mask is not None:
-            elements = elements.masked_fill(~element_mask.unsqueeze(-1), 0.0)
         if self.context_in_elements:
             expanded_context = context.unsqueeze(self.set_dim).expand(*elements.shape[:-1], context.shape[-1])
             elements = torch.cat((elements, expanded_context), dim=-1)
+        if element_mask is not None and self.input_masker is not None:
+            elements = self.input_masker(elements, element_mask)
         encoded = self.element_encoder(elements)
         for interaction in self.interactions:
             encoded = interaction(encoded, element_mask)
