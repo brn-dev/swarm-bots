@@ -73,9 +73,10 @@ def _training_kwargs() -> dict[str, Any]:
         "model_scale": None,  # Exercise explicit architecture overrides in these tests.
         "num_envs": 2,
         "device": "cpu",
-        "episode_length": 4,
+        "episode_length": 64,
         "scenario_kwargs": _scenario_kwargs(),
-        "env_kwargs": {"compile_tensor_operations": False},
+        # Exercise autoresets in short rollouts while retaining a valid recurrent episode limit.
+        "env_kwargs": {"compile_tensor_operations": False, "first_episode_length": 4},
         "policy_kwargs": {"enc_d_model": 32, "dec_d_model": 16},
     }
 
@@ -95,8 +96,11 @@ def capture_training_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
         ))
         return env, policy
 
-    def capture_algorithm(**kwargs: Any) -> dict[str, Any]:
-        return kwargs
+    class CapturedAlgorithm(dict[str, Any]):
+        training_metadata: dict[str, Any]
+
+    def capture_algorithm(**kwargs: Any) -> CapturedAlgorithm:
+        return CapturedAlgorithm(kwargs)
 
     monkeypatch.setattr("swarmbots.learn.training._make_policy_env", make_environment)
     for algorithm_name in ("PPO", "SAC", "RecurrentSAC", "TD3", "RecurrentTD3", "DDPG"):
@@ -176,7 +180,7 @@ def test_recurrent_default_batches_round_up_to_whole_learning_sequences(
     capture_training_configuration: None, learning_steps: int,
 ) -> None:
     config = make_training(
-        "SwarmBots-WallEasy-v0", "tmasac__lstm", num_envs=256,
+        "SwarmBots-WallEasy-v0", "tmasac__lstm", num_envs=256, episode_length=max(500, learning_steps),
         algorithm_kwargs={"learning_steps": learning_steps, "temporal_state_store_interval": 1},
     )
     positions = config["batch_size"] * config["learning_steps"]
@@ -189,7 +193,7 @@ def test_recurrent_default_replay_capacity_supports_custom_horizons(
     capture_training_configuration: None, variant: str,
 ) -> None:
     config = make_training(
-        "SwarmBots-WallEasy-v0", variant, num_envs=4096, episode_length=4,
+        "SwarmBots-WallEasy-v0", variant, num_envs=4096, episode_length=256,
         policy_kwargs={"td3_recurrent_actor": True} if variant == "tmatd3" else {},
         algorithm_kwargs={"learning_steps": 256, "burn_in_steps": 16, "temporal_state_store_interval": 32},
     )
@@ -211,15 +215,18 @@ def test_explicit_recurrent_batch_size_remains_a_sequence_count(
 
 @pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
 @pytest.mark.parametrize("episode_length", [16, 63])
-def test_short_recurrent_episode_limits_warn_without_changing_the_horizon(
-    capture_training_configuration: None, variant: str, episode_length: int,
+def test_short_recurrent_episode_limits_fail_before_environment_construction(
+    monkeypatch: pytest.MonkeyPatch, variant: str, episode_length: int,
 ) -> None:
-    with pytest.warns(UserWarning, match="at most one time-limit truncation"):
-        config = make_training(
+    def unexpected_environment(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("Invalid recurrent episode limits must fail before allocating an environment")
+
+    monkeypatch.setattr("swarmbots.learn.training._make_policy_env", unexpected_environment)
+    with pytest.raises(ValueError, match="episode_length >= learning_steps"):
+        make_training(
             "SwarmBots-WallEasy-v0", variant, episode_length=episode_length,
             policy_kwargs={"td3_recurrent_actor": True} if variant == "tmatd3" else {},
         )
-    assert config["learning_steps"] == 64
 
 
 @pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
@@ -1106,7 +1113,7 @@ def test_training_saves_and_resumes_then_evaluates_without_updating_normalizatio
         device="cpu",
         episode_length=2,
         scenario_kwargs=kwargs["scenario_kwargs"],
-        env_kwargs=kwargs["env_kwargs"],
+        env_kwargs={**kwargs["env_kwargs"], "first_episode_length": None},
         action_mode="deterministic",
     )
     assert len(result.episode_returns) == 2
@@ -1146,7 +1153,7 @@ def test_ppo_checkpoint_continues_the_same_learning_rate_schedule(tmp_path: Path
         if phase == "growth_pending":
             original._maybe_update_automatic_lr(None, None, {})
         elif phase == "disabled":
-            assert original.execute_command("disable_auto_lr", "", None)
+            original._auto_lr_enabled = False
         checkpoint = tmp_path / "model.pt"
         original.save(checkpoint, optimizer_state_dict=original._get_optimizer_state_dict())
 

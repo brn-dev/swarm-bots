@@ -263,6 +263,12 @@ def collect_off_policy_steps(
     while transitions_collected < n_steps:
         current_obs_needs_copy = not current_obs_is_stored
         obs_for_step = snapshot_obs(obs) if current_obs_needs_copy else obs
+        policy_obs = obs_for_step
+        if replay_buffer.normalization is not None and (not random_actions or advance_policy_state_with_random_actions):
+            normalization = replay_buffer.normalization.snapshot(
+                device=obs_for_step["local_obs"].device, copy_statistics=False, public_only=True,
+            )
+            policy_obs = normalization.normalize_observations(obs_for_step)
 
         with timers.reset_noise_timer:
             if policy is not None and active_gsde_reset_mode is not None:
@@ -287,10 +293,10 @@ def collect_off_policy_steps(
                 if advance_policy_state_with_random_actions:
                     assert policy is not None
                     _unused_policy_actions, next_temporal_state = policy.act_with_temporal_state(
-                        local_obs=obs_for_step["local_obs"],
-                        global_obs=obs_for_step["global_obs"],
-                        hidden_local_vars=obs_for_step["hidden_local_vars"],
-                        hidden_global_vars=obs_for_step["hidden_global_vars"],
+                        local_obs=policy_obs["local_obs"],
+                        global_obs=policy_obs["global_obs"],
+                        hidden_local_vars=policy_obs["hidden_local_vars"],
+                        hidden_global_vars=policy_obs["hidden_global_vars"],
                         agent_mask=obs_for_step.get("agent_mask", None),
                         **(
                             {} if "scenario_id" not in obs_for_step else {"scenario_ids": obs_for_step["scenario_id"]}
@@ -305,10 +311,10 @@ def collect_off_policy_steps(
             else:
                 assert policy is not None
                 actions, next_temporal_state = policy.act_with_temporal_state(
-                    local_obs=obs_for_step["local_obs"],
-                    global_obs=obs_for_step["global_obs"],
-                    hidden_local_vars=obs_for_step["hidden_local_vars"],
-                    hidden_global_vars=obs_for_step["hidden_global_vars"],
+                    local_obs=policy_obs["local_obs"],
+                    global_obs=policy_obs["global_obs"],
+                    hidden_local_vars=policy_obs["hidden_local_vars"],
+                    hidden_global_vars=policy_obs["hidden_global_vars"],
                     agent_mask=obs_for_step.get("agent_mask", None),
                     **(
                         {} if "scenario_id" not in obs_for_step else {"scenario_ids": obs_for_step["scenario_id"]}

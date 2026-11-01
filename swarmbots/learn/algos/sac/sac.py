@@ -602,17 +602,3 @@ class SAC(OffPolicyAlgorithm):
 
     def _move_extra_training_tensors_to_device(self) -> None:
         self._move_entropy_tensors_to_train_device()
-
-    def _execute_command(self, cmd: str, params: str, extra_run_metadata: dict[str, Any] | None) -> bool:
-        if cmd in {"set_ent_coef", "ent_coef"}:
-            ent_coef = float(params)
-            self._validate_fixed_entropy_coefficient(ent_coef)
-            ent_coef_tensor = torch.tensor(ent_coef, device=self.train_device, dtype=torch.float32)
-            self.ent_coef = ent_coef
-            self.log_ent_coef = None
-            self.ent_coef_optimizer = None
-            self._ent_coef_optimizer_step = None
-            self.ent_coef_tensor = ent_coef_tensor
-            logger.warning(f"Setting fixed ent_coef to {ent_coef}")
-            return True
-        return super()._execute_command(cmd, params, extra_run_metadata)

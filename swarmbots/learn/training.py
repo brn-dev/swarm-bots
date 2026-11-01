@@ -3,23 +3,22 @@
 from __future__ import annotations
 
 import math
-import warnings
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
 from torch import nn
 
 from swarmbots.benchmark.registry import get_benchmark_spec, make_env
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
+from swarmbots.learn.algos.off_policy.recurrent import validate_recurrent_episode_length
 from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
 from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.td3 import DDPG, TD3, RecurrentTD3
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.base_policy import BasePolicy
@@ -39,6 +38,7 @@ from swarmbots.learn.presets.policy_factory import (
 )
 from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE, normalize_model_scale, ppo_nop_at_scale
 from swarmbots.learn.presets.off_policy import make_off_policy_algorithm_options, make_recurrent_replay_options
+from swarmbots.learn.presets.nop import make_next_obs_pred_config
 from swarmbots.learn.presets.tmasac import make_tmasac_options
 from swarmbots.learn.presets.sac import make_sac_algorithm_options
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig, NOPInitGains
@@ -46,7 +46,11 @@ from swarmbots.learn.presets.variants import VARIANT_CONFIGS
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
 from swarmbots.learn.scheduling.schedulers import ScheduleUnit
+from swarmbots.learn.serialization_utils import serialize_value
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
+
+
+TrainingAlgorithm = TypeVar("TrainingAlgorithm", bound=BaseAlgorithm)
 
 
 def list_variants(*, include_hidden: bool = False) -> tuple[str, ...]:
@@ -129,12 +133,7 @@ def _add_ppo_nop(
         wm_rot6d_predictor_hidden_dims=[],
         wm_binary_predictor_hidden_dims=[],
         scalar_loss_fn="smooth_l1",
-        next_obs_pred_config=NextObsPredConfig(
-            local_scalar_target_indices=indices.local_scalar_indices,
-            local_angle_target_indices=indices.local_angle_indices,
-            local_rot6d_target_indices=indices.local_rot6d_indices,
-            local_binary_target_indices=indices.local_binary_indices,
-        ),
+        next_obs_pred_config=make_next_obs_pred_config(indices),
     )
     if options.get("model_scale") is not None:
         world_model_config = ppo_nop_at_scale(world_model_config, options["model_scale"])
@@ -276,9 +275,34 @@ def make_training(
         rollout_steps_per_env = 1 if is_off_policy else 4
     if rollout_steps_per_env <= 0:
         raise ValueError("rollout_steps_per_env must be positive")
+    episode_limit = get_benchmark_spec(benchmark_id).episode_length if episode_length is None else int(episode_length)
+    recurrent_off_policy = is_off_policy and (
+        policy_variant == "tmasac__recurrent" or policy_options.get("td3_recurrent_actor", False)
+    )
+    if recurrent_off_policy:
+        learning_steps = int(algorithm_options.get("learning_steps", make_recurrent_replay_options()["learning_steps"]))
+        validate_recurrent_episode_length(episode_limit, learning_steps)
+    training_metadata = serialize_value({
+        "benchmark_id": benchmark_id,
+        "learning_variant": variant,
+        "training_seed": seed,
+        "training_configuration": {
+            "num_envs": num_envs, "device": str(device), "seed": seed,
+            "episode_length": episode_limit,
+            "scenario_kwargs": dict(scenario_kwargs or {}), "env_kwargs": dict(env_kwargs or {}),
+            "model_scale": policy_options["model_scale"], "use_nop": policy_options["use_nop"],
+            "continuous_action_dist": policy_options["continuous_action_dist"],
+            "compile_modules": compile_modules, "rollout_steps_per_env": rollout_steps_per_env,
+            "policy_kwargs": dict(policy_kwargs or {}), "algorithm_kwargs": dict(algorithm_kwargs or {}),
+        },
+    })
+
+    def with_metadata(algorithm: TrainingAlgorithm) -> TrainingAlgorithm:
+        algorithm.training_metadata = training_metadata
+        return algorithm
+
     env_kwargs = dict(env_kwargs or {})
     if "first_episode_length" not in env_kwargs and "first_episode_lengths" not in env_kwargs:
-        episode_limit = get_benchmark_spec(benchmark_id).episode_length if episode_length is None else int(episode_length)
         if episode_limit <= 0:
             raise ValueError(f"Expected episode_length > 0, got {episode_limit}")
         if num_envs <= 0:
@@ -331,16 +355,6 @@ def make_training(
                 algorithm_config.update(make_recurrent_replay_options())
             algorithm_config.update(shared_options)
             algorithm_config.update(algorithm_options)
-            if recurrent and algorithm_config["learning_steps"] > vector_env.episode_length:
-                warnings.warn(
-                    "Recurrent off-policy replay allows at most one time-limit truncation per learning sequence. "
-                    f"episode_length={vector_env.episode_length} is shorter than "
-                    f"learning_steps={algorithm_config['learning_steps']}; some or all replay windows may be "
-                    "rejected, preventing updates. Keep episode_length >= learning_steps to avoid this "
-                    "restriction; burn-in steps do not count toward the learning sequence length.",
-                    UserWarning,
-                    stacklevel=2,
-                )
             if recurrent and "batch_size" not in algorithm_options:
                 learning_steps = int(algorithm_config.get("learning_steps", 64))
                 if learning_steps <= 0:
@@ -362,7 +376,7 @@ def make_training(
                     algorithm_config["buffer_capacity_per_env"],
                     math.ceil(max(algorithm_config["learning_starts"], learning_positions) / num_envs),
                 )
-            return algorithm_class(**algorithm_config)
+            return with_metadata(algorithm_class(**algorithm_config))
         n_epochs = algorithm_options.get("n_epochs", 8)
         target_kl = algorithm_options.get("target_kl", 0.002)
         if "learning_rate" in algorithm_options:
@@ -414,7 +428,7 @@ def make_training(
         }
         algorithm_config.update(shared_options)
         algorithm_config.update(algorithm_options)
-        return PPO(**algorithm_config)
+        return with_metadata(PPO(**algorithm_config))
     except BaseException:
         env.close()
         raise
@@ -442,7 +456,8 @@ def train(
         options = dict(learn_kwargs or {})
         options.setdefault("enable_command_prompt", False)
         metadata = dict(options.pop("extra_run_metadata", None) or {})
-        metadata.update(benchmark_id=benchmark_id, learning_variant=variant)
+        if load_path is not None:
+            metadata["load_path"] = str(Path(load_path).resolve())
         options.update(
             max_total_timesteps=total_timesteps,
             run_dir=run_dir,

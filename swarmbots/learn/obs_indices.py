@@ -1,5 +1,5 @@
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,3 +16,5 @@ class ObsIndices:
     hidden_local_vars_quaternion_indices: list[int]
     hidden_global_vars_scalar_indices: list[int]
     hidden_global_vars_quaternion_indices: list[int]
+    global_scalar_active_mask_indices: list[int] = field(default_factory=list)
+    global_rot6d_active_mask_indices: list[int] = field(default_factory=list)

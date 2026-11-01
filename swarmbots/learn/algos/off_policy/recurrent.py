@@ -15,6 +15,15 @@ from swarmbots.learn.algos.off_policy.nop import SACNOPSequenceBatch
 from swarmbots.learn.temporal_state import concatenate_temporal_states, detach_temporal_state
 
 
+def validate_recurrent_episode_length(episode_length: int, learning_steps: int) -> None:
+    if episode_length < learning_steps:
+        raise ValueError(
+            f"Recurrent off-policy training requires episode_length >= learning_steps, got "
+            f"episode_length={episode_length}, learning_steps={learning_steps}. "
+            "Increase episode_length or explicitly reduce learning_steps and temporal_state_store_interval."
+        )
+
+
 class RecurrentOffPolicyMixin:
     supports_recurrent_training = True
 
@@ -96,6 +105,7 @@ class RecurrentOffPolicyMixin:
             train_device=self.train_device,
             train_dtype=torch.float32,
             compile_tensor_operations=self.replay_compile_tensor_operations,
+            normalization=self._normalization,
         )
 
     def _sample_training_batches(
@@ -314,6 +324,9 @@ class RecurrentOffPolicyMixin:
             raise ValueError(f"burn_in_steps must be >= 0, got {self.burn_in_steps}")
         if self.learning_steps <= 0:
             raise ValueError(f"learning_steps must be > 0, got {self.learning_steps}")
+        episode_length = getattr(self.env.unwrapped, "episode_length", None)
+        if episode_length is not None:
+            validate_recurrent_episode_length(episode_length, self.learning_steps)
         if self.temporal_state_store_interval <= 0:
             raise ValueError(f"temporal_state_store_interval must be > 0, got {self.temporal_state_store_interval}")
         if self.learning_steps < self.temporal_state_store_interval:

@@ -4,7 +4,6 @@ import math
 from typing import Any
 
 import torch
-from torch.nn import functional as F
 
 from swarmbots.learn.action_dists.action_dist import (
     BOUNDED_ACTION_HISTOGRAM,
@@ -14,6 +13,7 @@ from swarmbots.learn.action_dists.action_dist import (
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBatch, OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.off_policy.base_algorithm import OffPolicyAlgorithm, TrainStepResult
 from swarmbots.learn.algos.td3.td3_policy import TD3Policy
+from swarmbots.learn.losses import mean_critic_mse_loss
 
 
 class TD3(OffPolicyAlgorithm):
@@ -128,7 +128,7 @@ class TD3(OffPolicyAlgorithm):
             agent_mask=batch.agent_mask,
         )
         values, critic_latents = self.policy.q_values_with_nop_latents(actions=batch.actions, **observations)
-        critic_loss = sum(F.mse_loss(value, target_q) for value in values)
+        critic_loss = mean_critic_mse_loss(values, target_q)
         nop_loss_batch = batch if nop_batch is None else nop_batch
         skip_nop = self._uses_multi_step_nop() and nop_batch is None
         critic_nop_loss, critic_nop_metrics = (None, {"nop_loss_skipped": 1.0}) if skip_nop else (
@@ -234,12 +234,6 @@ class TD3(OffPolicyAlgorithm):
             optimizer.load_state_dict(state_dict[name])
             self._move_optimizer_state_to_device(optimizer, self.train_device)
         self._rebuild_optimizer_steps()
-
-    def _execute_command(self, cmd: str, params: str, extra_run_metadata: dict[str, Any] | None) -> bool:
-        if cmd in {"set_ent_coef", "ent_coef"}:
-            raise ValueError("DDPG/TD3 do not have an entropy coefficient")
-        return super()._execute_command(cmd, params, extra_run_metadata)
-
 
 class DDPG(TD3):
     """Single-critic deterministic policy gradient, without TD3 delay or smoothing."""

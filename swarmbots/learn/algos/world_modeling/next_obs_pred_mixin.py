@@ -39,6 +39,8 @@ class NextObsPredConfig:
     binary_target_ema_decay: float = 0.99
     binary_target_ema_eps: float = 1e-4
     predict_delta: Optional[PredictDeltaMode | bool] = PredictDeltaMode.PER_STEP_DELTA
+    global_scalar_active_mask_indices: Optional[list[int]] = None
+    global_rot6d_active_mask_indices: Optional[list[int]] = None
 
 
 class NextObsPredMixin(abc.ABC):
@@ -61,6 +63,8 @@ class NextObsPredMixin(abc.ABC):
     local_binary_target_indices: Optional[list[int]]
     global_scalar_target_indices: Optional[list[int]]
     global_rot6d_target_indices: Optional[list[int]]
+    global_scalar_active_mask_indices: Optional[list[int]]
+    global_rot6d_active_mask_indices: Optional[list[int]]
 
     scalar_loss_fn: Optional[nn.Module]
 
@@ -109,6 +113,14 @@ class NextObsPredMixin(abc.ABC):
         local_binary_target_indices = self._normalize_indices(config.local_binary_target_indices)
         global_scalar_target_indices = self._normalize_indices(config.global_scalar_target_indices)
         global_rot6d_target_indices = self._normalize_indices(config.global_rot6d_target_indices)
+        global_scalar_active_mask_indices = self._normalize_indices(config.global_scalar_active_mask_indices)
+        global_rot6d_active_mask_indices = self._normalize_indices(config.global_rot6d_active_mask_indices)
+        for target_indices, mask_indices in (
+            (global_scalar_target_indices, global_scalar_active_mask_indices),
+            (global_rot6d_target_indices, global_rot6d_active_mask_indices),
+        ):
+            if mask_indices is not None and (target_indices is None or len(mask_indices) != len(target_indices)):
+                raise ValueError("Global active-mask indices must provide one flag index per prediction target")
         local_angle_target_cos_indices = (
             [i + 1 for i in local_angle_target_indices] if local_angle_target_indices is not None else None
         )
@@ -146,6 +158,8 @@ class NextObsPredMixin(abc.ABC):
         self.local_binary_target_indices = local_binary_target_indices
         self.global_scalar_target_indices = global_scalar_target_indices
         self.global_rot6d_target_indices = global_rot6d_target_indices
+        self.global_scalar_active_mask_indices = global_scalar_active_mask_indices
+        self.global_rot6d_active_mask_indices = global_rot6d_active_mask_indices
 
         self.scalar_loss_fn = scalar_loss_fn
 
@@ -212,6 +226,8 @@ class NextObsPredMixin(abc.ABC):
                 "local_binary_target_indices": self._copy_optional_list(self.local_binary_target_indices),
                 "global_scalar_target_indices": self._copy_optional_list(self.global_scalar_target_indices),
                 "global_rot6d_target_indices": self._copy_optional_list(self.global_rot6d_target_indices),
+                "global_scalar_active_mask_indices": self._copy_optional_list(self.global_scalar_active_mask_indices),
+                "global_rot6d_active_mask_indices": self._copy_optional_list(self.global_rot6d_active_mask_indices),
                 "scalar_loss_weight": self.scalar_loss_weight,
                 "angle_loss_weight": self.angle_loss_weight,
                 "rot6d_loss_weight": self.rot6d_loss_weight,
@@ -313,6 +329,7 @@ class NextObsPredMixin(abc.ABC):
             target_start_indices: list[int],
             valid_mask: torch.Tensor | None,
             base_obs: torch.Tensor | None,
+            target_valid_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         target_indices = self._expand_rot6d_indices(target_start_indices)
         if self.predict_delta:
@@ -325,6 +342,10 @@ class NextObsPredMixin(abc.ABC):
             base_rot6ds = base_obs[..., target_indices]
             target_rot6ds = target_rot6ds.reshape(*target_rot6ds.shape[:-1], -1, 6)
             base_rot6ds = base_rot6ds.reshape(*base_rot6ds.shape[:-1], -1, 6)
+            if target_valid_mask is not None:
+                pred_rotvecs = pred_rotvecs.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
+                target_rot6ds = target_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
+                base_rot6ds = base_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
 
             target_mats = self._rot6d_to_matrix(target_rot6ds)
             base_mats = self._rot6d_to_matrix(base_rot6ds)
@@ -337,12 +358,17 @@ class NextObsPredMixin(abc.ABC):
 
             pred_rot6ds = pred_rot6ds.reshape(*pred_rot6ds.shape[:-1], -1, 6)
             target_rot6ds = target_rot6ds.reshape(*target_rot6ds.shape[:-1], -1, 6)
+            if target_valid_mask is not None:
+                pred_rot6ds = pred_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
+                target_rot6ds = target_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
 
             pred_mats = self._rot6d_to_matrix(pred_rot6ds)
             target_mats = self._rot6d_to_matrix(target_rot6ds)
 
         trace_sim = (pred_mats * target_mats).sum(dim=(-1, -2))
         loss_per_rot = 1.0 - (trace_sim / 3.0)
+        if target_valid_mask is not None:
+            return masked_mean(loss_per_rot, target_valid_mask)
         loss_per_item = loss_per_rot.mean(dim=-1)
         return masked_mean(loss_per_item, valid_mask)
 
@@ -384,11 +410,22 @@ class NextObsPredMixin(abc.ABC):
 
         pred_scalars = self.global_scalars_predictor(global_latent_preds)
         target_scalars = next_global_obs[..., self.global_scalar_target_indices]
+        target_valid_mask = self._global_target_valid_mask(
+            next_global_obs, base_global_obs, self.global_scalar_active_mask_indices, valid_mask,
+        )
+        if target_valid_mask is not None:
+            pred_scalars = pred_scalars.masked_fill(~target_valid_mask, 0.0)
+            target_scalars = target_scalars.masked_fill(~target_valid_mask, 0.0)
         if self.predict_delta:
             if base_global_obs is None:
                 raise ValueError("global_obs is required when predict_delta is True for global scalar targets")
-            target_scalars = target_scalars - base_global_obs[..., self.global_scalar_target_indices]
+            base_scalars = base_global_obs[..., self.global_scalar_target_indices]
+            if target_valid_mask is not None:
+                base_scalars = base_scalars.masked_fill(~target_valid_mask, 0.0)
+            target_scalars = target_scalars - base_scalars
         scalar_losses = self.scalar_loss_fn(pred_scalars, target_scalars)
+        if target_valid_mask is not None:
+            return self._masked_scalar_loss_mean(scalar_losses, target_valid_mask)
         loss_per_item = self._reduce_scalar_feature_loss(
             scalar_losses,
             target_shape=target_scalars.shape,
@@ -426,7 +463,26 @@ class NextObsPredMixin(abc.ABC):
             target_start_indices=self.global_rot6d_target_indices,
             valid_mask=valid_mask,
             base_obs=base_global_obs,
+            target_valid_mask=self._global_target_valid_mask(
+                next_global_obs, base_global_obs, self.global_rot6d_active_mask_indices, valid_mask,
+            ),
         )
+
+    def _global_target_valid_mask(
+            self,
+            target_obs: torch.Tensor,
+            base_obs: torch.Tensor | None,
+            active_mask_indices: list[int] | None,
+            valid_mask: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        if active_mask_indices is None:
+            return None
+        target_valid = target_obs[..., active_mask_indices] > 0.0
+        if self.predict_delta and base_obs is not None:
+            target_valid = target_valid & (base_obs[..., active_mask_indices] > 0.0)
+        if valid_mask is not None:
+            target_valid = target_valid & valid_mask.unsqueeze(-1)
+        return target_valid
 
     @property
     def has_local_next_obs_pred_targets(self) -> bool:

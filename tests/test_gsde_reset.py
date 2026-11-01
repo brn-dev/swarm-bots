@@ -83,14 +83,14 @@ def test_disabling_gsde_step_resets_preserves_noise_until_each_episode_ends(
         gsde_reset_mode=GSDEIntervalResetMode(interval=1), train_device="cpu", rollout_device="cpu",
     )
     if not disable_after_rollout:
-        assert algorithm._execute_command("disable_gsde_reset", "", None)
+        algorithm.gsde_reset_mode = GSDEEpisodeResetMode()
     distribution = policy.action_dist.distributions[0]
     _, _, _, rollout_state = collector(
         env, policy, algorithm.rollout_buffer, n_steps=2, gsde_reset_mode=algorithm.gsde_reset_mode,
     )
     initial_noise = distribution.get_temporal_correlation_state().clone()
     if disable_after_rollout:
-        assert algorithm._execute_command("disable_gsde_reset", "", None)
+        algorithm.gsde_reset_mode = GSDEEpisodeResetMode()
     assert algorithm._serialize_gsde_reset_mode(algorithm.gsde_reset_mode) == {"mode": "episode"}
     _, _, _, rollout_state = collector(
         env, policy, algorithm.rollout_buffer, n_steps=2, rollout_state=rollout_state,

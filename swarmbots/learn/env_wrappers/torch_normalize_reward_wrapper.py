@@ -24,6 +24,7 @@ class TorchNormalizeRewardWrapper(TorchEnvWrapper):
         self.returns = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
         self.prev_dones = torch.zeros((self._n_envs,), device=self.device, dtype=torch.bool)
         self._update_running_mean = True
+        self.normalize_rewards = True
 
     @property
     def update_running_mean(self) -> bool:
@@ -55,9 +56,13 @@ class TorchNormalizeRewardWrapper(TorchEnvWrapper):
         if self._update_running_mean:
             self.return_rms.update(self.returns)
 
-        rewards = rewards / torch.sqrt(self.return_rms.var.to(device=rewards.device, dtype=rewards.dtype) + self.epsilon)
+        if self.normalize_rewards:
+            rewards = rewards * self.reward_scale(device=rewards.device, dtype=rewards.dtype)
         self.prev_dones = torch.logical_or(terminations, truncations)
         return self.observations(observations), self.rewards(rewards), terminations, truncations, infos
+
+    def reward_scale(self, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        return torch.rsqrt(self.return_rms.var.to(device=device, dtype=dtype) + self.epsilon)
 
     def set_device(self, device: torch.device | str) -> None:
         new_device = torch.device(device)

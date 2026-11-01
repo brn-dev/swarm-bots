@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Restrict runtime training commands to read-only inspections and remove mutation commands, pause/stop controls, manual save/record commands, and their command-driven state and logging. Keep Python training/checkpoint APIs and scheduled/final saving.
+- Avoid host synchronization in Original MAT's CUDA prefix-mask validation and tensor-dictionary terminal-observation transforms. Preserve unchanged terminal snapshots across wrappers and snapshot only replaced fields.
+- Average SAC/DDPG/TD3 critic losses across Q heads so the common NOP coefficient has a consistent relative scale for single and twin critics.
+- Predict public global scalar and rotation observations in default NOP configurations. Exclude inactive MultiPayloadGoal records from global prediction losses and gradients. This adds predictor parameters for tasks with public globals and changes their NOP checkpoint shapes.
+- Reject recurrent off-policy episode limits shorter than the learning sequence before constructing benchmark environments, while keeping PPO/RMAT rollout length and parallelism unchanged.
+- Record training seeds, original construction options, resolved environment/scenario settings, and Git commit/dirty-source hashes in run metadata before the first training update.
+- Preserve adaptive off-policy normalization when a whole policy is wrapped with `torch.compile`, including transition-history reset inputs in benchmark and frozen evaluation.
+- Cache frozen-evaluation environments only after normalization setup succeeds, and close environments rejected during setup so retries cannot bypass validation or use unconfigured inputs.
+- Reject duplicate off-policy observation normalization wrappers per observation key before changing wrapper behavior. Isolate normalization compiler caches around compiler mocks so CUDA regression tests exercise real compiled wrapper statistics.
+- Honor observation wrappers' explicit compilation opt-outs in off-policy rollout, replay normalization and evaluation; keep batched normalization compiled by default on CUDA and avoid compiler setup when no observation transform is needed.
+- Store raw off-policy observations, terminal observations and rewards while observation/return statistics continue adapting. Normalize rollout inputs and sampled replay, recurrent burn-in and NOP windows at their policy/learner boundaries; share one current statistics snapshot per training call and reuse normalized NOP origins. Preserve raw transition history and consistent evaluation inputs, compile the batched tensor transforms without CUDA-graph output reuse, and remove the ignored frozen-evaluation `force_settled` reset option.
 - Sanitize inactive Original MAT encoder/decoder inputs before learned operations, preserving finite outputs and gradients with NaN/inf padding without mutating caller inputs.
 - Make Deep Set input sanitization explicit through an optional `input_masker`. Numeric builders retain direct zero masking; custom encoders preserve their input layouts, valid domains and embedding frequency gradients by default. Provide `mask_numeric_elements` for explicit feature masking with a suitable fill value.
 - Support per-feature activations in scenario field encoder hidden layers through the shared activation builder.

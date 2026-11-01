@@ -129,11 +129,11 @@ class BaseAlgorithmEtaTests(unittest.TestCase):
         sink_id = logger.add(buffer, format="{message}")
         try:
             with mock.patch("swarmbots.learn.algos.base_algorithm.time.monotonic", return_value=100.0):
-                executed = algo._execute_command("eta", "", None)
+                executed = algo.execute_command("eta")
         finally:
             logger.remove(sink_id)
 
-        self.assertFalse(executed)
+        self.assertTrue(executed)
         output = buffer.getvalue()
         self.assertIn("estimated_finish_at", output)
         self.assertIn("remaining_duration", output)

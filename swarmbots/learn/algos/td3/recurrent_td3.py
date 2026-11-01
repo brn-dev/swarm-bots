@@ -3,7 +3,6 @@
 from typing import Any
 
 import torch
-from torch.nn import functional as F
 
 from swarmbots.learn.algos.off_policy.base_algorithm import TrainStepResult
 from swarmbots.learn.algos.off_policy.recurrent import (
@@ -139,7 +138,7 @@ class RecurrentTD3(RecurrentOffPolicyMixin, TD3):
             reset_mask=learning.episode_start_mask,
             actor_state=current_actor_state,
         )
-        critic_loss = F.mse_loss(q1, target_q) + F.mse_loss(q2, target_q)
+        critic_loss = self._tensor_operations.critic_loss(q1, q2, target_q)
         nop_training = None
         critic_nop_loss, critic_nop_metrics = None, {}
         if self.policy.has_nop_loss():

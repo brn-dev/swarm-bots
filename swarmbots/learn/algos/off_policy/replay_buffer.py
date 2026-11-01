@@ -8,6 +8,7 @@ from gymnasium import spaces
 from swarmbots.learn.algos.off_policy.replay_buffer_tensor_ops import (
     build_replay_buffer_tensor_operations,
 )
+from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 from swarmbots.learn.torch_device import as_device
 
@@ -136,6 +137,7 @@ class OffPolicyReplayBuffer:
             train_dtype: torch.dtype = torch.float32,
             non_blocking_train_transfer: bool | None = None,
             compile_tensor_operations: bool | None = None,
+            normalization: ReplayNormalization | None = None,
     ) -> None:
         if capacity_per_env <= 0:
             raise ValueError(f"capacity_per_env must be > 0, got {capacity_per_env}")
@@ -155,6 +157,7 @@ class OffPolicyReplayBuffer:
             )
 
         self.capacity_per_env = capacity_per_env
+        self.normalization = normalization
         self.observation_capacity_per_env = capacity_per_env + 1
         self.observation_space = observation_space
         self.action_space = action_space

@@ -148,6 +148,11 @@ def build_obs_indices(
     global_scalar_indices = _global_scalar_indices(scenario_settings, global_obs_dim)
     global_rot6d_indices = _global_rot6d_indices(scenario_settings, global_obs_dim)
     global_quaternion_indices = []
+    global_scalar_active_mask_indices = []
+    global_rot6d_active_mask_indices = []
+    if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
+        global_scalar_active_mask_indices = [index // 12 * 12 for index in global_scalar_indices]
+        global_rot6d_active_mask_indices = [index // 12 * 12 for index in global_rot6d_indices]
 
     # hidden_local_vars are currently used for per-unit binary threshold flags in wall scenarios.
     # Keep them unnormalized.
@@ -185,4 +190,6 @@ def build_obs_indices(
         hidden_local_vars_quaternion_indices=hidden_local_vars_quaternion_indices,
         hidden_global_vars_scalar_indices=hidden_global_vars_scalar_indices,
         hidden_global_vars_quaternion_indices=hidden_global_vars_quaternion_indices,
+        global_scalar_active_mask_indices=global_scalar_active_mask_indices,
+        global_rot6d_active_mask_indices=global_rot6d_active_mask_indices,
     )

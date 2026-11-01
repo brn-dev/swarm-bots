@@ -1,4 +1,3 @@
-import json
 import math
 from collections.abc import Mapping
 from copy import deepcopy
@@ -11,7 +10,7 @@ import torch.nn as nn
 from loguru import logger
 
 from swarmbots.learn.algos.base_algorithm import (
-    BaseAlgorithm, LearningRate, _parse_bool, validate_scalar_learning_rate,
+    BaseAlgorithm, LearningRate, validate_scalar_learning_rate,
 )
 from swarmbots.learn.algos.ppo.ppo_policy import PPOPolicy
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
@@ -24,7 +23,6 @@ from swarmbots.learn.algos.ppo.ppo_rollout import (
 from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPORolloutBuffer
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
-from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamplerConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.gsde_reset import (
@@ -1036,162 +1034,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             time_agent_mask = time_mask.unsqueeze(-1).expand(batch.actions.shape[:-1])
             valid_mask = time_agent_mask if valid_mask is None else valid_mask & time_agent_mask
         return valid_mask
-
-    def _execute_command(
-            self,
-            cmd: str,
-            params: str,
-            extra_run_metadata: dict[str, Any] | None
-    ) -> bool:
-        """
-        :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
-        """
-        if cmd == 'set_std':
-            std = float(params)
-            logger.warning(f"Setting action std to {std}")
-            self.policy.action_dist.set_std(std)
-            return True
-        elif cmd == 'scale_std':
-            multiplier = float(params)
-            logger.warning(f"Scaling action std by {multiplier}")
-            self.policy.action_dist.scale_std(multiplier)
-            return True
-        elif cmd == 'set_n_epochs' or cmd == 'set_num_epochs':
-            n_epochs = int(params)
-            logger.warning(f'Setting num epochs to {n_epochs}')
-            self.n_epochs = n_epochs
-            return True
-        elif cmd == 'set_target_kl':
-            target_kl = float(params)
-            logger.warning(f'Setting target KL to {target_kl}')
-            self.target_kl = target_kl
-            return True
-        elif cmd == "set_clip_range":
-            clip_range = float(params)
-            logger.warning(f"Setting clip_range to {clip_range}")
-            self.clip_range = clip_range
-            return True
-        elif cmd == "set_clip_range_vf":
-            clip_range_vf = float(params)
-            logger.warning(f"Setting clip_range_vf to {clip_range_vf}")
-            self.clip_range_vf = clip_range_vf
-            return True
-        elif cmd == "set_mc_ent_coef":
-            mc_ent_coef = float(params)
-            logger.warning(f"Setting mc_ent_coef to {mc_ent_coef}")
-            self.mc_ent_coef = mc_ent_coef
-            return True
-        elif cmd == "set_vf_coef":
-            vf_coef = float(params)
-            logger.warning(f"Setting vf_coef to {vf_coef}")
-            self.vf_coef = vf_coef
-            return True
-        elif cmd in {"set_batch_size", "batch_size"}:
-            batch_size = int(params)
-            if batch_size <= 0:
-                raise ValueError(f"batch_size must be > 0, got {batch_size}")
-            logger.warning(f"Setting batch_size to {batch_size}")
-            self.batch_size = batch_size
-            return True
-        elif cmd in {"set_normalize_advantage", "normalize_advantage"}:
-            normalize_advantage = _parse_bool(params)
-            logger.warning(f"Setting normalize_advantage to {normalize_advantage}")
-            self.normalize_advantage = normalize_advantage
-            return True
-        elif cmd in {"set_gsde_prob", "set_gsde_probability", "gsde_prob"}:
-            probability = float(params)
-            if not (0.0 < probability < 1.0):
-                raise ValueError(f"gsde probability must be in (0, 1), got {probability}")
-            logger.warning(f"Setting gsde_reset_mode to probability={probability}")
-            self.gsde_reset_mode = GSDEProbabilityResetMode(probability=probability)
-            return True
-        elif cmd in {"set_gsde_interval", "gsde_interval"}:
-            interval = int(params)
-            if interval <= 0:
-                raise ValueError(f"gsde interval must be > 0, got {interval}")
-            logger.warning(f"Setting gsde_reset_mode to interval={interval}")
-            self.gsde_reset_mode = GSDEIntervalResetMode(interval=interval)
-            return True
-        elif cmd in {"disable_gsde_reset", "gsde_reset_off"}:
-            logger.warning("Disabling gSDE step resets; noise still resets at episode starts")
-            self.gsde_reset_mode = GSDEEpisodeResetMode()
-            return True
-        elif cmd in {"set_max_grad_norm", "max_grad_norm"}:
-            max_grad_norm = float(params)
-            if max_grad_norm <= 0:
-                raise ValueError(f"max_grad_norm must be > 0, got {max_grad_norm}")
-            logger.warning(f"Setting max_grad_norm to {max_grad_norm}")
-            self.max_grad_norm = max_grad_norm
-            return True
-        elif cmd == "set_gamma":
-            gamma = float(params)
-            logger.warning(f"Setting gamma to {gamma}")
-            self.gamma = gamma
-            self.rollout_buffer.gamma = gamma
-            return True
-        elif cmd == "set_gae_lambda":
-            gae_lambda = float(params)
-            logger.warning(f"Setting gae_lambda to {gae_lambda}")
-            self.gae_lambda = gae_lambda
-            self.rollout_buffer.gae_lambda = gae_lambda
-            return True
-        elif cmd in {"set_extra_loss_weights", "set_loss_weights", "loss_weights"}:
-            parsed_weights = json.loads(params)
-            if not isinstance(parsed_weights, dict):
-                raise ValueError(
-                    "set_extra_loss_weights expects a JSON object, e.g. "
-                    "set_extra_loss_weights:{\"world_model_loss_coef\":0.1}"
-                )
-            if not parsed_weights:
-                logger.warning("No extra loss weights provided.")
-                return False
-            weights = {str(key): float(value) for key, value in parsed_weights.items()}
-            logger.warning(f"Updating extra loss weights: {weights}")
-            self.policy.update_loss_weights(**weights)
-            return True
-        elif cmd in {"set_wm_loss_coef", "set_world_model_loss_coef", "wm_loss_coef"}:
-            coef = float(params)
-            logger.warning(f"Setting world_model_loss_coef to {coef}")
-            self.policy.update_loss_weights(world_model_loss_coef=coef)
-            return True
-        elif cmd in {"set_wm_num_next_steps", "set_world_model_num_next_steps", "wm_num_next_steps"}:
-            num_next_steps = int(params)
-            if num_next_steps < 1:
-                raise ValueError(f"world_model_num_next_steps must be >= 1, got {num_next_steps}")
-            if not isinstance(self.sampler_config, PPOWMSamplerConfig):
-                raise ValueError(
-                    "Current sampler_config does not expose num_next_steps; cannot configure world-model sampler horizon."
-                )
-            logger.warning(f"Setting world_model_num_next_steps to {num_next_steps}")
-            self.sampler_config = replace(self.sampler_config, num_next_steps=num_next_steps)
-            return True
-        elif cmd in {"disable_auto_lr", "auto_lr_off", "disable_automatic_lr", "disable_auto_learning_rate"}:
-            _ = params
-            if self.automatic_lr is None:
-                logger.warning("Automatic LR is not configured; nothing to disable.")
-                return False
-            if not self._auto_lr_enabled:
-                logger.warning("Automatic LR is already disabled.")
-                return False
-            self._auto_lr_enabled = False
-            logger.warning("Disabled automatic LR.")
-            return True
-        elif cmd in {"enable_auto_lr", "auto_lr_on", "enable_automatic_lr", "enable_auto_learning_rate"}:
-            _ = params
-            if self.automatic_lr is None:
-                logger.warning("Automatic LR is not configured; cannot enable it.")
-                return False
-            if self.target_kl is None:
-                raise ValueError("Cannot enable automatic LR when target_kl is None.")
-            if self._auto_lr_enabled:
-                logger.warning("Automatic LR is already enabled.")
-                return False
-            self._auto_lr_enabled = True
-            self._auto_lr_state = {}
-            logger.warning("Enabled automatic LR (resetting no-early-stop counter).")
-            return True
-        else:
-            return super()._execute_command(cmd, params, extra_run_metadata)
 
     def load(
             self,

@@ -25,7 +25,7 @@ Inspect the saved outputs:
 | Path under `runs/first-mappo/` | Contents |
 | --- | --- |
 | `log.csv` or its compressed counterpart | Learning curves and diagnostics |
-| `run_metadata_*.json` | Settings and runtime information |
+| `run_metadata_*.json` | Training seed, construction and resolved settings, source provenance, and machine information |
 | `models/` | Checkpoints; the final file ends in `_steps_final.pt` |
 | `evaluation.json` | Evaluation summary, individual episodes, and metadata |
 | `videos/` | MP4 recordings |

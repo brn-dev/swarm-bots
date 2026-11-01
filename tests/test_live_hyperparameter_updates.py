@@ -45,12 +45,13 @@ def _optimizer_rates(algorithm: BaseAlgorithm) -> list[float]:
     return [group["lr"] for optimizer in optimizers for group in optimizer.param_groups]
 
 
-@pytest.mark.parametrize("value", ["null", "0", "true", "[]", "{}", '"0.001"', "-0.001", "NaN", "Infinity"])
-def test_rejected_learning_rate_command_preserves_base_and_optimizer_rates(
-    algorithm: BaseAlgorithm, value: str,
+@pytest.mark.parametrize("value", [-0.001, float("nan"), float("inf")])
+def test_invalid_learning_rate_updates_preserve_base_and_optimizer_rates(
+    algorithm: BaseAlgorithm, value: float,
 ) -> None:
     before = algorithm.learning_rate, _optimizer_rates(algorithm)
-    assert not algorithm.execute_command("set_lr", value, None)
+    with pytest.raises(ValueError):
+        algorithm.set_learning_rate(value)
     assert (algorithm.learning_rate, _optimizer_rates(algorithm)) == before
 
 
@@ -58,7 +59,7 @@ def test_rejected_learning_rate_command_preserves_base_and_optimizer_rates(
 def test_fixed_learning_rate_updates_keep_base_and_optimizers_consistent(
     algorithm: BaseAlgorithm, learning_rate: float,
 ) -> None:
-    assert algorithm.execute_command("set_lr", str(learning_rate), None)
+    algorithm.set_learning_rate(learning_rate)
     assert algorithm.learning_rate == learning_rate
     assert all(rate == learning_rate for rate in _optimizer_rates(algorithm))
 
@@ -118,34 +119,3 @@ def test_loss_weight_requests_are_atomic(algorithm: BaseAlgorithm, failure: str)
         assert tuple(getattr(policy, name) for name in names) == before
     else:
         assert policy.critic_nop.nop_loss_coef == before
-
-
-def test_rejected_ppo_loss_weight_command_preserves_weights() -> None:
-    env = _make_ppo_env()
-    base = _make_ppo(env, _make_policy(env))
-    wrapper = _nop_wrapper(base)
-    algorithm = _make_ppo(env, wrapper)
-    before = wrapper.scalar_loss_weight, wrapper.angle_loss_weight
-    assert not algorithm.execute_command("set_extra_loss_weights", '{"scalar":2.0,"angle":-1.0}', None)
-    assert (wrapper.scalar_loss_weight, wrapper.angle_loss_weight) == before
-    assert algorithm.execute_command("set_extra_loss_weights", '{"scalar":2.0,"angle":0.5}', None)
-    assert (wrapper.scalar_loss_weight, wrapper.angle_loss_weight) == (2.0, 0.5)
-
-
-@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "-1"])
-def test_rejected_entropy_command_preserves_automatic_temperature(value: str) -> None:
-    env = _make_env()
-    try:
-        algorithm = _make_algorithm(env, "sac")
-        before = algorithm.ent_coef, algorithm.log_ent_coef, algorithm.ent_coef_optimizer
-        assert before[2] is not None
-        assert not algorithm.execute_command("set_ent_coef", value, None)
-        assert algorithm.ent_coef == before[0]
-        assert algorithm.log_ent_coef is before[1]
-        assert algorithm.ent_coef_optimizer is before[2]
-        assert algorithm.ent_coef_tensor is None
-        assert algorithm.execute_command("set_ent_coef", "0", None)
-        assert algorithm.ent_coef_tensor.item() == 0.0
-        assert algorithm.ent_coef_optimizer is None
-    finally:
-        env.close()

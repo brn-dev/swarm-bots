@@ -29,6 +29,7 @@ from swarmbots.learn.algos.off_policy.action_noise import (
     add_normalized_action_noise,
     bounded_action_coordinates,
 )
+from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.optimizers import make_adam, move_adam_state_to_device
 from swarmbots.learn.algos.off_policy.tensor_ops import (
@@ -154,6 +155,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self._rollout_state: OffPolicyRolloutState | None = None
 
         self._validate_hyper_parameters()
+        self._normalization = ReplayNormalization(env)
         self._target_action_coordinates = (
             tuple(value.to(self.train_device) for value in bounded_action_coordinates(env.action_space))
             if self.target_policy_noise > 0.0
@@ -186,6 +188,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             train_device=self.train_device,
             train_dtype=torch.float32,
             compile_tensor_operations=self.replay_compile_tensor_operations,
+            normalization=self._normalization,
         )
 
     def get_hyper_parameters(self) -> dict[str, Any]:
@@ -336,9 +339,16 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         train_timer = PerformanceTimer().start()
 
         n_updates = 0
+        normalization = self._normalization.snapshot(device=self.train_device)
         for _ in range(gradient_steps):
             with sample_timer:
                 batch, nop_batch, reuse_critic_nop_latents = self._sample_training_batches()
+                if nop_batch is not None:
+                    nop_batch = normalization.normalize_batch(nop_batch)
+                batch = (
+                    nop_batch.origin_batch if reuse_critic_nop_latents
+                    else normalization.normalize_batch(batch)
+                )
             sample_timings.append(sample_timer.get_duration())
 
             global_update_idx = self.n_total_updates + n_updates
@@ -741,48 +751,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     @staticmethod
     def _move_optimizer_state_to_device(optimizer: torch.optim.Adam, device: torch.device) -> None:
         move_adam_state_to_device(optimizer, device)
-
-    def _execute_command(
-        self,
-        cmd: str,
-        params: str,
-        extra_run_metadata: dict[str, Any] | None,
-    ) -> bool:
-        if cmd in {"set_batch_size", "batch_size"}:
-            batch_size = int(params)
-            if batch_size <= 0:
-                raise ValueError(f"batch_size must be > 0, got {batch_size}")
-            total_replay_capacity = self.buffer_capacity_per_env * self.env.action_space.n_envs
-            if max(self.learning_starts, batch_size) > total_replay_capacity:
-                raise ValueError(
-                    f"batch_size={batch_size} would make the replay fill target exceed total replay capacity "
-                    f"{total_replay_capacity}."
-                )
-            self.batch_size = batch_size
-            if not self.independent_nop_sampling:
-                self.nop_batch_size = batch_size
-            logger.warning(f"Setting batch_size to {self.batch_size}")
-            return True
-        if cmd == "set_gamma":
-            gamma = float(params)
-            if not (0.0 <= gamma <= 1.0):
-                raise ValueError(f"gamma must be in [0, 1], got {gamma}")
-            self.gamma = gamma
-            logger.warning(f"Setting gamma to {self.gamma}")
-            return True
-        if cmd == "set_tau":
-            tau = float(params)
-            if not (0.0 < tau <= 1.0):
-                raise ValueError(f"tau must be in (0, 1], got {tau}")
-            self.tau = tau
-            logger.warning(f"Setting tau to {self.tau}")
-            return True
-        if cmd in {"set_nop_loss_coef", "set_wm_loss_coef", "wm_loss_coef"}:
-            coef = float(params)
-            logger.warning(f"Setting NOP loss coefficient to {coef}")
-            self.policy.update_loss_weights(nop_loss_coef=coef)
-            return True
-        return super()._execute_command(cmd, params, extra_run_metadata)
 
     def _setup_extra_optimizers(self) -> None:
         pass

@@ -25,12 +25,12 @@ from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriti
 from swarmbots.learn.algos.ppo.ppo_policy import PopArtConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import ActorStateCriticInputConfig
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.obs_indices import ObsIndices
+from swarmbots.learn.presets.nop import make_next_obs_pred_config
 from swarmbots.learn.presets.policy_builders import (
     DecoderOptions,
     OffPolicyOptions,
@@ -307,16 +307,7 @@ def _make_sac_nop_config(
         transition_model_head_init_gain=nop_init_gains.transition_head,
         transition_model_transformer_ff_init_gain=nop_init_gains.transition_transformer_ff,
         scalar_loss_fn="smooth_l1",
-        next_obs_pred_config=NextObsPredConfig(
-            local_scalar_target_indices=obs_indices.local_scalar_indices,
-            local_angle_target_indices=obs_indices.local_angle_indices,
-            local_rot6d_target_indices=obs_indices.local_rot6d_indices,
-            local_binary_target_indices=obs_indices.local_binary_indices,
-            scalar_loss_weight=1.0,
-            angle_loss_weight=1.0,
-            rot6d_loss_weight=1.0,
-            binary_loss_weight=1.0,
-        ),
+        next_obs_pred_config=make_next_obs_pred_config(obs_indices),
     )
 
 

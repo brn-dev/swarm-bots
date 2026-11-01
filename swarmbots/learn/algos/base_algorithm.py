@@ -5,7 +5,6 @@ import os
 import pathlib
 import queue
 import threading
-import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -37,8 +36,9 @@ from swarmbots.learn.metrics_logger import (
     summed,
 )
 from swarmbots.learn.performance_timer import PerformanceTimer
+from swarmbots.learn.run_metadata import collect_source_revision
+from swarmbots.learn.serialization_utils import serialize_value
 from swarmbots.utils.machine_specs import collect_machine_specs
-from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
 
 
 
@@ -104,6 +104,7 @@ class BaseAlgorithm(abc.ABC):
         self.env = env
 
         self.learning_rate = learning_rate
+        self.training_metadata: dict[str, Any] = {}
 
         self.n_total_iterations = 0
         self.n_total_updates = 0
@@ -111,18 +112,9 @@ class BaseAlgorithm(abc.ABC):
         self._command_queue: queue.Queue[str] = queue.Queue()
         self._command_prompt_started: bool = False
         self._active_run_dir: Path | None = None
-        self._active_extra_run_metadata: dict[str, Any] | None = None
-        self._active_save_optimizer: bool = True
         self._last_return_ema: float | None = None
         self._final_return_ema: float | None = None
         self._best_return_ema: float | None = None
-        self._latest_hp_update: str | None = None
-        self._stop_requested = False
-        self._stop_should_save = True
-        self._stop_save_optimizer: bool | None = None
-        self._command_log_path: Path | None = None
-        self._pause_until_monotonic: float | None = None
-        self._pause_notice_logged: bool = False
         self._active_max_total_timesteps: int | None = None
         self._active_learn_started_monotonic: float | None = None
         self._active_learn_started_timesteps: int | None = None
@@ -220,7 +212,6 @@ class BaseAlgorithm(abc.ABC):
         best_models_dir: pathlib.Path | None = None
         learn_started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         learn_started_iterations = self.n_total_iterations
-        self._latest_hp_update = learn_started_at
         if run_dir is not None:
             best_models_dir = run_dir / "models" / "best" / learn_started_at
 
@@ -261,17 +252,11 @@ class BaseAlgorithm(abc.ABC):
         best_save_counter = 0
 
         self._active_run_dir = run_dir
-        self._active_extra_run_metadata = extra_run_metadata
-        self._active_save_optimizer = save_optimizer
         self._active_max_total_timesteps = max_total_timesteps
         self._active_learn_started_monotonic = time.monotonic()
         self._active_learn_started_timesteps = self.n_total_timesteps
-        self._stop_requested = False
-        self._stop_should_save = True
-        self._stop_save_optimizer = None
         self._last_return_ema = None
         self._final_return_ema = None
-        self._command_log_path = None if run_dir is None else (run_dir / "command_log.jsonl")
         should_compress_metrics_log = False
 
         try:
@@ -281,9 +266,7 @@ class BaseAlgorithm(abc.ABC):
             self._before_learn_loop()
 
             while self.n_total_timesteps < max_total_timesteps:
-                self._poll_and_execute_commands(run_dir=run_dir, extra_run_metadata=extra_run_metadata)
-                if self._stop_requested:
-                    break
+                self._poll_and_execute_commands()
 
                 iter_timer = PerformanceTimer().start()
                 metrics, rollout_steps = self.perform_iteration(
@@ -318,7 +301,6 @@ class BaseAlgorithm(abc.ABC):
                 if log_interval is not None and self.n_total_iterations % log_interval == 0:
                     metric_logger.log({
                         'learn_start': learn_started_at,
-                        'latest_hp_update': self._latest_hp_update,
                         'iteration': self.n_total_iterations,
                         'timesteps': self.n_total_timesteps,
                         'learning_rate': self.learning_rate,
@@ -339,20 +321,13 @@ class BaseAlgorithm(abc.ABC):
                     logger.log("SAVE", f"Saved model to {save_path.as_posix()}")
 
             if run_dir is not None:
-                if self._stop_requested and not self._stop_should_save:
-                    logger.warning("Stop requested: exiting without saving final model.")
-                else:
-                    suffix = "stopped" if self._stop_requested else "final"
-                    save_path = run_dir / f"models/model_{self.n_total_timesteps}_steps_{suffix}.pt"
-                    should_save_optimizer = save_optimizer
-                    if self._stop_requested and self._stop_save_optimizer is not None:
-                        should_save_optimizer = self._stop_save_optimizer
-                    self.save(
-                        save_path,
-                        optimizer_state_dict=self._get_optimizer_state_dict() if should_save_optimizer else None,
-                        return_ema=episode_return_ema.get()
-                    )
-                    logger.log("SAVE", f"Saved {suffix} model to {save_path.as_posix()}")
+                save_path = run_dir / f"models/model_{self.n_total_timesteps}_steps_final.pt"
+                self.save(
+                    save_path,
+                    optimizer_state_dict=self._get_optimizer_state_dict() if save_optimizer else None,
+                    return_ema=episode_return_ema.get()
+                )
+                logger.log("SAVE", f"Saved final model to {save_path.as_posix()}")
 
             should_compress_metrics_log = compress_metrics_log_on_exit
 
@@ -366,19 +341,10 @@ class BaseAlgorithm(abc.ABC):
                         metric_logger.compress_persisted_log()
             finally:
                 self._active_run_dir = None
-                self._active_extra_run_metadata = None
-                self._active_save_optimizer = True
                 self._active_max_total_timesteps = None
                 self._active_learn_started_monotonic = None
                 self._active_learn_started_timesteps = None
-                self._stop_requested = False
-                self._stop_should_save = True
-                self._stop_save_optimizer = None
-                self._pause_until_monotonic = None
-                self._pause_notice_logged = False
                 self._last_return_ema = None
-                self._latest_hp_update = None
-                self._command_log_path = None
 
         return self
 
@@ -397,11 +363,16 @@ class BaseAlgorithm(abc.ABC):
         }
         if extra_run_metadata:
             metadata.update(extra_run_metadata)
+        metadata.update(self.training_metadata)
+        get_settings = getattr(self.env.unwrapped, "get_settings", None)
+        if callable(get_settings):
+            metadata["environment_settings"] = serialize_value(get_settings())
+        metadata["source_revision"] = collect_source_revision()
         metadata["machine_specs"] = collect_machine_specs()
         metadata["iterations"] = self.n_total_iterations
         metadata["updates"] = self.n_total_updates
         metadata["timesteps"] = self.n_total_timesteps
-        metadata_json: dict[str, Any] = json.loads(json.dumps(metadata, default=str))
+        metadata_json: dict[str, Any] = json.loads(json.dumps(serialize_value(metadata), default=str))
 
         existing_metadata_files = list(run_dir.glob("run_metadata*.json"))
         if existing_metadata_files:
@@ -561,171 +532,55 @@ class BaseAlgorithm(abc.ABC):
         if restore_env_state:
             apply_env_state(self.env, checkpoint["env_state"])
 
-    def _execute_command(
-            self,
-            cmd: str,
-            params: str,
-            extra_run_metadata: dict[str, Any] | None
-    ) -> bool:
-        """
-        :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
-        """
-        if cmd == 'show_hps':
-            logger.info(self.get_hyper_parameters())
+    def execute_command(self, cmd: str) -> bool:
+        """Run a read-only inspection command and report whether it succeeded."""
+        handlers = {
+            "show_hps": self._cmd_show_hyper_parameters,
+            "show_run_path": self._cmd_show_run_path,
+            "show_id": self._cmd_show_run_path,
+            "pid": self._cmd_show_pid,
+            "show_pid": self._cmd_show_pid,
+            "show_reward_weights": self._cmd_show_reward_weights,
+            "show_rw": self._cmd_show_reward_weights,
+            "show_eta": self._cmd_show_eta,
+            "eta": self._cmd_show_eta,
+            "record_status": self._cmd_record_status,
+            "record_progress": self._cmd_record_status,
+            "recording_status": self._cmd_record_status,
+            "recording_progress": self._cmd_record_status,
+        }
+        handler = handlers.get(cmd.strip().lower())
+        if handler is None:
+            logger.error(f'Unknown inspection command "{cmd}"')
             return False
-        elif cmd in {"show_run_path", "show_id"}:
-            self._cmd_show_run_path(params)
-            return False
-        elif cmd in {"pid", "show_pid"}:
-            self._cmd_show_pid(params)
-            return False
-        elif cmd in {"show_reward_weights", "show_rw"}:
-            self._cmd_show_reward_weights(params)
-            return False
-        elif cmd in {"show_eta", "eta"}:
-            self._cmd_show_eta(params)
-            return False
-        elif cmd == 'set_lr':
-            lr = json.loads(params)
-            logger.warning(f'Setting learning rate to {lr}')
-            self.set_learning_rate(lr)
-            return True
-        elif cmd in {'set_reward_weights', 'set_rw'}:
-            self._cmd_set_reward_weights(params, extra_run_metadata)
-            return True
-        elif cmd == 'save':
-            self._cmd_save(params)
-            return False
-        elif cmd == 'stop' or cmd == 'quit' or cmd == 'exit':
-            self._cmd_stop(params)
-            return False
-        elif cmd == 'record':
-            self._cmd_record(params)
-            return False
-        elif cmd in {'record_status', 'record_progress', 'recording_status', 'recording_progress'}:
-            self._cmd_record_status(params)
-            return False
-        elif cmd == 'pause':
-            self._cmd_pause(params)
-            return False
-        elif cmd in {'unpause', 'resume'}:
-            self._cmd_unpause(params)
-            return False
-        else:
-            logger.error(f'Unknown command "{cmd}"')
-            return False
-
-    def execute_command(
-            self,
-            cmd: str,
-            params: str,
-            extra_run_metadata: dict[str, Any] | None
-    ) -> bool:
-        """
-        :return: True if the command was executed successfully and updated the hyper parameters, False otherwise
-        """
         try:
-            return self._execute_command(cmd.strip().lower(), params.strip(), extra_run_metadata)
+            handler()
         except Exception:
-            logger.exception('Executing command failed')
+            logger.exception('Executing inspection command failed')
             return False
+        return True
 
     def _maybe_start_command_prompt(self) -> None:
-        if self._command_prompt_started:
-            return
-        self._command_prompt_started = _start_command_prompt(self._command_queue)
+        if not self._command_prompt_started:
+            self._command_prompt_started = _start_command_prompt(self._command_queue)
 
-    def _poll_and_execute_commands(
-            self,
-            run_dir: Path | None,
-            extra_run_metadata: dict[str, Any] | None
-    ) -> None:
+    def _poll_and_execute_commands(self) -> None:
         while True:
-            hps_updated: bool = False
-            while True:
-                try:
-                    raw = self._command_queue.get_nowait()
-                except queue.Empty:
-                    break
-                updated, updated_commands = self._execute_command_line(raw, extra_run_metadata)
-                if updated and updated_commands:
-                    self._append_command_log(raw=raw, updated_commands=updated_commands)
-                hps_updated |= updated
-
-            if hps_updated:
-                self._latest_hp_update = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            if hps_updated and run_dir is not None:
-                self._write_run_metadata(run_dir, extra_run_metadata)
-
-            if self._stop_requested:
+            try:
+                raw = self._command_queue.get_nowait()
+            except queue.Empty:
                 return
+            self._execute_command_line(raw)
 
-            if self._pause_until_monotonic is None:
-                return
+    def _execute_command_line(self, raw: str) -> None:
+        for command in raw.split(";"):
+            if command.strip():
+                self.execute_command(command)
 
-            remaining = self._pause_until_monotonic - time.monotonic()
-            if remaining <= 0:
-                self._pause_until_monotonic = None
-                self._pause_notice_logged = False
-                logger.warning("Pause finished. Resuming training.")
-                return
+    def _cmd_show_hyper_parameters(self) -> None:
+        logger.info(self.get_hyper_parameters())
 
-            if not self._pause_notice_logged:
-                logger.warning(f"Training paused for {_format_duration_seconds(remaining)}. Commands still accepted.")
-                self._pause_notice_logged = True
-
-            time.sleep(min(remaining, 0.25))
-
-    def _execute_command_line(
-            self,
-            raw: str,
-            extra_run_metadata: dict[str, Any] | None
-    ) -> tuple[bool, list[dict[str, Any]]]:
-        raw = raw.strip()
-        if not raw:
-            return False, []
-
-        hps_updated: bool = False
-        updated_commands: list[dict[str, Any]] = []
-        for chunk in raw.split(";"):
-            chunk = chunk.strip()
-            if not chunk:
-                continue
-            if ":" in chunk:
-                cmd, params = chunk.split(":", 1)
-            else:
-                cmd, params = chunk, ""
-            cmd = cmd.strip()
-            if not cmd:
-                continue
-            updated = self.execute_command(cmd, params, extra_run_metadata)
-            hps_updated |= updated
-            if updated:
-                updated_commands.append({"cmd": cmd, "params": params.strip()})
-        return hps_updated, updated_commands
-
-    def _append_command_log(self, raw: str, updated_commands: list[dict[str, Any]]) -> None:
-        if self._command_log_path is None:
-            return
-
-        entry = {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "timesteps": int(self.n_total_timesteps),
-            "iterations": int(self.n_total_iterations),
-            "raw": raw.strip(),
-            "updated_commands": updated_commands,
-            "hyper_parameters": self.get_hyper_parameters(),
-        }
-
-        try:
-            self._command_log_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._command_log_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, default=str) + "\n")
-        except OSError:
-            logger.exception(f"Failed to append command log to {self._command_log_path.as_posix()}")
-
-    def _cmd_show_run_path(self, params: str) -> None:
-        _ = params
+    def _cmd_show_run_path(self) -> None:
         if self._active_run_dir is None:
             logger.info({"run_path": None, "run_id": None})
             return
@@ -733,141 +588,10 @@ class BaseAlgorithm(abc.ABC):
         run_dir = self._active_run_dir.resolve()
         logger.info({"run_path": run_dir.as_posix(), "run_id": run_dir.name})
 
-    def _cmd_show_pid(self, params: str) -> None:
-        _ = params
+    def _cmd_show_pid(self) -> None:
         logger.info({"pid": os.getpid()})
 
-    def _cmd_save(self, params: str) -> None:
-        config = _parse_params_maybe_json(params)
-        if isinstance(config, dict):
-            path = config.get("path", None)
-            name = config.get("name", None)
-            include_optimizer = config.get("optimizer", None)
-        else:
-            path = params.strip() if params.strip() else None
-            name = None
-            include_optimizer = None
-
-        if include_optimizer is None:
-            include_optimizer = self._active_save_optimizer
-        else:
-            include_optimizer = _parse_bool(include_optimizer)
-
-        save_path: Path
-        if path:
-            save_path = Path(path)
-            if not save_path.is_absolute() and self._active_run_dir is not None:
-                save_path = self._active_run_dir / "models" / save_path
-        elif name:
-            if self._active_run_dir is None:
-                raise ValueError("save:name requires an active run_dir (or pass save:path)")
-            save_path = self._active_run_dir / "models" / str(name)
-        else:
-            if self._active_run_dir is None:
-                raise ValueError("save requires a path when learn() has no run_dir")
-            save_path = self._active_run_dir / "models" / f"model_{self.n_total_timesteps}_steps_cmd.pt"
-
-        self.save(
-            save_path,
-            optimizer_state_dict=self._get_optimizer_state_dict() if include_optimizer else None,
-            return_ema=self._last_return_ema,
-        )
-        logger.log("SAVE", f"Saved model to {save_path.as_posix()}")
-
-    def _cmd_stop(self, params: str) -> None:
-        config = _parse_params_maybe_json(params)
-        if isinstance(config, dict):
-            save = _parse_bool(config.get("save", True))
-            optimizer = config.get("optimizer", None)
-            self._stop_save_optimizer = None if optimizer is None else _parse_bool(optimizer)
-        else:
-            save = True
-            if params.strip():
-                save = _parse_bool(params.strip())
-        self._stop_requested = True
-        self._stop_should_save = save
-        logger.warning(f"Stop requested (save={save}). Will stop before next iteration.")
-
-    def _cmd_pause(self, params: str) -> None:
-        seconds = _parse_duration_to_seconds(params)
-        if seconds <= 0:
-            raise ValueError("pause expects a positive duration, e.g. pause:90s or pause:1h30m10")
-
-        self._pause_until_monotonic = time.monotonic() + seconds
-        self._pause_notice_logged = False
-        logger.warning(f"Pausing training for {_format_duration_seconds(seconds)}")
-
-    def _cmd_unpause(self, params: str) -> None:
-        _ = params
-        if self._pause_until_monotonic is None:
-            logger.warning("Training is not paused.")
-            return
-
-        self._pause_until_monotonic = None
-        self._pause_notice_logged = False
-        logger.warning("Pause canceled. Resuming training.")
-
-    def _cmd_record(self, params: str) -> None:
-        config = _parse_params_maybe_json(params)
-        if isinstance(config, dict):
-            if "frame_stride" in config or "fps_mode" in config:
-                raise ValueError("Frame striding was removed; recording captures every control step")
-            num_episodes = int(config.get("episodes", 3))
-            if not _parse_bool(config.get("live", True)):
-                raise ValueError("Separate recording environments were removed; the record command uses live vector recording")
-            deterministic = _parse_bool(config.get("deterministic", False))
-            fps = int(config.get("fps", 30))
-            prefix = str(config.get("prefix", f"record_{self.n_total_timesteps}"))
-            video_folder = config.get("folder", None)
-            max_parallel_episodes = int(config.get("parallel", config.get("max_parallel", min(num_episodes, 4))))
-            width = int(config.get("width", DEFAULT_RECORDING_WIDTH))
-            height = int(config.get("height", DEFAULT_RECORDING_HEIGHT))
-            camera = config.get("camera", -1)
-        else:
-            num_episodes = 3
-            if params.strip():
-                num_episodes = int(params)
-            deterministic = False
-            fps = 30
-            prefix = f"record_{self.n_total_timesteps}"
-            video_folder = None
-            max_parallel_episodes = min(num_episodes, 10)
-            width = DEFAULT_RECORDING_WIDTH
-            height = DEFAULT_RECORDING_HEIGHT
-            camera = -1
-
-        if video_folder is None:
-            if self._active_run_dir is not None:
-                folder = self._active_run_dir / "videos"
-            else:
-                folder = Path("videos")
-        else:
-            folder = Path(str(video_folder))
-
-        live_record_fn = getattr(self.env.unwrapped, "start_video_recording", None)
-        if callable(live_record_fn):
-            if deterministic:
-                logger.warning("Ignoring deterministic=... for live MJW recording; episodes come from the current training rollout.")
-            live_record_fn(
-                video_folder=str(folder),
-                video_name_prefix=prefix,
-                num_episodes=num_episodes,
-                max_parallel_episodes=max_parallel_episodes,
-                fps=fps,
-                width=width,
-                height=height,
-                camera=camera,
-            )
-            logger.warning(
-                f"Started live recording of {num_episodes} episode(s) to {folder.as_posix()} "
-                f"(parallel={max_parallel_episodes}, fps={fps}, resolution={width}x{height})"
-            )
-            return
-
-        raise ValueError("record requires an environment with live vector recording support")
-
-    def _cmd_record_status(self, params: str) -> None:
-        _ = params
+    def _cmd_record_status(self) -> None:
         get_status_fn = getattr(self.env.unwrapped, "get_video_recording_status", None)
         if callable(get_status_fn):
             logger.info({"recording": get_status_fn(), "recording_mode": "live_env"})
@@ -883,12 +607,10 @@ class BaseAlgorithm(abc.ABC):
             }
         )
 
-    def _cmd_show_reward_weights(self, params: str) -> None:
-        _ = params
+    def _cmd_show_reward_weights(self) -> None:
         logger.info({"reward_weights": self.env.unwrapped.get_reward_weights()})
 
-    def _cmd_show_eta(self, params: str) -> None:
-        _ = params
+    def _cmd_show_eta(self) -> None:
         eta = self._build_run_eta_estimate()
         if eta is None:
             logger.info({
@@ -901,23 +623,6 @@ class BaseAlgorithm(abc.ABC):
             return
 
         logger.info(eta)
-
-    def _cmd_set_reward_weights(self, params: str, extra_run_metadata: dict[str, Any] | None) -> None:
-        config = _parse_params_maybe_json(params)
-        if not isinstance(config, dict):
-            raise ValueError("set_reward_weights expects a JSON object, e.g. set_reward_weights:{\"progress_reward_weight\":1.0}")
-
-        reward_weights = config.get("reward_weights", config)
-        if not isinstance(reward_weights, dict):
-            raise ValueError(
-                "set_reward_weights expects either a JSON object of weights or "
-                "{\"reward_weights\": {...}}"
-            )
-
-        updated_weights = self.env.unwrapped.update_reward_weights(reward_weights)
-        logger.warning(f"Updated reward weights: {updated_weights}")
-        if extra_run_metadata is not None:
-            extra_run_metadata["updated_reward_weights"] = updated_weights
 
     def _build_run_eta_estimate(
             self,
@@ -989,38 +694,6 @@ def _normalize_run_metadata_for_comparison(metadata: dict[str, Any] | None) -> d
     return {k: v for k, v in metadata.items() if k not in _RUN_METADATA_VOLATILE_KEYS}
 
 
-_DURATION_PART_RE = re.compile(r"(?P<value>\d+(?:\.\d+)?)(?P<unit>[dhms])", re.IGNORECASE)
-
-
-def _parse_duration_to_seconds(params: str) -> float:
-    s = params.strip().lower().replace(" ", "")
-    if not s:
-        raise ValueError("Missing duration, e.g. pause:90s or pause:1h30m10")
-
-    total_seconds = 0.0
-    pos = 0
-    for match in _DURATION_PART_RE.finditer(s):
-        if match.start() != pos:
-            break
-        value = float(match.group("value"))
-        unit = match.group("unit")
-        factor = {"d": 86400.0, "h": 3600.0, "m": 60.0, "s": 1.0}[unit]
-        total_seconds += value * factor
-        pos = match.end()
-
-    trailing = s[pos:]
-    if trailing:
-        if total_seconds == 0.0 or not trailing.replace(".", "", 1).isdigit():
-            raise ValueError(
-                f"Invalid duration {params!r}. Expected formats like 90s, 10m, 1h30m, or 1h30m10"
-            )
-        total_seconds += float(trailing)
-
-    if total_seconds <= 0.0:
-        raise ValueError("Duration must be > 0")
-    return total_seconds
-
-
 def _format_duration_seconds(seconds: float) -> str:
     total_seconds = max(0, int(round(seconds)))
     days, rem = divmod(total_seconds, 86400)
@@ -1070,26 +743,3 @@ def _start_command_prompt(cmd_q: queue.Queue[str]) -> bool:
 
     threading.Thread(target=_run, daemon=True).start()
     return True
-
-def _parse_params_maybe_json(params: str) -> Any:
-    s = params.strip()
-    if not s:
-        return None
-    if not (s.startswith("{") or s.startswith("[")):
-        return None
-    return json.loads(s)
-
-
-def _parse_bool(v: Any) -> bool:
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        return bool(v)
-    if v is None:
-        raise ValueError("Expected boolean value, got None")
-    s = str(v).strip().lower()
-    if s in {"1", "true", "t", "yes", "y", "on"}:
-        return True
-    if s in {"0", "false", "f", "no", "n", "off"}:
-        return False
-    raise ValueError(f"Cannot parse boolean from {v!r}")

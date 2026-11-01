@@ -8,6 +8,7 @@ import torch
 from torch.nn import functional as F
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
+from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization, NormalizationSnapshot
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
@@ -56,6 +57,8 @@ class BenchmarkPolicy:
         )
         self.rollout_step_idx = 0
         self.has_scenario_id = env.has_scenario_id
+        self._replay_normalization = ReplayNormalization.for_policy(env, policy)
+        self._normalization_snapshot: NormalizationSnapshot | None = None
         if scenario_id is not None:
             if not self.has_scenario_id:
                 raise ValueError("scenario_id selection requires a scenario-conditioned training environment.")
@@ -103,14 +106,25 @@ class BenchmarkPolicy:
             actor_obs["scenario_ids"] = scenario_ids
         for transform in self.observation_transforms:
             if isinstance(transform, TorchFeatureWiseObsNormWrapper):
+                if self._replay_normalization is not None:
+                    continue
                 was_updating = transform.update_running_mean
+                was_normalizing = transform.normalize_output
                 transform.update_running_mean = False
+                transform.normalize_output = True
                 try:
                     actor_obs = transform.observations(actor_obs)
                 finally:
                     transform.update_running_mean = was_updating
+                    transform.normalize_output = was_normalizing
             else:
                 actor_obs = self._transition_observations(transform, actor_obs, episode_starts)
+        if self._replay_normalization is not None:
+            if self._normalization_snapshot is None:
+                self._normalization_snapshot = self._replay_normalization.snapshot(
+                    device=actor_obs["local_obs"].device, public_only=True,
+                )
+            actor_obs = self._normalization_snapshot.normalize_observations(actor_obs)
         local_obs = actor_obs["local_obs"]
         if not self.initialized:
             self.temporal_state = self.policy.initial_temporal_state(

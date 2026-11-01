@@ -67,44 +67,20 @@ def test_show_reward_weights_reports_the_actual_environment_weights(
 ) -> None:
     algorithm = _make_algorithm(env)
     with patch("swarmbots.learn.algos.base_algorithm.logger.info") as log:
-        assert not algorithm.execute_command(command, "", None)
+        assert algorithm.execute_command(command)
     log.assert_called_once_with({"reward_weights": {"progress_reward_weight": 1.0}})
 
 
 @pytest.mark.parametrize("command", ("set_reward_weights", "set_rw"))
-@pytest.mark.parametrize("nested", (False, True))
-def test_reward_weight_commands_update_the_environment_and_metadata(
-    env: MJWSwarmBotsVectorEnv, command: str, nested: bool,
+def test_removed_reward_weight_commands_preserve_environment_weights(
+    env: MJWSwarmBotsVectorEnv, command: str,
 ) -> None:
     algorithm = _make_algorithm(env)
-    metadata = {}
-    params = '{"progress_reward_weight": 2.0}'
-    if nested:
-        params = '{"reward_weights": ' + params + '}'
 
-    assert algorithm.execute_command(command, params, metadata)
-
-    assert env.get_reward_weights() == {"progress_reward_weight": 2.0}
-    assert metadata == {"updated_reward_weights": {"progress_reward_weight": 2.0}}
-
-
-@pytest.mark.parametrize("params", (
-    '{"progress_reward_weight": 2.0, "forward_reward_weight": 3.0}',
-    '{"timestep": 0.01}',
-    '{"progress_reward_weight": "nan"}',
-    '{"progress_reward_weight": "inf"}',
-    '{"progress_reward_weight": "invalid"}',
-    '{"reward_weights": []}',
-    '[]',
-))
-def test_invalid_reward_commands_preserve_weights_and_metadata(env: MJWSwarmBotsVectorEnv, params: str) -> None:
-    algorithm = _make_algorithm(env)
-    metadata = {}
-
-    assert not algorithm.execute_command("set_rw", params, metadata)
+    assert not algorithm.execute_command(command)
+    assert not algorithm.execute_command(command + ':{"progress_reward_weight":2.0}')
 
     assert env.get_reward_weights() == {"progress_reward_weight": 1.0}
-    assert metadata == {}
 
 
 @pytest.mark.parametrize("weight", (0.0, -2.0, 3.0))
@@ -135,22 +111,19 @@ def test_live_weights_scale_next_step_rewards_without_changing_physics(device: s
         env.close()
 
 
-def test_multi_scenario_commands_report_each_scenario_and_update_all_children() -> None:
+def test_multi_scenario_inspection_reports_each_scenarios_current_weights() -> None:
     with ExitStack() as cleanup:
         children = {name: _make_env(name) for name in ("SwarmBots-MoveToGoal-v0", "SwarmBots-PayloadPlane-v0")}
         for child in children.values():
             cleanup.callback(child.close)
         env = MultiScenarioVectorEnv(children)
         algorithm = _make_algorithm(env)
-        metadata = {}
-
-        assert algorithm.execute_command("set_rw", '{"progress_reward_weight": 2.0}', metadata)
+        env.update_reward_weights({"progress_reward_weight": 2.0})
 
         expected = {name: {"progress_reward_weight": 2.0} for name in children}
         assert env.get_reward_weights() == expected
-        assert metadata == {"updated_reward_weights": expected}
         with patch("swarmbots.learn.algos.base_algorithm.logger.info") as log:
-            assert not algorithm.execute_command("show_rw", "", None)
+            assert algorithm.execute_command("show_rw")
         log.assert_called_once_with({"reward_weights": expected})
 
 

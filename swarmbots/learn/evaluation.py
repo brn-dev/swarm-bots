@@ -10,6 +10,7 @@ import torch
 from loguru import logger
 
 from swarmbots.learn.checkpointing import apply_env_state, capture_env_state, freeze_env_normalization
+from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization
 from swarmbots.learn.gsde_reset import GSDEResetMode, reset_gsde_noise, resolve_gsde_reset_mode
 from swarmbots.learn.metrics_logger import MetricsLogger
 from swarmbots.learn.rollout_utils import initial_previous_actions, to_python_episode_stat
@@ -61,6 +62,7 @@ class FrozenEvaluationRunner:
         self.recording_config = recording_config
         self.video_folder = video_folder
         self._env: Any | None = None
+        self._replay_normalization: ReplayNormalization | None = None
 
     @property
     def env(self) -> Any:
@@ -68,7 +70,14 @@ class FrozenEvaluationRunner:
             # Environment factories may call torch.manual_seed, which also seeds other CUDA devices.
             cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
             with torch.random.fork_rng(devices=cuda_devices):
-                self._env = self._make_env()
+                env = self._make_env()
+                try:
+                    normalization = ReplayNormalization.for_policy(env, self._policy)
+                except BaseException:
+                    env.close()
+                    raise
+            self._replay_normalization = normalization
+            self._env = env
         return self._env
 
     def evaluate(
@@ -104,10 +113,7 @@ class FrozenEvaluationRunner:
                         action_dist.set_temporal_correlation_state(
                             clone_detach_temporal_state(action_dist_state)
                         )
-                    obs, _info = env.reset(
-                        seed=self.seed,
-                        options={"force_settled": True},
-                    )
+                    obs, _info = env.reset(seed=self.seed)
                     recording_started = False
                     if deterministic:
                         recording_started = self._start_recording(
@@ -149,6 +155,7 @@ class FrozenEvaluationRunner:
         if self._env is not None:
             self._env.close()
             self._env = None
+            self._replay_normalization = None
 
     def _collect_episodes(
         self,
@@ -182,11 +189,17 @@ class FrozenEvaluationRunner:
         rollout_step_idx = 0
         action_dist = getattr(self._policy, "action_dist", None)
 
+        normalization = (
+            None if self._replay_normalization is None else self._replay_normalization.snapshot(
+                device=obs["local_obs"].device, public_only=True,
+            )
+        )
         with torch.no_grad():
             while (
                 bool(torch.any(completed_per_env < self.episodes_per_env))
                 or (finish_recording and env.unwrapped.get_video_recording_status()["active"])
             ):
+                policy_obs = obs if normalization is None else normalization.normalize_observations(obs)
                 if not deterministic and gsde_reset_mode is not None:
                     reset_gsde_noise(
                         action_dist=action_dist, local_obs=obs["local_obs"], episode_start_mask=episode_start_mask,
@@ -197,10 +210,10 @@ class FrozenEvaluationRunner:
                     action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
 
                 actions, temporal_state = self._policy.act_with_temporal_state(
-                    local_obs=obs["local_obs"],
-                    global_obs=obs["global_obs"],
-                    hidden_local_vars=obs["hidden_local_vars"],
-                    hidden_global_vars=obs["hidden_global_vars"],
+                    local_obs=policy_obs["local_obs"],
+                    global_obs=policy_obs["global_obs"],
+                    hidden_local_vars=policy_obs["hidden_local_vars"],
+                    hidden_global_vars=policy_obs["hidden_global_vars"],
                     agent_mask=obs.get("agent_mask"),
                     **({} if "scenario_id" not in obs else {"scenario_ids": obs["scenario_id"]}),
                     previous_actions=previous_actions,

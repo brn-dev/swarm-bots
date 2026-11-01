@@ -302,7 +302,6 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
         actions = self._policy_actions(batch.actions)
-        self._validate_agent_mask(batch.agent_mask, batch_size=batch.local_obs.shape[0], n_agents=batch.local_obs.shape[1])
         if self.action_dist.compile_friendly:
             log_probs, values, critic_rep = self._evaluate_actions_core(
                 local_obs=batch.local_obs,
@@ -498,10 +497,6 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
         source_actions = actions
         if agent_mask is not None:
-            if agent_mask.dtype != torch.bool:
-                raise ValueError(f"Expected agent_mask dtype bool, got {agent_mask.dtype}")
-            if agent_mask.shape != actions.shape[:2]:
-                raise ValueError(f"Expected agent_mask shape {tuple(actions.shape[:2])}, got {tuple(agent_mask.shape)}")
             source_actions = actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
         shifted_actions[:, 1:, :] = source_actions[:, :-1, :]
         return shifted_actions
@@ -520,9 +515,12 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         if agent_mask.shape != (batch_size, n_agents):
             raise ValueError(f"Expected agent_mask shape {(batch_size, n_agents)}, got {tuple(agent_mask.shape)}")
 
-        mask_int = agent_mask.to(dtype=torch.int8)
-        if torch.any(mask_int[:, 1:] > mask_int[:, :-1]):
-            raise ValueError("MATOrigPolicy expects agent_mask to be a contiguous true-prefix per batch item")
+        is_prefix = ~torch.any(agent_mask[:, 1:] & ~agent_mask[:, :-1])
+        message = "MATOrigPolicy expects agent_mask to be a contiguous true-prefix per batch item"
+        if agent_mask.device.type == "cuda":
+            torch._assert_async(is_prefix, message)
+        elif not is_prefix:
+            raise ValueError(message)
 
     def _generate_actions(
             self,

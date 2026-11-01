@@ -50,9 +50,12 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
 
         self._eps = float(eps)
         self._update_running_mean = True
+        self.normalize_output = True
         self._compile_tensor_operations = compile_tensor_operations
         self._tensor_operations_compile_mode = tensor_operations_compile_mode
         self._normalize_observations = self._build_normalize_observations()
+        self._normalize_frozen_observations = self._build_normalize_observations(update_statistics=False)
+        self._update_observation_statistics = self._build_normalize_observations(normalize_output=False)
 
     @property
     def update_running_mean(self) -> bool:
@@ -81,7 +84,14 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             running_var = self.obs_rms.var
             running_count = self.obs_rms.count
 
-        normalized_obs, next_mean, next_var, next_count = self._normalize_observations(
+        update_statistics = self._update_running_mean and self.obs_rms is not None
+        if not self.normalize_output and not update_statistics:
+            return observations
+        normalize = (
+            self._update_observation_statistics if not self.normalize_output
+            else self._normalize_observations if update_statistics else self._normalize_frozen_observations
+        )
+        normalized_obs, next_mean, next_var, next_count = normalize(
             obs,
             statistics_mask,
             self._scalar_indices,
@@ -90,9 +100,9 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             running_var,
             running_count,
             self._eps,
-            self._update_running_mean and self.obs_rms is not None,
+            update_statistics,
         )
-        if self._tensor_operations_are_compiled:
+        if self._tensor_operations_are_compiled and self.normalize_output:
             # reduce-overhead reuses CUDA-graph output buffers, while returned observations
             # remain live until the rollout snapshots them before the next environment step.
             normalized_obs = normalized_obs.clone()
@@ -100,6 +110,9 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             self.obs_rms.mean.copy_(next_mean)
             self.obs_rms.var.copy_(next_var)
             self.obs_rms.count.copy_(next_count)
+
+        if not self.normalize_output:
+            return observations
 
         normalized_observations = dict(observations)
         normalized_observations[self.obs_key] = normalized_obs
@@ -125,6 +138,8 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
         self._quaternion_slices = self._quaternion_slices.to(self.device)
         if self.device.type != old_device_type and self._compile_tensor_operations is None:
             self._normalize_observations = self._build_normalize_observations()
+            self._normalize_frozen_observations = self._build_normalize_observations(update_statistics=False)
+            self._update_observation_statistics = self._build_normalize_observations(normalize_output=False)
 
     def _statistics_mask(
         self,
@@ -141,7 +156,9 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             return agent_mask
         return torch.ones(obs.shape[:-1], device=obs.device, dtype=torch.bool)
 
-    def _build_normalize_observations(self) -> NormalizeObservations:
+    def _build_normalize_observations(
+        self, *, update_statistics: bool = True, normalize_output: bool = True,
+    ) -> NormalizeObservations:
         compile_operation = (
             should_compile_obs_norm_tensor_operations_by_default(self.device)
             if self._compile_tensor_operations is None
@@ -151,6 +168,8 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
         return build_obs_norm_tensor_operation(
             compile_operation=compile_operation,
             compile_mode=self._tensor_operations_compile_mode,
+            update_statistics=update_statistics,
+            normalize_output=normalize_output,
         )
 
     @staticmethod

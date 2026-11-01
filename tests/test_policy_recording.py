@@ -414,6 +414,12 @@ def checkpoint_construction_options() -> dict[str, Any]:
     }
 
 
+def _checkpoint_algorithm_options(variant: str) -> dict[str, int]:
+    if variant in {"tmasac__lstm", "tmasac__slstm"}:
+        return {"learning_steps": 3, "temporal_state_store_interval": 1}
+    return {}
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("source", ["override", "checkpoint"])
 @pytest.mark.parametrize("exploration_noise", [-0.1, float("nan"), float("inf")])
@@ -465,7 +471,10 @@ def test_checkpoint_recording_reconstructs_joint_observation_embedding(
         **checkpoint_construction_options["policy_kwargs"], "mat_joint_obs_embedding": True,
         "rmat_actor_d_model": 32, "transition_model_d_model": 16, "transition_model_nhead": 2,
     }}
-    trainer = make_training("SwarmBots-PayloadPlane-v0", variant, num_envs=2, **options)
+    trainer = make_training(
+        "SwarmBots-PayloadPlane-v0", variant, num_envs=2,
+        algorithm_kwargs=_checkpoint_algorithm_options(variant), **options,
+    )
     checkpoint_path = tmp_path / "joint.pt"
     try:
         trainer.save(checkpoint_path)
@@ -638,7 +647,10 @@ def test_checkpoint_recording_restores_actor_and_normalization_and_writes_comple
     import swarmbots.mjw_env.mjw_live_recording as live_recording
 
     construction_options = checkpoint_construction_options
-    trainer = make_training("SwarmBots-WallEasy-v0", variant, num_envs=2, **construction_options)
+    trainer = make_training(
+        "SwarmBots-WallEasy-v0", variant, num_envs=2,
+        algorithm_kwargs=_checkpoint_algorithm_options(variant), **construction_options,
+    )
     checkpoint_path = tmp_path / "model.pt"
     try:
         env = trainer.env

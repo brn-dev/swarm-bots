@@ -18,6 +18,7 @@ def _normalize_observations(
     running_count: torch.Tensor,
     eps: float,
     update_statistics: bool,
+    normalize_output: bool = True,
 ) -> NormalizedObservations:
     scalar_samples = obs[..., scalar_indices].to(dtype=running_mean.dtype)
     next_mean = running_mean
@@ -49,15 +50,47 @@ def _normalize_observations(
         next_var = torch.where(has_samples, merged_m2 / safe_total_count, running_var)
         next_count = torch.where(has_samples, total_count, running_count)
 
-    normalized_obs = obs.clone()
-    normalized_obs[..., scalar_indices] = (
-        obs[..., scalar_indices] - next_mean.to(dtype=obs.dtype)
-    ) / torch.sqrt(next_var.to(dtype=obs.dtype) + eps)
-
-    quaternions = normalized_obs[..., quaternion_slices]
-    quaternion_signs = torch.where(quaternions[..., 0] < 0, -1.0, 1.0).to(dtype=obs.dtype)
-    normalized_obs[..., quaternion_slices] = quaternions * quaternion_signs.unsqueeze(-1)
+    normalized_obs = (
+        _apply_normalization(obs, scalar_indices, quaternion_slices, next_mean, next_var, eps)
+        if normalize_output else obs
+    )
     return normalized_obs, next_mean, next_var, next_count
+
+
+def _apply_normalization(
+    obs: torch.Tensor, scalar_indices: torch.Tensor, quaternion_slices: torch.Tensor,
+    running_mean: torch.Tensor, running_var: torch.Tensor, eps: float,
+) -> torch.Tensor:
+    normalized_obs = obs.clone()
+    if scalar_indices.numel():
+        normalized_obs[..., scalar_indices] = (
+            obs[..., scalar_indices] - running_mean.to(dtype=obs.dtype)
+        ) / torch.sqrt(running_var.to(dtype=obs.dtype) + eps)
+    if quaternion_slices.numel():
+        quaternions = normalized_obs[..., quaternion_slices]
+        quaternion_signs = torch.where(quaternions[..., 0] < 0, -1.0, 1.0).to(dtype=obs.dtype)
+        normalized_obs[..., quaternion_slices] = quaternions * quaternion_signs.unsqueeze(-1)
+    return normalized_obs
+
+
+def _normalize_frozen_observations(
+    obs: torch.Tensor, statistics_mask: torch.Tensor, scalar_indices: torch.Tensor,
+    quaternion_slices: torch.Tensor, running_mean: torch.Tensor, running_var: torch.Tensor,
+    running_count: torch.Tensor, eps: float, update_statistics: bool,
+) -> NormalizedObservations:
+    normalized_obs = _apply_normalization(obs, scalar_indices, quaternion_slices, running_mean, running_var, eps)
+    return normalized_obs, running_mean, running_var, running_count
+
+
+def _update_observation_statistics(
+    obs: torch.Tensor, statistics_mask: torch.Tensor, scalar_indices: torch.Tensor,
+    quaternion_slices: torch.Tensor, running_mean: torch.Tensor, running_var: torch.Tensor,
+    running_count: torch.Tensor, eps: float, update_statistics: bool,
+) -> NormalizedObservations:
+    return _normalize_observations(
+        obs, statistics_mask, scalar_indices, quaternion_slices,
+        running_mean, running_var, running_count, eps, update_statistics, normalize_output=False,
+    )
 
 
 def should_compile_obs_norm_tensor_operations_by_default(device: torch.device) -> bool:
@@ -69,15 +102,22 @@ def build_obs_norm_tensor_operation(
     *,
     compile_operation: bool,
     compile_mode: str,
+    update_statistics: bool = True,
+    normalize_output: bool = True,
 ) -> NormalizeObservations:
+    # Separate entry points keep statistics-only and normalization shape guards out of the same compile budget.
+    operation = (
+        _update_observation_statistics if not normalize_output
+        else _normalize_observations if update_statistics else _normalize_frozen_observations
+    )
     if not compile_operation:
-        return _normalize_observations
+        return operation
     if not hasattr(torch, "compile") or not callable(torch.compile):
         raise RuntimeError("Compiling observation normalization requires torch.compile support.")
     if not compile_mode:
         raise ValueError("tensor_operations_compile_mode must be non-empty when compilation is enabled.")
     return torch.compile(
-        _normalize_observations,
+        operation,
         mode=compile_mode,
         fullgraph=True,
         dynamic=False,

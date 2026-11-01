@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 import torch
-from torch.nn import functional as F
+
+from swarmbots.learn.losses import mean_critic_mse_loss
 
 
 BootstrapObservations = tuple[
@@ -83,10 +84,7 @@ def _critic_loss(
         current_q2: torch.Tensor,
         target_q: torch.Tensor,
 ) -> torch.Tensor:
-    return 0.5 * (
-        F.mse_loss(current_q1, target_q)
-        + F.mse_loss(current_q2, target_q)
-    )
+    return mean_critic_mse_loss((current_q1, current_q2), target_q)
 
 
 def _actor_loss(

@@ -199,18 +199,14 @@ def test_automatic_learning_rate_rejects_invalid_bounds(name: str, value: float)
         AutomaticLearningRate(updater=make_auto_lr_updater(), **options)
 
 
-@pytest.mark.parametrize("via_command", [False, True])
 @pytest.mark.parametrize("enabled", [False, True])
-def test_automatic_learning_rate_rejects_zero_without_changing_optimizer(via_command: bool, enabled: bool) -> None:
+def test_automatic_learning_rate_rejects_zero_without_changing_optimizer(enabled: bool) -> None:
     ppo, _ = _make_ppo(learning_rate=AutomaticLearningRate(initial_lr=1e-2, updater=make_auto_lr_updater()))
     ppo._auto_lr_enabled = enabled
     original_rates = [group["lr"] for group in ppo.optimizer.param_groups]
 
     with pytest.raises(ValueError, match="must be finite and > 0"):
-        if via_command:
-            ppo._execute_command("set_lr", "0.0", None)
-        else:
-            ppo.set_learning_rate(0.0)
+        ppo.set_learning_rate(0.0)
 
     assert ppo.learning_rate == 1e-2
     assert [group["lr"] for group in ppo.optimizer.param_groups] == original_rates

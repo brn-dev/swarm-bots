@@ -114,6 +114,27 @@ def test_build_shifted_actions_uses_previous_agent_actions_and_masks_invalid_age
     assert torch.equal(shifted, expected)
 
 
+def test_non_prefix_agent_mask_is_rejected() -> None:
+    with pytest.raises(ValueError, match="contiguous true-prefix"):
+        MATOrigPolicy._build_shifted_actions(
+            torch.zeros(1, 4, 3), agent_mask=torch.tensor([[True, False, True, False]]),
+        )
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_prefix_validation_does_not_read_device_scalars() -> None:
+    agent_mask = torch.tensor([[True, True, False, False], [True, True, True, True]], device="cuda")
+    actions = torch.randn(2, 4, 3, device="cuda")
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        shifted_actions = MATOrigPolicy._build_shifted_actions(actions, agent_mask=agent_mask)
+    graph.replay()
+    expected = torch.zeros_like(actions)
+    expected[:, 1:] = actions[:, :-1].masked_fill(~agent_mask[:, :-1, None], 0.0)
+    torch.testing.assert_close(shifted_actions, expected)
+
+
 def test_actor_latents_depend_on_previous_agent_actions() -> None:
     torch.manual_seed(0)
     policy = _make_policy()

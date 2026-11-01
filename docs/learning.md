@@ -92,6 +92,8 @@ Depth labels count actor and critic encoder blocks. At the 5M budget, 2L and 3L 
 
 NOP means **next-observation prediction**, an auxiliary training objective enabled by default in the core presets. MAT, recurrent MAT, and MAPPO train NOP from critic-encoder features; the prediction loss updates the critic encoder without updating the actor. Plain PPO retains its shared feature encoder. `use_nop=False` disables it without changing the main policy's dimensions.
 
+Default targets include public local observations and public global scalars and rotations, such as payload poses and task goals. Inactive MultiPayloadGoal records are excluded from global losses using their payload-active flags. Adding global predictors changes NOP checkpoint shapes for tasks with public global observations; checkpoints require the matching target configuration.
+
 The scale names describe approximate feed-forward budgets, not exact counts or GPU memory requirements. Recurrent memory and optional gates add parameters; targets and optimizer state need additional memory. Fewer parallel worlds or a smaller model scale reduce memory requirements.
 
 `model_scale=None` (CLI: `--model-scale custom`) enables custom widths; fixed scales take precedence over width overrides. The [model layouts](policy_parameters/model_scale.md) and [parameter inspection guide](policy_parameters/README.md) cover detailed comparisons.
@@ -131,7 +133,13 @@ PPO, SAC, and TD3 accept different learner options. The [recurrent TD3 example](
 
 Off-policy default batches target 1,024 learning positions independently of environment count and rollout length. Feed-forward learners sample 1,024 transitions; recurrent learners divide this budget by their effective `learning_steps`, rounding up to at least one whole sequence. The default 64-step learning horizon therefore uses 16 sequences per update. An explicit `algorithm_kwargs={"batch_size": ...}` overrides this default and counts transitions for feed-forward learners or sequences for recurrent learners. Burn-in adds computation outside the scored learning-position budget.
 
-Recurrent SAC/TD3 replay supports at most one time-limit truncation per learning sequence. An `episode_length` of at least `learning_steps` avoids rejection due to repeated regular timeouts; `make_training` warns when the episode limit is shorter. With the default 64 learning steps, limits of 33–63 steps reject some windows, while episodes consistently timing out within 32 steps leave no eligible windows and prevent learning. This restriction excludes burn-in steps and counts truncations, not genuine terminations. Other sources of early truncation can also make windows ineligible.
+Off-policy observation and reward statistics adapt throughout training. The training environment emits raw observations and rewards for replay; policy inputs are normalized at rollout, and sampled current, successor and terminal observations use one current statistics snapshot per training call. Recurrent burn-in and NOP windows use that same snapshot. Normalization does not update statistics when sampling and adds no calibration rollout. Checkpoint continuation restores the statistics and resumes updating them; benchmark adapters and frozen evaluations use a separate fixed evaluation snapshot.
+
+Off-policy environments accept one `TorchFeatureWiseObsNormWrapper` per observation key; feature groups for the same key belong in one wrapper. Duplicate keys are rejected during initialization, including wrappers separated by transition-observation or other wrappers. Observation normalization compiles by default on CUDA. In low-level environment construction, an explicit `compile_tensor_operations=False` on any participating observation wrapper keeps that combined normalization pass eager, including rollout and evaluation. CPU normalization remains eager.
+
+Transition-observation histories also remain raw, so current and previous observations are normalized consistently, including reset sentinels. Existing recurrent burn-in reduces hidden-state mismatch caused by policy and normalization updates; finite burn-in remains an approximation. Stored recurrent states are reused without an additional full-episode reconstruction pass.
+
+Recurrent SAC/TD3 replay supports at most one time-limit truncation per learning sequence. Training requires `episode_length >= learning_steps`; shorter limits fail before environment construction. A shorter learning horizon requires an explicit `learning_steps` override and a compatible `temporal_state_store_interval`. Burn-in is excluded from this restriction, and genuine terminations do not count as time-limit truncations. Other sources of early truncation can still make individual windows ineligible.
 
 `make_training` shares these defaults across SAC, DDPG and TD3 presets, including hidden controls:
 
@@ -148,6 +156,8 @@ Recurrent SAC/TD3 replay supports at most one time-limit truncation per learning
 | NOP when enabled | Three-step prediction, loss coefficient `0.1`, reusing the critic replay batch |
 
 All SAC presets also share automatic temperature tuning with initial coefficient `0.05`, target entropy `"auto_0.1"`, and temperature learning rate equal to the base actor/critic rate. Actor and target evaluation each sample one action; actor, temperature and target updates occur every critic update, without target-action smoothing. DDPG and TD3 use exploration noise `0.1`; TD3 retains a two-update actor/target delay and target smoothing noise `0.2`, clipped at `0.5`. DDPG retains one critic, no delay and no target smoothing.
+
+SAC, DDPG and TD3 average the main critic loss across Q heads before adding NOP. The common auxiliary coefficient therefore has the same relative scale for single and twin critics.
 
 Recurrent SAC and TD3 share 32 burn-in steps, 64 learning steps, and temporal-state snapshots every 16 steps stored in float16. Their minimum history requirement can delay the first update. Matching batch positions does not match temporal correlation or compute; [experimental comparison details](policy_parameters/model_scale.md#experimental-comparisons) describe these differences. PPO/MAT retain their on-policy rollout, epoch and learning-rate schedules.
 
@@ -198,6 +208,10 @@ Console labels include `steps` (environment transitions), `ret` (return moving a
 For custom console selection, `logging_console_keys` accepts metric names; `[]` silences metric rows and `None` shows all metrics. Persisted fields keep their original names. The [plotting guide](log_plotting.md) covers CSV column listing and charts.
 
 W&B and interactive prompts are optional. In a checkout, install them with `uv sync --extra wandb --extra prompt`; in an application project, use `uv add "swarmbots[wandb,prompt]==0.1.0a3"`. W&B starts only when explicitly configured through logging options.
+
+The interactive prompt is read-only. Available inspections include `show_hps`, `show_id`, `show_run_path`, `pid`, `show_rw`, `eta`, and `record_status`; semicolons separate multiple names. The Python equivalent is `trainer.execute_command("show_hps")`, which returns whether the inspection succeeded. Runtime commands cannot change settings, pause or stop training, save checkpoints, or start recordings. Construction options define the training configuration; Python APIs provide checkpoint saving and recording.
+
+Run metadata is written before the first update. Runs created with `make_training` or `train` retain the training seed and construction options, resolved environment/scenario settings, policy and algorithm settings, and source revision. Source provenance includes the Git commit, dirty flag and a content hash of uncommitted tracked and untracked files; installations without an available Git checkout record an unknown revision. A dirty-source hash identifies the source state but does not replace preserving that checkout.
 
 ## Action distributions
 
@@ -270,7 +284,8 @@ from swarmbots.learn import as_benchmark_policy, make_training
 
 run_dir = Path("runs/first-mappo")
 checkpoint = next((run_dir / "models").glob("*_steps_final.pt"))
-training_seed = json.loads((run_dir / "evaluation.json").read_text(encoding="utf-8"))["metadata"]["policy"]["training_seed"]
+training_metadata = json.loads((run_dir / "run_metadata_0.json").read_text(encoding="utf-8"))
+training_seed = training_metadata["training_seed"]
 benchmark_id = "SwarmBots-WallEasy-v0"
 source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 trainer = make_training(benchmark_id, "mappo__deepset_critic", num_envs=2, device="cuda")
@@ -290,6 +305,7 @@ try:
                 "variant": "mappo__deepset_critic",
                 "checkpoint": str(checkpoint),
                 "training_seed": training_seed,
+                "training_source_revision": training_metadata["source_revision"],
                 "training_timesteps": trainer.n_total_timesteps,
                 "settings": trainer.policy.get_hyper_parameters(),
             },
@@ -315,9 +331,9 @@ output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding
 print(output)
 ```
 
-The two-world trainer restores the policy and normalization; each evaluation uses a separate 256-world environment. This recipe performs no training updates. The report includes the restored training-step count and the training seed from the first script's `evaluation.json`. Other checkpoints require their original task, variant, model scale, NOP, distribution, and architecture settings in `make_training`.
+The two-world trainer restores the policy and normalization; each evaluation uses a separate 256-world environment. This recipe performs no training updates. The report includes the restored training-step count, training seed and training source provenance from the original run metadata. Other checkpoints require their original task, variant, model scale, NOP, distribution, and architecture settings in `make_training`.
 
-The recorded Git revision identifies the checkout used for evaluation. The training commit needs a separate record alongside the original checkpoint, `evaluation.json`, and run metadata; the default run metadata does not capture that commit or the training seed.
+The evaluation revision identifies the checkout used for evaluation; the training source provenance identifies the original training checkout. These can differ when evaluation happens later.
 
 ## Record a checkpoint
 

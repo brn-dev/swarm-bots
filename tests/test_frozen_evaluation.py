@@ -320,7 +320,6 @@ def test_frozen_evaluation_collects_each_lane_requested_number_of_times_and_rest
     assert metrics["timesteps"] == 25
     assert evaluation_env.reset_kwargs == {
         "seed": 123,
-        "options": {"force_settled": True},
     }
     assert torch.equal(policy.action_dist.state, torch.tensor([7.0]))
     assert policy.training

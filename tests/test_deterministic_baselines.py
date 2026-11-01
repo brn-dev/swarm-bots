@@ -1247,8 +1247,7 @@ def test_low_level_td3_configuration_is_resolved_and_reported_consistently(env):
 
 def test_td3_does_not_accept_entropy_commands(env):
     algorithm = make_algorithm(env, "matd3__mlp_critic")
-    with pytest.raises(ValueError, match="entropy coefficient"):
-        algorithm._execute_command("set_ent_coef", "0.5", None)
+    assert not algorithm.execute_command("set_ent_coef")
 
 
 @pytest.mark.parametrize(

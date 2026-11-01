@@ -661,17 +661,10 @@ class MetricsLoggerTests(unittest.TestCase):
                 )
 
         self.assertIsNone(algo._active_run_dir)
-        self.assertIsNone(algo._active_extra_run_metadata)
-        self.assertTrue(algo._active_save_optimizer)
         self.assertIsNone(algo._active_max_total_timesteps)
         self.assertIsNone(algo._active_learn_started_monotonic)
         self.assertIsNone(algo._active_learn_started_timesteps)
-        self.assertFalse(algo._stop_requested)
-        self.assertTrue(algo._stop_should_save)
-        self.assertIsNone(algo._stop_save_optimizer)
         self.assertIsNone(algo._last_return_ema)
-        self.assertIsNone(algo._latest_hp_update)
-        self.assertIsNone(algo._command_log_path)
 
     def test_compress_persisted_log_replaces_csv_with_gzip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -812,11 +805,11 @@ class MetricsLoggerTests(unittest.TestCase):
             sink_id = logger.add(lambda message: messages.append(str(message)), format="{message}")
 
             try:
-                updated = algo.execute_command("show_run_path", "", None)
+                executed = algo.execute_command("show_run_path")
             finally:
                 logger.remove(sink_id)
 
-            self.assertFalse(updated)
+            self.assertTrue(executed)
             log_output = "".join(messages)
             self.assertIn(run_dir.resolve().as_posix(), log_output)
             self.assertIn(run_dir.name, log_output)
@@ -830,11 +823,11 @@ class MetricsLoggerTests(unittest.TestCase):
             sink_id = logger.add(lambda message: messages.append(str(message)), format="{message}")
 
             try:
-                updated = algo.execute_command("show_id", "", None)
+                executed = algo.execute_command("show_id")
             finally:
                 logger.remove(sink_id)
 
-            self.assertFalse(updated)
+            self.assertTrue(executed)
             self.assertIn(run_dir.resolve().as_posix(), "".join(messages))
 
 

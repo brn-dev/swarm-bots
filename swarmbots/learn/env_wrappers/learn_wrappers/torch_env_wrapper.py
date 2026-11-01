@@ -68,8 +68,6 @@ class TorchEnvWrapper(BaseLearnEnvWrapper):
         final_obs_mask = to_torch_tensor(
             infos["_final_obs"], device=self.device, dtype=torch.bool
         ).reshape(self._n_envs)
-        if not torch.any(final_obs_mask):
-            return infos
 
         transformed_infos = dict(infos)
         transformed_infos["_final_obs"] = final_obs_mask
@@ -77,21 +75,22 @@ class TorchEnvWrapper(BaseLearnEnvWrapper):
         final_obs_value = infos["final_obs"]
         if isinstance(final_obs_value, dict):
             final_obs = self._obs_to_torch(final_obs_value)
-            transformed_final_obs = self.observations(final_obs)
-            transformed_infos["final_obs"] = {
-                key: value.detach().clone()
-                for key, value in transformed_final_obs.items()
-            }
+            transformed_infos["final_obs"] = self._transform_final_observations(final_obs)
             return transformed_infos
 
         final_obs_entries = np.asarray(final_obs_value, dtype=object).copy()
         for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
             final_obs = self._obs_to_torch(final_obs_entries[env_idx])
-            transformed_final_obs = self.observations(final_obs)
-            final_obs_entries[env_idx] = {
-                key: value.detach().clone()
-                for key, value in transformed_final_obs.items()
-            }
+            final_obs_entries[env_idx] = self._transform_final_observations(final_obs)
 
         transformed_infos["final_obs"] = final_obs_entries
         return transformed_infos
+
+    def _transform_final_observations(self, final_obs: TorchObs) -> TorchObs:
+        transformed_obs = self.observations(final_obs)
+        # The environment owns terminal snapshots. Only replaced fields need a
+        # new snapshot because an observation transform can reuse output buffers.
+        return {
+            key: value if value is final_obs.get(key) else value.detach().clone()
+            for key, value in transformed_obs.items()
+        }
