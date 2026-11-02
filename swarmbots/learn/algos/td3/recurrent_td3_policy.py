@@ -26,6 +26,7 @@ from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderCo
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalModelState
 from swarmbots.learn.algos.td3.td3_policy import DeterministicActor, TD3Policy, TD3PolicyConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.base_policy import policy_inference_step
 
 
 ActorEncoderSequenceResult: TypeAlias = (
@@ -312,6 +313,7 @@ class RecurrentTD3Policy(TD3Policy):
         actions = actor.actions_from_latents(latents, kwargs.get("agent_mask"))
         return actions, latents, state, *selected_states
 
+    @policy_inference_step
     def act_with_temporal_state(
         self,
         local_obs: torch.Tensor,

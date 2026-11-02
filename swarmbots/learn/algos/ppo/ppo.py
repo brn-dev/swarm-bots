@@ -1077,6 +1077,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             learning_rate: LearningRate,
             optimizer_state_dict: dict[str, Any],
     ) -> None:
+        automatic_lr_state = optimizer_state_dict["automatic_lr"]
+        scheduler_state = optimizer_state_dict["schedulers"]
+        if (automatic_lr_state is None) != (self.automatic_lr is None):
+            raise ValueError("Checkpoint automatic learning rate configuration does not match the trainer")
+        if (scheduler_state is None) != (self.scheduler_manager is None):
+            raise ValueError("Checkpoint schedulers do not match the trainer; configure the matching SchedulerManager")
+        if scheduler_state is not None:
+            self.scheduler_manager.validate_state_dict(scheduler_state)
         if self.automatic_lr is not None:
             _validate_automatic_learning_rate(learning_rate)
             for group in optimizer_state_dict["param_groups"]:
@@ -1100,10 +1108,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         state_dict = state_dict.copy()
         automatic_lr_state = state_dict.pop("automatic_lr")
         scheduler_state = state_dict.pop("schedulers")
-        if (automatic_lr_state is None) != (self.automatic_lr is None):
-            raise ValueError("Checkpoint automatic learning rate configuration does not match the trainer")
-        if (scheduler_state is None) != (self.scheduler_manager is None):
-            raise ValueError("Checkpoint schedulers do not match the trainer; configure the matching SchedulerManager")
         lr = self._optimizer_base_learning_rate(state_dict)
         if self.automatic_lr is not None:
             _validate_automatic_learning_rate(lr)

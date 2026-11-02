@@ -31,20 +31,25 @@ def _make_env(device: str = "cpu") -> SwarmBotsLearnEnvWrapper:
 
 
 class _ReusableOutputWrapper(TorchEnvWrapper):
-    def __init__(self, env: SwarmBotsLearnEnvWrapper) -> None:
+    def __init__(self, env: SwarmBotsLearnEnvWrapper, *, replace_in_place: bool = False) -> None:
         super().__init__(env)
         self._output = torch.empty((1, 2, 2), device=self.device)
+        self._replace_in_place = replace_in_place
 
     def observations(self, observations: TorchObs) -> TorchObs:
         output = self._output[0] if observations["local_obs"].ndim == 2 else self._output
         output.copy_(observations["local_obs"] + 1)
+        if self._replace_in_place:
+            observations["local_obs"] = output
+            return observations
         return {**observations, "local_obs": output}
 
 
-def test_terminal_transforms_snapshot_reused_outputs_and_preserve_unchanged_snapshots() -> None:
+@pytest.mark.parametrize("replace_in_place", [False, True])
+def test_terminal_transforms_snapshot_reused_outputs_and_preserve_unchanged_snapshots(replace_in_place: bool) -> None:
     env = _make_env()
     try:
-        wrapper = _ReusableOutputWrapper(env)
+        wrapper = _ReusableOutputWrapper(env, replace_in_place=replace_in_place)
         terminal_obs, _ = env.reset()
         terminal_snapshot = {key: value.clone() for key, value in terminal_obs.items()}
         infos = {"final_obs": terminal_snapshot, "_final_obs": torch.tensor([True])}

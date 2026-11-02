@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve recurrent SAC/TD3 rollout states across compiled policy calls and environment/statistics updates by sharing the existing CUDA-graph inference boundary and output ownership helper.
+- Reject incompatible PPO learning-rate controllers and scheduler layouts before restoring matching policy/optimizer checkpoints. Preserve non-strict partial weight loads by skipping optimizer preflight when aligned policy keys differ.
+- Cover compiled actor/critic optimizer execution and parameter updates after warmup, recurrent action/state retention and eager equivalence with cuDNN enabled, strict/non-strict checkpoint rejection, and automatic replay-normalization activation through trainer-backed evaluation.
+- Select replay-boundary normalization through an explicit policy capability, including compiled policies and future off-policy families, without coupling evaluation to SAC/TD3 inheritance.
+- Preserve terminal snapshots when observation transforms replace entries in the supplied dictionary, retaining unchanged tensor identities without additional tensor copies on registered paths.
 - Restrict runtime training commands to read-only inspections and remove mutation commands, pause/stop controls, manual save/record commands, and their command-driven state and logging. Keep Python training/checkpoint APIs and scheduled/final saving.
 - Avoid host synchronization in Original MAT's CUDA prefix-mask validation and tensor-dictionary terminal-observation transforms. Preserve unchanged terminal snapshots across wrappers and snapshot only replaced fields.
 - Average SAC/DDPG/TD3 critic losses across Q heads so the common NOP coefficient has a consistent relative scale for single and twin critics.

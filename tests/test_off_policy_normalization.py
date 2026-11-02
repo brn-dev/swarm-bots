@@ -2,7 +2,7 @@ import gc
 import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -19,6 +19,8 @@ from swarmbots.learn.algos.off_policy.base_algorithm import OffPolicyAlgorithm
 from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization, _normalization_operation
 from swarmbots.learn.algos.sac import SAC, RecurrentSAC
 from swarmbots.learn.algos.td3 import DDPG, TD3, RecurrentTD3
+from swarmbots.learn.base_policy import BasePolicy
+from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_tensor_ops import build_obs_norm_tensor_operation
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
@@ -27,6 +29,7 @@ from swarmbots.learn.env_wrappers.torch_transition_obs_wrapper import TorchTrans
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.evaluation import FrozenEvaluationRunner
 from swarmbots.learn.obs_indices import ObsIndices
+from swarmbots.learn.temporal_state import clone_temporal_state
 from tests.test_deterministic_baselines import make_policy
 from tests.test_off_policy_replay import _ScriptedOffPolicyEnv
 from tests.test_sac_algorithm import _make_env as make_quaternion_env
@@ -95,6 +98,8 @@ def _make_normalization_env(
 def _make_algorithm(
     variant: str = "tmasac", *, device: str = "cpu", transition_observations: bool = False,
     compile_normalization: bool | None = False, use_nop: bool = True, independent_nop_sampling: bool = False,
+    compile_policy: bool = False,
+    learning_rate_warmup_updates: int = 500,
 ) -> OffPolicyAlgorithm:
     env = _make_normalization_env(
         device=device, transition_observations=transition_observations,
@@ -105,6 +110,7 @@ def _make_algorithm(
     policy_options = {"td3_recurrent_actor": True} if recurrent_td3 else {}
     policy = make_policy(
         env, variant, model_scale=None, use_nop=use_nop, world_model_num_next_steps=3,
+        compile_modules=compile_policy, compile_mode="reduce-overhead" if compile_policy else "default",
         obs_indices=ObsIndices(**{
             field.name: [0] if field.name == "local_scalar_indices" else [] for field in fields(ObsIndices)
         }),
@@ -116,10 +122,12 @@ def _make_algorithm(
     )
     return algorithm_class(
         policy, env, buffer_capacity_per_env=64, learning_starts=32, batch_size=2,
+        learning_rate_warmup_updates=learning_rate_warmup_updates,
         rollout_steps_per_iteration=1, gradient_steps=1,
         replay_storage_device=device, train_device=device, rollout_device=device,
-        replay_compile_tensor_operations=False, sac_compile_tensor_operations=False,
-        sac_compile_optimizer_steps=False,
+        replay_compile_tensor_operations=None if compile_policy else False,
+        sac_compile_tensor_operations=None if compile_policy else False,
+        sac_compile_optimizer_steps=None if compile_policy else False,
         **({"burn_in_steps": 1, "learning_steps": 3, "temporal_state_store_interval": 1} if recurrent else {}),
         **({"independent_nop_sampling": True} if independent_nop_sampling else {}),
     )
@@ -419,6 +427,68 @@ def test_whole_policy_compilation_preserves_on_policy_normalization_behavior() -
         env.close()
 
 
+@pytest.mark.parametrize("compile_policy", [False, True])
+def test_replay_normalization_supports_policies_outside_existing_algorithm_families(compile_policy: bool) -> None:
+    class CustomPolicy(torch.nn.Module):
+        uses_replay_normalization = True
+
+    env = _make_normalization_env(transition_observations=True)
+    try:
+        policy = CustomPolicy()
+        if compile_policy:
+            policy = torch.compile(policy, backend="eager")
+        normalization = ReplayNormalization.for_policy(env, policy)
+        raw, _ = env.reset()
+        for layout in normalization.observation_layouts:
+            layout.wrapper.obs_rms.mean.fill_(2.0)
+            layout.wrapper.obs_rms.var.fill_(4.0)
+        normalized = normalization.snapshot(device=torch.device("cpu")).normalize_observations(raw)
+        torch.testing.assert_close(raw["local_obs"][..., -3], torch.zeros(1, 2))
+        torch.testing.assert_close(
+            normalized["local_obs"][..., -3], torch.full((1, 2), -2.0 / (4.0 + 1e-6) ** 0.5),
+        )
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("compile_policy", [False, True])
+def test_trainer_enables_replay_normalization_before_benchmark_evaluation(compile_policy: bool) -> None:
+    env = _make_normalization_env(transition_observations=True)
+    try:
+        original_policy = make_policy(env, "tmasac", model_scale=None, use_nop=False)
+        original_policy.uses_replay_normalization = BasePolicy.uses_replay_normalization
+        policy = torch.compile(original_policy, backend="eager") if compile_policy else original_policy
+        assert not policy.uses_replay_normalization
+        algorithm = SAC(
+            policy, env, buffer_capacity_per_env=16, batch_size=2, learning_starts=0,
+            train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
+            replay_compile_tensor_operations=False, sac_compile_tensor_operations=False,
+            sac_compile_optimizer_steps=False,
+        )
+        _set_statistics(algorithm, mean=2.0, variance=4.0)
+        for wrapper in _observation_wrappers(algorithm):
+            wrapper.update_running_mean = False
+        raw, _ = env.reset()
+        expected = algorithm._normalization.snapshot(device=torch.device("cpu")).normalize_observations(raw)
+        public = {
+            key: torch.as_tensor(value).unsqueeze(0)
+            for key, value in env.unwrapped.envs[0]._obs().items()
+        }
+        seen = []
+        original_act = original_policy.act_with_temporal_state
+
+        def capture(**kwargs: Any) -> Any:
+            seen.append((kwargs["local_obs"].clone(), kwargs["global_obs"].clone()))
+            return original_act(**kwargs)
+
+        with patch.object(original_policy, "act_with_temporal_state", side_effect=capture):
+            as_benchmark_policy(algorithm)(public, torch.ones(1, dtype=torch.bool))
+        torch.testing.assert_close(seen[0], (expected["local_obs"], expected["global_obs"]))
+        assert expected["local_obs"][..., -3].lt(0).all()
+    finally:
+        env.close()
+
+
 def test_closing_frozen_evaluation_releases_its_normalization_wrappers() -> None:
     algorithm = _make_algorithm()
     references = []
@@ -658,6 +728,120 @@ def test_compiled_cuda_adaptive_normalization_preserves_raw_replay_and_retained_
         with patch.object(algorithm.policy, "act_with_temporal_state", side_effect=capture):
             as_benchmark_policy(algorithm)(public, torch.ones(1, dtype=torch.bool, device="cuda"))
         torch.testing.assert_close(seen[0], expected["local_obs"], rtol=1e-5, atol=1e-5)
+    finally:
+        algorithm.env.close()
+        torch.compiler.reset()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("variant", ["tmasac", "tmasac__lstm", "tmatd3"])
+def test_compiled_cuda_policy_preserves_adaptive_normalization_across_collection_and_updates(variant: str) -> None:
+    torch.compiler.reset()
+    algorithm = _make_algorithm(
+        variant, device="cuda", transition_observations=True,
+        compile_normalization=True, compile_policy=True,
+        learning_rate_warmup_updates=2,
+    )
+    try:
+        _collect(algorithm, 8)
+        assert algorithm.train(gradient_steps=2)["updates"] == 2
+        raw = algorithm.replay_buffer.get_all()
+        snapshot = algorithm._normalization.snapshot(device=torch.device("cuda:0"))
+        normalized = snapshot.normalize_batch(raw)
+        retained = normalized.local_obs.clone()
+        counts = [wrapper.obs_rms.count.clone() for wrapper in _observation_wrappers(algorithm)]
+        parameters = {
+            "actor": algorithm.policy.actor_parameters(),
+            "critic": algorithm.policy.critic_parameters(),
+        }
+        initial_weights = {
+            name: [parameter.detach().clone() for parameter in group]
+            for name, group in parameters.items()
+        }
+        with (
+            patch.object(algorithm, "_actor_optimizer_step", wraps=algorithm._actor_optimizer_step) as actor_step,
+            patch.object(algorithm, "_critic_optimizer_step", wraps=algorithm._critic_optimizer_step) as critic_step,
+        ):
+            for value in (20.0, 30.0):
+                metrics = algorithm.train(gradient_steps=2)
+                assert metrics["updates"] == 2
+                algorithm.env.unwrapped.envs[0].value = value
+                _, _, algorithm._rollout_state = collect_off_policy_steps(
+                    algorithm.env, algorithm.replay_buffer, 4,
+                    policy=algorithm.policy, random_actions=False, rollout_state=algorithm._rollout_state,
+                )
+                torch.testing.assert_close(normalized.local_obs, retained, rtol=0, atol=0)
+            assert actor_step.call_count > 0
+            assert critic_step.call_count > 0
+        torch.testing.assert_close(raw.local_obs[..., 0], torch.full_like(raw.local_obs[..., 0], 10.0))
+        assert all(
+            wrapper.obs_rms.count > count
+            for wrapper, count in zip(_observation_wrappers(algorithm), counts, strict=True)
+        )
+        for name, group in parameters.items():
+            assert any(
+                not torch.equal(parameter, previous)
+                for parameter, previous in zip(group, initial_weights[name], strict=True)
+            ), f"{name} weights did not change"
+        assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
+    finally:
+        algorithm.env.close()
+        torch.compiler.reset()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
+def test_compiled_recurrent_inference_matches_eager_and_preserves_returned_outputs(variant: str) -> None:
+    torch.compiler.reset()
+    torch.manual_seed(42)
+    algorithm = _make_algorithm(
+        variant, device="cuda", transition_observations=True,
+        compile_normalization=True, compile_policy=True,
+    )
+    try:
+        policy = algorithm.policy.eval()
+        if variant == "tmatd3":
+            with torch.no_grad():
+                for parameter in policy.actor_target.encoder.parameters():
+                    parameter.add_(0.1)
+        eager = type(policy)(algorithm.env, replace(policy.config, compile_modules=False)).cuda().eval()
+        eager.load_state_dict(align_torch_compile_state_dict_keys(
+            policy.state_dict(), target_keys=eager.state_dict().keys(),
+        ))
+        raw, _ = algorithm.env.reset()
+        compiled_state = eager_state = None
+        retained = []
+        # Keep eager cuDNN and compiled recurrence at the same FP32 precision.
+        with torch.no_grad(), torch.backends.cudnn.flags(enabled=True, allow_tf32=False):
+            for step in range(6):
+                observations = {
+                    **raw,
+                    "local_obs": raw["local_obs"] + step * 0.25,
+                    "global_obs": raw["global_obs"] + step * 0.1,
+                }
+                normalized = algorithm._normalization.snapshot(
+                    device=torch.device("cuda:0"), public_only=True,
+                ).normalize_observations(observations)
+                inputs = dict(
+                    local_obs=normalized["local_obs"], global_obs=normalized["global_obs"],
+                    agent_mask=torch.tensor([[True, step % 3 != 1]], device="cuda"),
+                    episode_start_mask=torch.tensor([step % 4 == 0], device="cuda"),
+                    deterministic=True,
+                )
+                expected = eager.act_with_temporal_state(**inputs, temporal_state=eager_state)
+                actual = policy.act_with_temporal_state(**inputs, temporal_state=compiled_state)
+                torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+                retained.append((actual, clone_temporal_state(actual)))
+                compiled_state, eager_state = actual[1], expected[1]
+                algorithm.env.step(torch.zeros_like(actual[0]))
+                for output, snapshot in retained:
+                    torch.testing.assert_close(output, snapshot, rtol=0, atol=0)
+        _collect(algorithm, 8)
+        assert algorithm.train(gradient_steps=1)["updates"] == 1
+        for output, snapshot in retained:
+            torch.testing.assert_close(output, snapshot, rtol=0, atol=0)
     finally:
         algorithm.env.close()
         torch.compiler.reset()

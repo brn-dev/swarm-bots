@@ -10,6 +10,7 @@ from swarmbots.learn.base_policy import BasePolicy
 
 
 class BaseSACPolicy(BasePolicy, abc.ABC):
+    uses_replay_normalization = True
     action_dist: HybridActionDistribution
     action_dist_metrics_agent_mask: torch.Tensor | None = None
 

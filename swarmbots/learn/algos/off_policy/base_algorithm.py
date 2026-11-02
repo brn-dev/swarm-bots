@@ -156,6 +156,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         self._validate_hyper_parameters()
         self._normalization = ReplayNormalization(env)
+        policy.uses_replay_normalization = True
         self._target_action_coordinates = (
             tuple(value.to(self.train_device) for value in bounded_action_coordinates(env.action_space))
             if self.target_policy_noise > 0.0

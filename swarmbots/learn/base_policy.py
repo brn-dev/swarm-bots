@@ -57,6 +57,7 @@ def policy_inference_step(
 
 
 class BasePolicy(nn.Module, abc.ABC):
+    uses_replay_normalization: bool = False
 
     @property
     @abc.abstractmethod

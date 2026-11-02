@@ -73,10 +73,13 @@ class SchedulerManager:
             for item in self.scheduled_hyper_parameters
         ]
 
-    def load_state_dict(self, state_dict: list[dict[str, Any]]) -> None:
+    def validate_state_dict(self, state_dict: list[dict[str, Any]]) -> None:
         names = [item.name for item in self.scheduled_hyper_parameters]
         if [item["name"] for item in state_dict] != names:
             raise ValueError("Checkpoint schedulers must match the configured scheduler names and order")
+
+    def load_state_dict(self, state_dict: list[dict[str, Any]]) -> None:
+        self.validate_state_dict(state_dict)
         for item, saved in zip(self.scheduled_hyper_parameters, state_dict, strict=True):
             item.enabled = saved["enabled"]
             item.state = deepcopy(saved["state"])

@@ -87,7 +87,7 @@ class TorchEnvWrapper(BaseLearnEnvWrapper):
         return transformed_infos
 
     def _transform_final_observations(self, final_obs: TorchObs) -> TorchObs:
-        transformed_obs = self.observations(final_obs)
+        transformed_obs = self.observations(dict(final_obs))
         # The environment owns terminal snapshots. Only replaced fields need a
         # new snapshot because an observation transform can reuse output buffers.
         return {

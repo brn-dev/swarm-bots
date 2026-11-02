@@ -1,6 +1,7 @@
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +18,7 @@ from swarmbots.learn.algos.off_policy.nop import SACNOPConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadConfig, TMASACActorHeadKind
 from swarmbots.learn.algos.td3 import DDPG, TD3, TD3Policy
+from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.hybrid_action_space import HybridActionSpace, VectorHybridActionSpace
 from swarmbots.learn.nn_components.feed_forward import MLPConfig
@@ -75,7 +77,10 @@ def env():
     env.close()
 
 
-def make_policy(env, variant, *, small=True, compile_modules=False, **overrides):
+def make_policy(
+    env: Any, variant: str, *, small: bool = True, compile_modules: bool = False,
+    compile_mode: str = "default", **overrides: Any,
+) -> BasePolicy:
     registered_variant = variant.replace("__mlp_critic", "__deepset_critic")
     options, _ = _variant_options(registered_variant)
     if variant.endswith("__mlp_critic"):
@@ -98,7 +103,7 @@ def make_policy(env, variant, *, small=True, compile_modules=False, **overrides)
         popart_beta=5e-4,
         popart_init_sigma=0.65,
         compile_policy_modules=compile_modules,
-        policy_compile_mode="default",
+        policy_compile_mode=compile_mode,
         gsde_init_stds=[0.25],
         mat_add_agent_embeddings=False,
         act_fn_cls=nn.GELU,

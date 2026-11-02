@@ -100,12 +100,9 @@ class NormalizationSnapshot:
 class ReplayNormalization:
     @classmethod
     def for_policy(cls, env: Any, policy: Any) -> ReplayNormalization | None:
-        from swarmbots.learn.algos.sac.base_sac_policy import BaseSACPolicy
-        from swarmbots.learn.algos.td3.td3_policy import TD3Policy
-
         while hasattr(policy, "_orig_mod"):
             policy = policy._orig_mod
-        return cls(env) if isinstance(policy, (BaseSACPolicy, TD3Policy)) else None
+        return cls(env) if getattr(policy, "uses_replay_normalization", False) else None
 
     def __init__(self, env: Any) -> None:
         self.observation_layouts: list[_ObservationLayout] = []

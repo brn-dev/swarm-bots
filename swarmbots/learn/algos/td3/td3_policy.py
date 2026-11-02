@@ -88,6 +88,8 @@ class DeterministicActor(nn.Module):
 
 
 class TD3Policy(BasePolicy):
+    uses_replay_normalization = True
+
     def __init__(self, env, config: TD3PolicyConfig = TD3PolicyConfig()) -> None:
         super().__init__()
         if config.n_critics not in (1, 2):

@@ -25,6 +25,7 @@ from swarmbots.learn.action_dists.action_sampling import expand_action_sample_ba
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy, TMASACPolicyConfig
 from swarmbots.learn.algos.off_policy.transformer_critic import TransformerTwinCritic
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.base_policy import policy_inference_step
 from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.temporal_state import concatenate_temporal_states
 
@@ -381,6 +382,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
             dtype=dtype,
         )
 
+    @policy_inference_step
     def act_with_temporal_state(
             self,
             local_obs: torch.Tensor,

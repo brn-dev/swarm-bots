@@ -492,15 +492,18 @@ class BaseAlgorithm(abc.ABC):
             if restore_optimizer_state
             else None
         )
-        if optimizer_state_dict is not None:
+        target_policy_keys = self.policy.state_dict().keys()
+        policy_state_dict = align_torch_compile_state_dict_keys(
+            checkpoint["policy_state_dict"],
+            target_keys=target_policy_keys,
+        )
+        if optimizer_state_dict is not None and (
+            strict_load_state_dict or policy_state_dict.keys() == target_policy_keys
+        ):
             self._validate_optimizer_checkpoint(
                 learning_rate=checkpoint["hyper_parameters"]["learning_rate"],
                 optimizer_state_dict=optimizer_state_dict,
             )
-        policy_state_dict = align_torch_compile_state_dict_keys(
-            checkpoint["policy_state_dict"],
-            target_keys=self.policy.state_dict().keys(),
-        )
         missing_keys, unexpected_keys = self.policy.load_state_dict(
             policy_state_dict,
             strict=strict_load_state_dict

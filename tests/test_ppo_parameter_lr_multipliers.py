@@ -1,4 +1,6 @@
 from pathlib import Path
+from copy import deepcopy
+from typing import Any
 
 import numpy as np
 import pytest
@@ -41,6 +43,102 @@ def test_checkpoint_restores_custom_scheduler_state_and_enabled_flag(tmp_path) -
     for algorithm in (source, restored):
         algorithm.scheduler_manager.step(n_iterations=2, n_model_updates=2, n_timesteps=2, metrics={})
     assert restored.learning_rate == source.learning_rate == pytest.approx(0.005)
+
+
+CHECKPOINT_CONFIGURATION_MISMATCHES = (
+    "automatic_lr", "missing_automatic_lr", "schedulers", "missing_schedulers",
+    "scheduler_names", "scheduler_order",
+)
+
+
+def _make_incompatible_trainers(mismatch: str) -> tuple[PPO, PPO]:
+    source_rate = AutomaticLearningRate(initial_lr=0.02, updater=make_auto_lr_updater())
+    target_rate = AutomaticLearningRate(initial_lr=0.001, updater=make_auto_lr_updater())
+    source, _ = _make_ppo(learning_rate=source_rate if mismatch != "missing_automatic_lr" else 0.02)
+    target, _ = _make_ppo(learning_rate=target_rate if mismatch != "automatic_lr" else 0.001)
+
+    def configure_schedulers(algorithm: PPO, names: list[str]) -> None:
+        def schedule(**kwargs: Any) -> dict[str, None]:
+            return {"new_value": None}
+
+        algorithm.scheduler_manager = SchedulerManager([
+            ScheduledHyperParameter(name, schedule, lambda: algorithm.learning_rate, algorithm.set_learning_rate)
+            for name in names
+        ])
+
+    if mismatch in {"schedulers", "scheduler_names", "scheduler_order"}:
+        configure_schedulers(source, ["first", "second"])
+    if mismatch in {"missing_schedulers", "scheduler_names", "scheduler_order"}:
+        configure_schedulers(target, ["second", "first"] if mismatch == "scheduler_order" else ["other"])
+    return source, target
+
+
+@pytest.mark.parametrize("mismatch", CHECKPOINT_CONFIGURATION_MISMATCHES)
+@pytest.mark.parametrize(("strict_load_state_dict", "extra_policy_key"), [
+    (True, False), (True, True), (False, False),
+])
+def test_rejected_checkpoint_configuration_preserves_trainer(
+    tmp_path: Path, mismatch: str, strict_load_state_dict: bool, extra_policy_key: bool,
+) -> None:
+    source, target = _make_incompatible_trainers(mismatch)
+    if extra_policy_key:
+        target.policy.register_buffer("additional_features", torch.tensor([7.0]))
+    with torch.no_grad():
+        for parameter in source.policy.parameters():
+            parameter.fill_(2.0)
+    source.n_total_timesteps = 42
+    path = tmp_path / "incompatible.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    sum(parameter.square().sum() for parameter in target.policy.parameters()).backward()
+    target.optimizer.step()
+    target.optimizer.zero_grad(set_to_none=True)
+    weights = deepcopy(target.policy.state_dict())
+    optimizer = deepcopy(target._get_optimizer_state_dict())
+    rollout_state = object()
+    target._rollout_state = rollout_state
+
+    with pytest.raises(ValueError, match="Checkpoint"):
+        target.load(path, strict_load_state_dict=strict_load_state_dict)
+
+    torch.testing.assert_close(target.policy.state_dict(), weights)
+    current_optimizer = target._get_optimizer_state_dict()
+    assert current_optimizer.pop("schedulers") == optimizer.pop("schedulers")
+    torch.testing.assert_close(current_optimizer, optimizer)
+    assert target.learning_rate == 0.001
+    assert target.n_total_timesteps == 0
+    assert target._rollout_state is rollout_state
+
+
+@pytest.mark.parametrize("mismatch", CHECKPOINT_CONFIGURATION_MISMATCHES)
+@pytest.mark.parametrize("key_difference", ["missing", "unexpected"])
+def test_partial_checkpoint_load_skips_incompatible_optimizer(
+    tmp_path: Path, mismatch: str, key_difference: str,
+) -> None:
+    source, target = _make_incompatible_trainers(mismatch)
+    expanded = target if key_difference == "missing" else source
+    expanded.policy.register_buffer("additional_features", torch.tensor([7.0]))
+    with torch.no_grad():
+        for parameter in source.policy.parameters():
+            parameter.fill_(2.0)
+    path = tmp_path / "partial.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    sum(parameter.square().sum() for parameter in target.policy.parameters()).backward()
+    target.optimizer.step()
+    target.optimizer.zero_grad(set_to_none=True)
+    optimizer = deepcopy(target._get_optimizer_state_dict())
+    source_weights = source.policy.state_dict()
+    expected_weights = {
+        name: source_weights.get(name, tensor).clone()
+        for name, tensor in target.policy.state_dict().items()
+    }
+
+    target.load(path, strict_load_state_dict=False, restore_env_state=False)
+
+    torch.testing.assert_close(target.policy.state_dict(), expected_weights)
+    current_optimizer = target._get_optimizer_state_dict()
+    assert current_optimizer.pop("schedulers") == optimizer.pop("schedulers")
+    torch.testing.assert_close(current_optimizer, optimizer)
+    assert target.learning_rate == 0.001
 
 
 class _DummyActionDist:
