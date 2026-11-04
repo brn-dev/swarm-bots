@@ -52,6 +52,10 @@ class RecurrentOffPolicyMixin:
         return max(super().replay_fill_target, sequence_fill_target)
 
     @property
+    def learning_positions_per_batch(self) -> int:
+        return self.batch_size * self.learning_steps
+
+    @property
     def _critic_uses_temporal_state(self) -> bool:
         return self.policy.recurrent_critic or getattr(
             self.policy,

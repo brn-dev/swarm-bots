@@ -135,6 +135,15 @@ class BaseAlgorithm(abc.ABC):
     ) -> None:
         """Reject invalid optimizer settings before loading any trainer state."""
 
+    def _get_algorithm_state_dict(self) -> dict[str, Any]:
+        return {}
+
+    def _validate_algorithm_state_dict(self, state_dict: dict[str, Any]) -> None:
+        pass
+
+    def _apply_algorithm_state_dict(self, state_dict: dict[str, Any]) -> None:
+        pass
+
     @abc.abstractmethod
     def _apply_optimizer_state_dict(
             self,
@@ -450,6 +459,7 @@ class BaseAlgorithm(abc.ABC):
 
         save_dict = {
             'policy_state_dict': self.policy.state_dict(),
+            'algorithm_state_dict': self._get_algorithm_state_dict(),
             'policy_hyper_parameters': self.policy.get_hyper_parameters(),
             'hyper_parameters': self.get_hyper_parameters(),
             'model_scale': getattr(self.policy, 'model_scale', None),
@@ -487,6 +497,8 @@ class BaseAlgorithm(abc.ABC):
             restore_env_state: bool = True,
     ) -> None:
         checkpoint = load_checkpoint(path, map_location=map_location)
+        algorithm_state_dict = checkpoint["algorithm_state_dict"]
+        self._validate_algorithm_state_dict(algorithm_state_dict)
         optimizer_state_dict = (
             checkpoint.get("optimizer_state_dict")
             if restore_optimizer_state
@@ -510,6 +522,8 @@ class BaseAlgorithm(abc.ABC):
         )
         if missing_keys or unexpected_keys:
             logger.warning(f'{missing_keys = },  {unexpected_keys = }')
+
+        self._apply_algorithm_state_dict(algorithm_state_dict)
 
         if optimizer_state_dict is not None:
             if missing_keys or unexpected_keys:

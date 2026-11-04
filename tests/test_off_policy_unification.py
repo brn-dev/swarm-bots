@@ -49,6 +49,7 @@ def algorithm_options():
     return dict(
         buffer_capacity_per_env=16,
         batch_size=2,
+        rollout_steps_per_iteration=6,
         learning_starts=0,
         learning_rate_warmup_updates=0,
         replay_storage_device="cpu",
@@ -545,7 +546,7 @@ def test_training_helper_selects_recurrent_td3_for_the_opt_in_flags():
     settings["use_nop"] = False
     settings["policy_kwargs"].update(td3_recurrent_actor=True, td3_recurrent_critic=True)
     settings.setdefault("algorithm_kwargs", {}).update(
-        burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1
+        burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1, batch_size=2, replay_exposure=3.0
     )
     algorithm = make_training("SwarmBots-WallEasy-v0", "tmatd3", **settings)
     try:

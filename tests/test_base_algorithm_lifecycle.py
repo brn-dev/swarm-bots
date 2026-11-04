@@ -191,7 +191,7 @@ def test_checkpoint_round_trip_restores_policy_counters_and_optimizer(tmp_path: 
 
 
 @pytest.mark.parametrize("field", [
-    "policy_state_dict", "hyper_parameters", "n_total_iterations", "n_total_updates",
+    "policy_state_dict", "algorithm_state_dict", "hyper_parameters", "n_total_iterations", "n_total_updates",
     "n_total_timesteps", "best_return_ema", "env_state",
 ])
 def test_checkpoint_requires_current_fields(tmp_path: Path, field: str) -> None:

@@ -17,9 +17,11 @@ from swarmbots.learn import as_benchmark_policy
 from swarmbots.learn.algos.off_policy import collect_off_policy_steps
 from swarmbots.learn.algos.off_policy.base_algorithm import OffPolicyAlgorithm
 from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization, _normalization_operation
+from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayBuffer
 from swarmbots.learn.algos.sac import SAC, RecurrentSAC
 from swarmbots.learn.algos.td3 import DDPG, TD3, RecurrentTD3
 from swarmbots.learn.base_policy import BasePolicy
+from swarmbots.learn.benchmark_policy import BenchmarkPolicy
 from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_tensor_ops import build_obs_norm_tensor_operation
@@ -95,6 +97,62 @@ def _make_normalization_env(
     return TorchNormalizeRewardWrapper(env)
 
 
+def _make_nested_history_env(new_obs_first: bool) -> TorchTransitionObsWrapper:
+    def make_lane(episode_length: int, env_id: int) -> _ScriptedOffPolicyEnv:
+        lane = _ScriptedOffPolicyEnv(done_steps=(episode_length,), env_id=env_id, include_agent_mask=True)
+        lane.action_space.spaces["connectors"] = spaces.Box(-1.0, 1.0, (2, 1), dtype=np.float32)
+        return lane
+
+    env = SwarmBotsLearnEnvWrapper(SyncVectorEnv(
+        [lambda: make_lane(3, 0), lambda: make_lane(5, 1)], autoreset_mode=AutoresetMode.SAME_STEP,
+    ))
+    for key, indices, first in (
+        ("local_obs", [0, 2], new_obs_first),
+        ("global_obs", [0, 3], not new_obs_first),
+    ):
+        normalizer = TorchFeatureWiseObsNormWrapper(env, key, indices, [], compile_tensor_operations=False)
+        normalizer.normalize_output = False
+        normalizer.update_running_mean = False
+        normalizer.obs_rms.mean.copy_(torch.tensor([2.0, 4.0]))
+        normalizer.obs_rms.var.copy_(torch.tensor([9.0, 16.0]))
+        env = TorchTransitionObsWrapper(
+            normalizer, new_obs_first=first, compile_tensor_operations=False,
+        )
+    return env
+
+
+def _nested_history_reference_rollout(
+    env: TorchTransitionObsWrapper, steps: int,
+) -> list[tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], torch.Tensor]]:
+    observations, _ = env.reset(seed=71)
+    episode_starts = torch.ones(env.num_envs, dtype=torch.bool)
+    actions = torch.tensor([0.25, 1.0]).expand(env.num_envs, env.n_agents, 2)
+    reference = []
+    for _ in range(steps):
+        reference.append((
+            {key: value.clone() for key, value in observations.items()},
+            {key: torch.as_tensor(value).clone() for key, value in env.unwrapped._observations.items()},
+            episode_starts.clone(),
+        ))
+        observations, _, terminations, truncations, _ = env.step(actions)
+        episode_starts = terminations | truncations
+    return reference
+
+
+def _normalize_nested_history_reference(observations: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    expected = {}
+    # Local statistics predate both history levels; global statistics describe the inner history pair.
+    for key, indices, repetitions in (
+        ("local_obs", [0, 2, 5, 7, 10, 12, 15, 17], 4),
+        ("global_obs", [0, 3, 4, 7], 2),
+    ):
+        expected[key] = observations[key].clone()
+        mean = torch.tensor([2.0, 4.0]).repeat(repetitions)
+        variance = torch.tensor([9.0, 16.0]).repeat(repetitions)
+        expected[key][..., indices] = (observations[key][..., indices] - mean) / torch.sqrt(variance + 1e-6)
+    return expected
+
+
 def _make_algorithm(
     variant: str = "tmasac", *, device: str = "cpu", transition_observations: bool = False,
     compile_normalization: bool | None = False, use_nop: bool = True, independent_nop_sampling: bool = False,
@@ -123,7 +181,7 @@ def _make_algorithm(
     return algorithm_class(
         policy, env, buffer_capacity_per_env=64, learning_starts=32, batch_size=2,
         learning_rate_warmup_updates=learning_rate_warmup_updates,
-        rollout_steps_per_iteration=1, gradient_steps=1,
+        rollout_steps_per_iteration=1, replay_exposure=6.0 if recurrent else 2.0,
         replay_storage_device=device, train_device=device, rollout_device=device,
         replay_compile_tensor_operations=None if compile_policy else False,
         sac_compile_tensor_operations=None if compile_policy else False,
@@ -323,6 +381,73 @@ def test_transition_history_is_raw_and_both_observation_halves_use_current_stati
         algorithm.env.close()
 
 
+@pytest.mark.parametrize("new_obs_first", [False, True])
+def test_nested_history_normalization_survives_replay_wraparound_and_evaluation(new_obs_first: bool) -> None:
+    env = _make_nested_history_env(new_obs_first)
+    reference_env = _make_nested_history_env(new_obs_first)
+    evaluation_reference_env = _make_nested_history_env(new_obs_first)
+    policy = make_policy(env, "tmasac", model_scale=None, use_nop=False)
+    normalization = ReplayNormalization(env)
+    replay = OffPolicyReplayBuffer(
+        capacity_per_env=5, observation_space=env.observation_space, action_space=env.action_space,
+        train_device="cpu", compile_tensor_operations=False, normalization=normalization,
+    )
+    runner = FrozenEvaluationRunner(
+        make_env=lambda: _make_nested_history_env(new_obs_first), training_env=env, policy=policy,
+    )
+    actions = torch.tensor([0.25, 1.0]).expand(env.num_envs, env.n_agents, 2).clone()
+    observed = []
+
+    def capture(**kwargs: Any) -> tuple[torch.Tensor, None]:
+        observed.append({key: kwargs[key].clone() for key in ("local_obs", "global_obs")})
+        return actions.clone(), None
+
+    def assert_inputs_match(reference: list[dict[str, torch.Tensor]]) -> None:
+        assert len(observed) == len(reference)
+        for actual, expected in zip(observed, reference, strict=True):
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+    try:
+        training_reference = _nested_history_reference_rollout(reference_env, 9)
+        expected_training_inputs = [_normalize_nested_history_reference(raw) for raw, _, _ in training_reference]
+        with patch.object(policy, "act_with_temporal_state", side_effect=capture):
+            collect_off_policy_steps(env, replay, 18, policy=policy)
+        assert_inputs_match(expected_training_inputs)
+
+        raw_replay = replay.get_all()
+        retained = training_reference[-replay.capacity_per_env:]
+        for key in retained[0][0]:
+            expected_raw = torch.stack([raw[key] for raw, _, _ in retained], dim=1).flatten(0, 1)
+            torch.testing.assert_close(getattr(raw_replay, key), expected_raw, rtol=0, atol=0)
+        normalized_replay = normalization.snapshot(device=torch.device("cpu")).normalize_batch(raw_replay)
+        for key in ("local_obs", "global_obs"):
+            expected = torch.stack([
+                inputs[key] for inputs in expected_training_inputs[-replay.capacity_per_env:]
+            ], dim=1).flatten(0, 1)
+            torch.testing.assert_close(getattr(normalized_replay, key), expected, rtol=0, atol=0)
+
+        observed.clear()
+        adapter = BenchmarkPolicy(policy, env)
+        with patch.object(policy, "act_with_temporal_state", side_effect=capture):
+            for _, public_observations, episode_starts in training_reference:
+                adapter(public_observations, episode_starts)
+        assert_inputs_match(expected_training_inputs)
+
+        evaluation_reference = (
+            _nested_history_reference_rollout(evaluation_reference_env, 5)
+            + _nested_history_reference_rollout(evaluation_reference_env, 5)
+        )
+        observed.clear()
+        with patch.object(policy, "act_with_temporal_state", side_effect=capture):
+            runner.evaluate(timesteps=0, milestone_percentage=0)
+        assert_inputs_match([_normalize_nested_history_reference(raw) for raw, _, _ in evaluation_reference])
+    finally:
+        runner.close()
+        env.close()
+        reference_env.close()
+        evaluation_reference_env.close()
+
+
 def test_quaternion_canonicalization_does_not_modify_raw_inputs() -> None:
     source = make_quaternion_env()
     wrapper = TorchFeatureWiseObsNormWrapper(
@@ -460,7 +585,7 @@ def test_trainer_enables_replay_normalization_before_benchmark_evaluation(compil
         policy = torch.compile(original_policy, backend="eager") if compile_policy else original_policy
         assert not policy.uses_replay_normalization
         algorithm = SAC(
-            policy, env, buffer_capacity_per_env=16, batch_size=2, learning_starts=0,
+            policy, env, buffer_capacity_per_env=16, rollout_steps_per_iteration=2, batch_size=2, learning_starts=0,
             train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
             replay_compile_tensor_operations=False, sac_compile_tensor_operations=False,
             sac_compile_optimizer_steps=False,

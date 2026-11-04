@@ -362,8 +362,8 @@ def test_sac_selects_adam_for_actor_critic_and_temperature(device: str) -> None:
     try:
         def make_algorithm() -> SAC:
             return SAC(_make_sac_policy(env), env, train_device=device, buffer_capacity_per_env=16,
-                       batch_size=2, learning_starts=0, sac_compile_tensor_operations=False,
-                       sac_compile_optimizer_steps=False)
+                       batch_size=2, rollout_steps_per_iteration=2, learning_starts=0,
+                       sac_compile_tensor_operations=False, sac_compile_optimizer_steps=False)
 
         def optimizers(algorithm: SAC) -> tuple[torch.optim.Adam, ...]:
             assert algorithm.ent_coef_optimizer is not None
@@ -380,6 +380,7 @@ def test_sac_selects_adam_for_actor_critic_and_temperature(device: str) -> None:
         source, restored = make_algorithm(), make_algorithm()
         step(source)
         restored.policy.load_state_dict(source.policy.state_dict())
+        restored._apply_algorithm_state_dict(deepcopy(source._get_algorithm_state_dict()))
         state = deepcopy(source._get_optimizer_state_dict())
         for name in ("actor_optimizer", "critic_optimizer", "ent_coef_optimizer"):
             for group in state[name]["param_groups"]:

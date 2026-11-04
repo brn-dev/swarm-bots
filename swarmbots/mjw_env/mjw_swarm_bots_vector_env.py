@@ -875,6 +875,8 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         ignored_info_mask = unstable_mask if reset_only_mask is None else unstable_mask | reset_only_mask
         for value in infos.values():
             _mask_info_values(value, ignored_info_mask)
+        if "reward_terms" in infos:
+            infos["reward_terms"]["simulation_instability"] = rewards.masked_fill(~unstable_mask, 0.0)
 
         obs = self._build_obs()
         obs = self._apply_error_obs(obs, unstable_mask)

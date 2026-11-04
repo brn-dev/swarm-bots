@@ -7,7 +7,6 @@ from dataclasses import replace
 from typing import Any, Literal
 
 import torch
-from loguru import logger
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
@@ -212,48 +211,6 @@ def make_continuous_config(
             std_learnable=True,
         )
     raise ValueError(f"Unknown continuous action dist variant: {variant}")
-
-
-def _make_mat_parameter_lr_multipliers(
-    *,
-    policy_variant: PolicyVariant,
-    mat_decoder_lr_multiplier: float,
-    include_actor_head_lr_multiplier: bool = False,
-) -> dict[str, float]:
-    if mat_decoder_lr_multiplier == 1.0:
-        return {}
-
-    def make_prefix_multipliers(*prefixes: str, include_actor_head_input_norm: bool = False) -> dict[str, float]:
-        effective_prefixes = list(prefixes)
-        if include_actor_head_lr_multiplier:
-            if include_actor_head_input_norm:
-                effective_prefixes.append("actor_head_input_norm")
-            effective_prefixes.append("actor_head")
-        return {prefix: mat_decoder_lr_multiplier for prefix in effective_prefixes}
-
-    if policy_variant == "mat_orig":
-        return {
-            "decoder": mat_decoder_lr_multiplier,
-            "encoder_decoder_projection": mat_decoder_lr_multiplier,
-        }
-
-    if policy_variant in {"mat_qcx", "mat_qcx__lstm"}:
-        return make_prefix_multipliers(
-            "decoder",
-            "action_input_norm",
-            "action_encoder",
-            "action_token_norm",
-            "memory_input_norm",
-            "memory_encoder",
-            "memory_token_norm",
-            include_actor_head_input_norm=True,
-        )
-
-    if policy_variant in {"mat_dec", "mat_ind", "mat_ind__lstm"} and include_actor_head_lr_multiplier:
-        return make_prefix_multipliers()
-
-    logger.warning(f"Ignoring decoder LR multiplier for policy_variant={policy_variant!r}")
-    return {}
 
 
 def _make_sac_nop_config(

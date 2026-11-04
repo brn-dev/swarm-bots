@@ -54,7 +54,7 @@ class SAC(OffPolicyAlgorithm):
         batch_size: int = 256,
         rollout_steps_per_iteration: int | None = None,
         rollout_warmup_steps_per_env: int = 0,
-        gradient_steps: int = 1,
+        replay_exposure: float = 1.0,
         gamma: float = 0.99,
         tau: float = 0.005,
         ent_coef: float | str = "auto",
@@ -97,7 +97,7 @@ class SAC(OffPolicyAlgorithm):
             batch_size=batch_size,
             rollout_steps_per_iteration=rollout_steps_per_iteration,
             rollout_warmup_steps_per_env=rollout_warmup_steps_per_env,
-            gradient_steps=gradient_steps,
+            replay_exposure=replay_exposure,
             gamma=gamma,
             tau=tau,
             target_update_interval=target_update_interval,
@@ -125,7 +125,7 @@ class SAC(OffPolicyAlgorithm):
             **super().get_hyper_parameters(),
             "actor_action_samples": self.actor_action_samples,
             "target_action_samples": self.target_action_samples,
-            "ent_coef": self.ent_coef,
+            "ent_coef": self.ent_coef if self.log_ent_coef is None else f"auto_{self.log_ent_coef.detach().exp().item()}",
             "ent_coef_learning_rate": self.ent_coef_learning_rate,
             "resolved_ent_coef_learning_rate": self._resolved_ent_coef_learning_rate(),
             "target_entropy": self.target_entropy,
@@ -507,13 +507,51 @@ class SAC(OffPolicyAlgorithm):
         if optimizer_replaced:
             self._rebuild_optimizer_steps()
 
+    def _get_algorithm_state_dict(self) -> dict[str, Any]:
+        return {
+            **super()._get_algorithm_state_dict(),
+            "log_ent_coef": None if self.log_ent_coef is None else self.log_ent_coef.detach(),
+            "ent_coef_tensor": None if self.ent_coef_tensor is None else self.ent_coef_tensor.detach(),
+        }
+
+    def _validate_algorithm_state_dict(self, state_dict: dict[str, Any]) -> None:
+        super()._validate_algorithm_state_dict(state_dict)
+        log_ent_coef = state_dict["log_ent_coef"]
+        ent_coef_tensor = state_dict["ent_coef_tensor"]
+        if (log_ent_coef is None) == (ent_coef_tensor is None):
+            raise ValueError("SAC checkpoints require exactly one automatic or fixed entropy coefficient")
+        if log_ent_coef is not None:
+            coefficient = log_ent_coef.exp().item()
+            if not math.isfinite(coefficient) or coefficient <= 0:
+                raise ValueError("Saved automatic entropy coefficient must be finite and > 0")
+        else:
+            self._validate_fixed_entropy_coefficient(ent_coef_tensor.item())
+
+    def _apply_algorithm_state_dict(self, state_dict: dict[str, Any]) -> None:
+        super()._apply_algorithm_state_dict(state_dict)
+        self.log_ent_coef = None
+        self.ent_coef_optimizer = None
+        self.ent_coef_tensor = None
+        log_ent_coef = state_dict["log_ent_coef"]
+        ent_coef_tensor = state_dict["ent_coef_tensor"]
+        if log_ent_coef is not None:
+            self.log_ent_coef = log_ent_coef.to(self.train_device).detach().clone().requires_grad_(True)
+            self.ent_coef_optimizer = make_adam(
+                [self.log_ent_coef],
+                lr=self._resolved_ent_coef_learning_rate(),
+                device=self.train_device,
+            )
+            self.ent_coef = f"auto_{self.log_ent_coef.detach().exp().item()}"
+        if ent_coef_tensor is not None:
+            self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach().clone()
+            self.ent_coef = float(self.ent_coef_tensor.item())
+        self._rebuild_optimizer_steps()
+
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         return {
             "actor_optimizer": self.actor_optimizer.state_dict(),
             "critic_optimizer": self.critic_optimizer.state_dict(),
             "ent_coef_optimizer": None if self.ent_coef_optimizer is None else self.ent_coef_optimizer.state_dict(),
-            "log_ent_coef": None if self.log_ent_coef is None else self.log_ent_coef.detach(),
-            "ent_coef_tensor": None if self.ent_coef_tensor is None else self.ent_coef_tensor.detach(),
         }
 
     def _apply_optimizer_state_dict(
@@ -528,26 +566,9 @@ class SAC(OffPolicyAlgorithm):
             logger.warning(f"Loading SAC optimizer state with unexpected policy keys: {unexpected_keys}")
         self.actor_optimizer.load_state_dict(state_dict["actor_optimizer"])
         self.critic_optimizer.load_state_dict(state_dict["critic_optimizer"])
-        self.log_ent_coef = None
-        self.ent_coef_optimizer = None
-        self.ent_coef_tensor = None
-        log_ent_coef = state_dict["log_ent_coef"]
-        ent_coef_tensor = state_dict["ent_coef_tensor"]
-        if log_ent_coef is not None and ent_coef_tensor is not None:
-            raise ValueError("Invalid SAC optimizer state: both log_ent_coef and ent_coef_tensor are set.")
-        if log_ent_coef is not None:
-            self.log_ent_coef = log_ent_coef.to(self.train_device).detach().requires_grad_(True)
-            self.ent_coef_optimizer = make_adam(
-                [self.log_ent_coef],
-                lr=self._resolved_ent_coef_learning_rate(),
-                device=self.train_device,
-            )
+        if self.ent_coef_optimizer is not None:
             self.ent_coef_optimizer.load_state_dict(state_dict["ent_coef_optimizer"])
             self._apply_entropy_coefficient_learning_rate()
-            self.ent_coef = f"auto_{self.log_ent_coef.detach().exp().item()}"
-        if ent_coef_tensor is not None:
-            self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach()
-            self.ent_coef = float(self.ent_coef_tensor.item())
         self._move_optimizer_state_to_device(self.actor_optimizer, self.train_device)
         self._move_optimizer_state_to_device(self.critic_optimizer, self.train_device)
         if self.ent_coef_optimizer is not None:

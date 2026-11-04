@@ -13,6 +13,7 @@ from torch import nn
 from swarmbots.benchmark.registry import get_benchmark_spec, make_env
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
 from swarmbots.learn.algos.off_policy.recurrent import validate_recurrent_episode_length
+from swarmbots.learn.algos.off_policy.replay_exposure import resolve_replay_updates
 from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, StepsRolloutMode
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
@@ -51,6 +52,7 @@ from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 
 
 TrainingAlgorithm = TypeVar("TrainingAlgorithm", bound=BaseAlgorithm)
+DEFAULT_GAMMA = 0.995
 
 
 def list_variants(*, include_hidden: bool = False) -> tuple[str, ...]:
@@ -153,7 +155,7 @@ def _make_policy_env(
     scenario_kwargs: Mapping[str, object] | None,
     env_kwargs: Mapping[str, Any] | None,
     policy_options: Mapping[str, Any],
-    gamma: float = 0.99,
+    gamma: float = DEFAULT_GAMMA,
     compile_modules: bool = False,
 ) -> tuple[BaseLearnEnvWrapper, BasePolicy]:
     policy_options = dict(policy_options)
@@ -249,7 +251,9 @@ def make_training(
     Off-policy default batches target 1,024 learning positions independently of
     rollout size. Recurrent batches round up to whole learning sequences;
     an explicit ``batch_size`` counts sequences for recurrent learners and
-    transitions for feed-forward learners.
+    transitions for feed-forward learners. ``algorithm_kwargs["replay_exposure"]``
+    sets scored replay uses per new transition (default 8). The resulting updates
+    per collection cycle must be a positive integer. Registered presets use gamma=0.995.
     """
     policy_options, algorithm_options = _variant_options(variant, model_scale=model_scale)
     policy_options.update(policy_kwargs or {})
@@ -270,18 +274,38 @@ def make_training(
     ):
         raise ValueError("use_popart must agree in policy_kwargs and algorithm_kwargs")
     use_popart = policy_options.setdefault("use_popart", algorithm_options.pop("use_popart", not is_off_policy))
-    gamma = algorithm_options.get("gamma", 0.99)
+    gamma = algorithm_options.get("gamma", DEFAULT_GAMMA)
     if rollout_steps_per_env is None:
         rollout_steps_per_env = 1 if is_off_policy else 4
     if rollout_steps_per_env <= 0:
         raise ValueError("rollout_steps_per_env must be positive")
     episode_limit = get_benchmark_spec(benchmark_id).episode_length if episode_length is None else int(episode_length)
     recurrent_off_policy = is_off_policy and (
-        policy_variant == "tmasac__recurrent" or policy_options.get("td3_recurrent_actor", False)
+        policy_variant in {"tmasac__recurrent", "tmasac__segment"} or policy_options.get("td3_recurrent_actor", False)
     )
-    if recurrent_off_policy:
-        learning_steps = int(algorithm_options.get("learning_steps", make_recurrent_replay_options()["learning_steps"]))
-        validate_recurrent_episode_length(episode_limit, learning_steps)
+    rollout_samples = num_envs * rollout_steps_per_env
+    if is_off_policy:
+        off_policy_options = make_off_policy_algorithm_options()
+        if is_sac:
+            off_policy_options.update(make_sac_algorithm_options())
+        if recurrent_off_policy:
+            off_policy_options.update(make_recurrent_replay_options())
+        off_policy_options.update(algorithm_options)
+        learning_steps = int(off_policy_options["learning_steps"]) if recurrent_off_policy else 1
+        if learning_steps <= 0:
+            raise ValueError(f"learning_steps must be > 0, got {learning_steps}")
+        if recurrent_off_policy:
+            validate_recurrent_episode_length(episode_limit, learning_steps)
+        if recurrent_off_policy and "batch_size" not in algorithm_options:
+            off_policy_options["batch_size"] = max(1, math.ceil(off_policy_options["batch_size"] / learning_steps))
+        learning_positions = int(off_policy_options["batch_size"]) * learning_steps
+        collection_steps = off_policy_options.setdefault("rollout_steps_per_iteration", rollout_samples)
+        if collection_steps is None:
+            collection_steps = num_envs
+        resolve_replay_updates(
+            replay_exposure=float(off_policy_options["replay_exposure"]), rollout_steps=int(collection_steps),
+            learning_positions_per_batch=learning_positions,
+        )
     training_metadata = serialize_value({
         "benchmark_id": benchmark_id,
         "learning_variant": variant,
@@ -336,31 +360,18 @@ def make_training(
             "max_grad_norm": 2.0,
             "gsde_reset_mode": GSDEProbabilityResetMode(probability=1 / 6),
         }
-        rollout_samples = num_envs * rollout_steps_per_env
         if is_off_policy:
             recurrent = policy.requires_recurrent_training()
             algorithm_class = RecurrentSAC if recurrent else SAC
             if is_deterministic:
                 algorithm_class = DDPG if policy_variant.startswith("maddpg") else RecurrentTD3 if recurrent else TD3
             algorithm_config = {
-                **make_off_policy_algorithm_options(),
                 "buffer_capacity_per_env": vector_env.episode_length * 2,
                 "learning_starts": max(10_000, rollout_samples * 4),
-                "rollout_steps_per_iteration": rollout_samples,
                 "replay_storage_device": device,
+                **shared_options,
+                **off_policy_options,
             }
-            if is_sac:
-                algorithm_config.update(make_sac_algorithm_options())
-            if recurrent:
-                algorithm_config.update(make_recurrent_replay_options())
-            algorithm_config.update(shared_options)
-            algorithm_config.update(algorithm_options)
-            if recurrent and "batch_size" not in algorithm_options:
-                learning_steps = int(algorithm_config.get("learning_steps", 64))
-                if learning_steps <= 0:
-                    raise ValueError(f"learning_steps must be > 0, got {learning_steps}")
-                # Recurrent batches count whole sequences rather than transitions.
-                algorithm_config["batch_size"] = max(1, math.ceil(algorithm_config["batch_size"] / learning_steps))
             if "buffer_capacity_per_env" not in (algorithm_kwargs or {}):
                 learning_positions = algorithm_config["batch_size"]
                 if recurrent:

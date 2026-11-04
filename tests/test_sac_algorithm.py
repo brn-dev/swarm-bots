@@ -130,36 +130,188 @@ def _make_policy(
 @pytest.mark.parametrize("saved_coefficient,initial_coefficient", [
     ("auto_0.1", 0.2), (0.3, "auto_0.2"), (0.3, 0.7), ("auto_0.1", "auto_0.8"),
 ])
+@pytest.mark.parametrize("save_optimizer", [False, True])
+@pytest.mark.parametrize("restore_optimizer", [False, True])
 def test_restored_entropy_metadata_reconstructs_the_running_coefficient(
     tmp_path: Path, saved_coefficient: float | str, initial_coefficient: float | str,
+    save_optimizer: bool, restore_optimizer: bool,
 ) -> None:
     env = _make_env()
     try:
         options = dict(
-            env=env, buffer_capacity_per_env=4, batch_size=2, learning_starts=0,
+            env=env, buffer_capacity_per_env=4, rollout_steps_per_iteration=2, batch_size=2, learning_starts=0,
             train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
         )
         source = SAC(policy=_make_policy(env), ent_coef=saved_coefficient, **options)
         if source.log_ent_coef is not None:
+            source._update_entropy_coefficient(
+                log_prob_mean=torch.tensor([-1.0, -2.0]), batch=_make_bootstrap_batch(env),
+            )
             with torch.no_grad():
                 source.log_ent_coef.fill_(math.log(0.17))
         checkpoint_path = tmp_path / "source.pt"
-        source.save(checkpoint_path, optimizer_state_dict=source._get_optimizer_state_dict())
+        source.save(
+            checkpoint_path, optimizer_state_dict=source._get_optimizer_state_dict() if save_optimizer else None,
+        )
         restored = SAC(policy=_make_policy(env), ent_coef=initial_coefficient, **options)
-        restored.load(checkpoint_path)
+        restored.load(checkpoint_path, restore_optimizer_state=restore_optimizer)
         metadata_coefficient = restored.get_hyper_parameters()["ent_coef"]
         reconstructed = SAC(policy=_make_policy(env), ent_coef=metadata_coefficient, **options)
         automatic = isinstance(saved_coefficient, str)
         assert (restored.ent_coef_optimizer is not None) == automatic
         assert (reconstructed.ent_coef_optimizer is not None) == automatic
         actual = restored.log_ent_coef.detach().exp() if automatic else restored.ent_coef_tensor
+        torch.testing.assert_close(actual, torch.tensor(0.17 if automatic else saved_coefficient))
+        if automatic:
+            assert bool(restored.ent_coef_optimizer.state) == (save_optimizer and restore_optimizer)
         expected = reconstructed.log_ent_coef.detach().exp() if automatic else reconstructed.ent_coef_tensor
         torch.testing.assert_close(actual, expected)
         restored.save(tmp_path / "restored.pt", optimizer_state_dict=restored._get_optimizer_state_dict())
         saved_metadata = torch.load(tmp_path / "restored.pt", weights_only=False)["hyper_parameters"]
         assert saved_metadata["ent_coef"] == metadata_coefficient
+        coefficient_before_update = actual.clone()
+        if automatic:
+            assert restored.ent_coef_optimizer.param_groups[0]["params"][0] is restored.log_ent_coef
+        _, entropy_loss = restored._update_entropy_coefficient(
+            log_prob_mean=torch.tensor([-1.0, -2.0]), batch=_make_bootstrap_batch(env),
+        )
+        if automatic:
+            assert entropy_loss is not None
+            assert not torch.equal(restored.log_ent_coef.detach().exp(), coefficient_before_update)
+        else:
+            assert entropy_loss is None
+            torch.testing.assert_close(restored.ent_coef_tensor, coefficient_before_update)
     finally:
         env.close()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("source_device,target_device", [("cpu", "cuda"), ("cuda", "cpu")])
+def test_entropy_temperature_moves_with_checkpoints_without_optimizer_state(
+    tmp_path: Path, source_device: str, target_device: str,
+) -> None:
+    env = _make_env()
+    try:
+        options = dict(
+            env=env, rollout_steps_per_iteration=2, batch_size=2, buffer_capacity_per_env=4, learning_starts=0,
+            rollout_device="cpu", replay_storage_device="cpu", sac_compile_tensor_operations=False,
+            sac_compile_optimizer_steps=False,
+        )
+        source = SAC(policy=_make_policy(env), train_device=source_device, ent_coef="auto_0.1", **options)
+        with torch.no_grad():
+            source.log_ent_coef.fill_(math.log(0.17))
+        path = tmp_path / "temperature.pt"
+        source.save(path)
+        restored = SAC(policy=_make_policy(env), train_device=target_device, ent_coef=0.3, **options)
+        restored.load(path)
+        torch.testing.assert_close(restored.log_ent_coef.detach().cpu(), source.log_ent_coef.detach().cpu())
+        assert restored.log_ent_coef.device.type == target_device
+        assert restored.ent_coef_optimizer.param_groups[0]["params"][0] is restored.log_ent_coef
+        before = restored.log_ent_coef.detach().clone()
+        restored._update_entropy_coefficient(
+            log_prob_mean=torch.tensor([-1.0, -2.0], device=target_device), batch=_make_bootstrap_batch(env),
+        )
+        assert not torch.equal(before, restored.log_ent_coef)
+    finally:
+        env.close()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("save_optimizer,restore_optimizer", [(False, True), (True, False), (True, True)])
+def test_warmed_compiled_sac_continues_after_public_checkpoint_load(
+    tmp_path: Path, save_optimizer: bool, restore_optimizer: bool,
+) -> None:
+    torch.compiler.reset()
+    env = _make_env()
+    try:
+        def make_algorithm(*, device: str, compile_operations: bool) -> SAC:
+            return SAC(
+                policy=_ConstantTargetSACPolicy(
+                    n_agents=env.n_agents,
+                    action_dim=env.action_space.total_agent_action_dim,
+                    target_q_value=1.5,
+                    log_prob_per_agent=-0.4,
+                ),
+                env=env,
+                learning_rate=1e-3,
+                learning_rate_warmup_updates=0,
+                buffer_capacity_per_env=8,
+                learning_starts=0,
+                rollout_steps_per_iteration=2,
+                batch_size=2,
+                ent_coef="auto_0.17",
+                max_grad_norm=None,
+                train_device=device,
+                rollout_device="cpu",
+                replay_storage_device="cpu",
+                sac_compile_tensor_operations=compile_operations,
+                sac_compile_optimizer_steps=compile_operations,
+                sac_compile_mode="reduce-overhead",
+            )
+
+        compiled = make_algorithm(device="cuda", compile_operations=True)
+        eager = make_algorithm(device="cpu", compile_operations=False)
+        eager_batch = _make_bootstrap_batch(env)
+        compiled_batch = _move_replay_batch(eager_batch, "cuda")
+
+        def assert_matching_update(update_index: int) -> None:
+            actor_before = compiled.policy.actor_scale.detach().clone()
+            critic_before = compiled.policy.critic_bias.detach().clone()
+            actual = compiled._train_step(compiled_batch, global_update_idx=update_index)
+            expected = eager._train_step(eager_batch, global_update_idx=update_index)
+            assert actual[0] == pytest.approx(expected[0], rel=1e-5, abs=1e-6)
+            assert actual[1:] == pytest.approx(expected[1:], rel=1e-5, abs=1e-6)
+            torch.testing.assert_close(compiled.log_ent_coef.detach().cpu(), eager.log_ent_coef.detach())
+            for actual_parameter, expected_parameter in zip(
+                compiled.policy.parameters(), eager.policy.parameters(), strict=True,
+            ):
+                torch.testing.assert_close(actual_parameter.detach().cpu(), expected_parameter.detach())
+            assert not torch.equal(compiled.policy.actor_scale, actor_before)
+            assert not torch.equal(compiled.policy.critic_bias, critic_before)
+
+        for update_index in range(3):
+            assert_matching_update(update_index)
+        saved_temperature = compiled.log_ent_coef.detach().clone()
+        checkpoint_path = tmp_path / "warmed-sac.pt"
+        compiled.save(
+            checkpoint_path,
+            optimizer_state_dict=compiled._get_optimizer_state_dict() if save_optimizer else None,
+        )
+        saved_optimizer_state = (
+            torch.load(checkpoint_path, map_location="cpu", weights_only=False)["optimizer_state_dict"]
+            if save_optimizer else None
+        )
+        if save_optimizer:
+            assert all(
+                saved_optimizer_state[name]["state"]
+                for name in ("actor_optimizer", "critic_optimizer", "ent_coef_optimizer")
+            )
+        # Warm both trainers so skipped restoration leaves comparable actor/critic moments.
+        for update_index in range(3, 6):
+            assert_matching_update(update_index)
+        old_temperature = compiled.log_ent_coef
+        old_temperature_value = old_temperature.detach().clone()
+        for algorithm in (compiled, eager):
+            algorithm.load(checkpoint_path, restore_optimizer_state=restore_optimizer, restore_env_state=False)
+            assert algorithm.ent_coef_optimizer.param_groups[0]["params"][0] is algorithm.log_ent_coef
+            assert bool(algorithm.ent_coef_optimizer.state) == (save_optimizer and restore_optimizer)
+            if save_optimizer and restore_optimizer:
+                for name in ("actor_optimizer", "critic_optimizer", "ent_coef_optimizer"):
+                    torch.testing.assert_close(
+                        getattr(algorithm, name).state_dict()["state"], saved_optimizer_state[name]["state"],
+                        rtol=0, atol=0, check_device=False,
+                    )
+        torch.testing.assert_close(compiled.log_ent_coef, saved_temperature)
+
+        for update_index in range(3, 6):
+            assert_matching_update(update_index)
+        assert not torch.equal(compiled.log_ent_coef, saved_temperature)
+        torch.testing.assert_close(old_temperature, old_temperature_value)
+    finally:
+        env.close()
+        torch.compiler.reset()
 
 
 def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:
@@ -556,6 +708,7 @@ class SACTests(unittest.TestCase):
                 "learning_rate_warmup_updates": 0,
                 "buffer_capacity_per_env": 8,
                 "learning_starts": 0,
+                "rollout_steps_per_iteration": 2,
                 "batch_size": 2,
                 "ent_coef": 0.2,
                 "max_grad_norm": None,
@@ -626,6 +779,7 @@ class SACTests(unittest.TestCase):
                 "learning_rate_warmup_updates": 0,
                 "buffer_capacity_per_env": 8,
                 "learning_starts": 0,
+                "rollout_steps_per_iteration": 2,
                 "batch_size": 2,
                 "ent_coef": 0.2,
                 "max_grad_norm": None,
@@ -703,6 +857,7 @@ class SACTests(unittest.TestCase):
                     learning_rate=1e-3,
                     buffer_capacity_per_env=8,
                     learning_starts=0,
+                    rollout_steps_per_iteration=2,
                     batch_size=2,
                     train_device="cpu",
                     rollout_device="cpu",
@@ -789,6 +944,7 @@ class SACTests(unittest.TestCase):
                     learning_rate=1e-3,
                     buffer_capacity_per_env=8,
                     learning_starts=0,
+                    rollout_steps_per_iteration=2,
                     batch_size=2,
                     train_device="cpu",
                     rollout_device="cpu",
@@ -811,6 +967,7 @@ class SACTests(unittest.TestCase):
                 learning_rate=1e-3,
                 buffer_capacity_per_env=4,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 ent_coef="auto_0.1",
                 train_device="cuda",
@@ -841,6 +998,7 @@ class SACTests(unittest.TestCase):
                 learning_rate_warmup_updates=2,
                 buffer_capacity_per_env=8,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 train_device="cpu",
                 rollout_device="cpu",
@@ -879,6 +1037,7 @@ class SACTests(unittest.TestCase):
                 learning_rate=1e-3,
                 buffer_capacity_per_env=8,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 train_device="cpu",
                 rollout_device="cpu",
@@ -910,6 +1069,7 @@ class SACTests(unittest.TestCase):
                     learning_rate=1e-3,
                     buffer_capacity_per_env=8,
                     learning_starts=0,
+                    rollout_steps_per_iteration=2,
                     batch_size=2,
                     train_device="cpu",
                     rollout_device="cpu",
@@ -933,6 +1093,7 @@ class SACTests(unittest.TestCase):
                     learning_rate=1e-3,
                     buffer_capacity_per_env=8,
                     learning_starts=0,
+                    rollout_steps_per_iteration=2,
                     batch_size=2,
                     train_device="cpu",
                     rollout_device="cpu",
@@ -958,7 +1119,7 @@ class SACTests(unittest.TestCase):
                 learning_starts=0,
                 batch_size=2,
                 rollout_steps_per_iteration=2,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1019,7 +1180,7 @@ class SACTests(unittest.TestCase):
                 learning_starts=0,
                 batch_size=1,
                 rollout_steps_per_iteration=1,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 tau=0.25,
                 target_update_interval=2,
                 train_device="cpu",
@@ -1055,7 +1216,7 @@ class SACTests(unittest.TestCase):
                 learning_starts=100,
                 batch_size=2,
                 rollout_steps_per_iteration=2,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1092,7 +1253,7 @@ class SACTests(unittest.TestCase):
                 batch_size=2,
                 rollout_steps_per_iteration=2,
                 rollout_warmup_steps_per_env=3,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1135,7 +1296,7 @@ class SACTests(unittest.TestCase):
                 batch_size=2,
                 rollout_steps_per_iteration=2,
                 rollout_warmup_steps_per_env=3,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1150,7 +1311,7 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_gradient_steps_minus_one_uses_collected_transition_count(self) -> None:
+    def test_replay_exposure_controls_scored_uses_per_collected_transition(self) -> None:
         env = _make_env()
         try:
             policy = _make_policy(env)
@@ -1162,7 +1323,7 @@ class SACTests(unittest.TestCase):
                 learning_starts=0,
                 batch_size=2,
                 rollout_steps_per_iteration=2,
-                gradient_steps=-1,
+                replay_exposure=2.0,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1190,7 +1351,7 @@ class SACTests(unittest.TestCase):
                 "learning_starts": 4,
                 "batch_size": 2,
                 "rollout_steps_per_iteration": 2,
-                "gradient_steps": 1,
+                "replay_exposure": 1.0,
                 "train_device": "cpu",
                 "rollout_device": "cpu",
                 "replay_storage_device": "cpu",
@@ -1247,6 +1408,7 @@ class SACTests(unittest.TestCase):
                 learning_rate_warmup_start_factor=0.25,
                 buffer_capacity_per_env=4,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 ent_coef="auto_0.1",
                 ent_coef_learning_rate=3e-3,
@@ -1294,6 +1456,7 @@ class SACTests(unittest.TestCase):
                 "learning_rate_warmup_updates": 0,
                 "buffer_capacity_per_env": 4,
                 "learning_starts": 0,
+                "rollout_steps_per_iteration": 2,
                 "batch_size": 2,
                 "ent_coef": "auto_0.1",
                 "train_device": "cpu",
@@ -1342,6 +1505,7 @@ class SACTests(unittest.TestCase):
                 "learning_rate_warmup_updates": 0,
                 "buffer_capacity_per_env": 4,
                 "learning_starts": 0,
+                "rollout_steps_per_iteration": 2,
                 "batch_size": 2,
                 "train_device": "cpu",
                 "rollout_device": "cpu",
@@ -1359,6 +1523,7 @@ class SACTests(unittest.TestCase):
                 ent_coef="auto_0.2",
                 **common_kwargs,
             )
+            restored._apply_algorithm_state_dict(source._get_algorithm_state_dict())
             restored._apply_optimizer_state_dict(
                 source._get_optimizer_state_dict(),
                 missing_keys=[],
@@ -1384,6 +1549,7 @@ class SACTests(unittest.TestCase):
                 "learning_rate_warmup_updates": 0,
                 "buffer_capacity_per_env": 4,
                 "learning_starts": 0,
+                "rollout_steps_per_iteration": 2,
                 "batch_size": 2,
                 "train_device": "cpu",
                 "rollout_device": "cpu",
@@ -1401,6 +1567,7 @@ class SACTests(unittest.TestCase):
                 ent_coef=0.2,
                 **common_kwargs,
             )
+            restored._apply_algorithm_state_dict(source._get_algorithm_state_dict())
             restored._apply_optimizer_state_dict(
                 source._get_optimizer_state_dict(),
                 missing_keys=[],
@@ -1423,6 +1590,7 @@ class SACTests(unittest.TestCase):
         try:
             algorithm = SAC(
                 policy=_make_policy(env), env=env, buffer_capacity_per_env=4, learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2, train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
             )
             state = algorithm._get_optimizer_state_dict()
@@ -1447,6 +1615,7 @@ class SACTests(unittest.TestCase):
                 learning_rate_warmup_updates=0,
                 buffer_capacity_per_env=4,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 ent_coef="auto_0.1",
                 train_device="cpu",
@@ -1479,7 +1648,7 @@ class SACTests(unittest.TestCase):
                         learning_starts=0,
                         batch_size=2,
                         rollout_steps_per_iteration=2,
-                        gradient_steps=1,
+                        replay_exposure=1.0,
                         train_device="cpu",
                         rollout_device="cpu",
                         replay_storage_device="cpu",
@@ -1526,7 +1695,7 @@ class SACTests(unittest.TestCase):
                             learning_starts=0,
                             batch_size=2,
                             rollout_steps_per_iteration=2,
-                            gradient_steps=1,
+                            replay_exposure=1.0,
                             train_device="cpu",
                             rollout_device="cpu",
                             replay_storage_device="cpu",
@@ -1558,7 +1727,7 @@ class SACTests(unittest.TestCase):
                     learning_starts=0,
                     batch_size=2,
                     rollout_steps_per_iteration=2,
-                    gradient_steps=1,
+                    replay_exposure=1.0,
                     train_device="cpu",
                     rollout_device="cpu",
                     replay_storage_device="cpu",
@@ -1572,7 +1741,7 @@ class SACTests(unittest.TestCase):
                 learning_starts=0,
                 batch_size=2,
                 rollout_steps_per_iteration=2,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 gsde_reset_mode=GSDEIntervalResetMode(interval=1),
                 train_device="cpu",
                 rollout_device="cpu",
@@ -1604,7 +1773,7 @@ class SACTests(unittest.TestCase):
                 learning_starts=0,
                 batch_size=1,
                 rollout_steps_per_iteration=1,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 gsde_reset_mode=GSDEIntervalResetMode(interval=10),
                 train_device="cpu",
                 rollout_device="cpu",
@@ -1691,7 +1860,7 @@ class SACTests(unittest.TestCase):
                 learning_starts=0,
                 batch_size=2,
                 rollout_steps_per_iteration=2,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1735,6 +1904,7 @@ class SACTests(unittest.TestCase):
                     policy=policy,
                     env=env,
                     learning_rate=1e-3,
+                    rollout_steps_per_iteration=2,
                     batch_size=2,
                     nop_batch_size=3,
                     train_device="cpu",
@@ -1788,7 +1958,7 @@ class SACTests(unittest.TestCase):
                 batch_size=2,
                 independent_nop_sampling=True,
                 rollout_steps_per_iteration=4,
-                gradient_steps=1,
+                replay_exposure=0.5,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1855,7 +2025,7 @@ class SACTests(unittest.TestCase):
                 batch_size=2,
                 independent_nop_sampling=True,
                 rollout_steps_per_iteration=2,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1905,7 +2075,7 @@ class SACTests(unittest.TestCase):
                 batch_size=2,
                 independent_nop_sampling=True,
                 rollout_steps_per_iteration=2,
-                gradient_steps=1,
+                replay_exposure=1.0,
                 train_device="cpu",
                 rollout_device="cpu",
                 replay_storage_device="cpu",
@@ -1942,6 +2112,7 @@ class SACTests(unittest.TestCase):
                 learning_rate=1e-3,
                 buffer_capacity_per_env=4,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 gamma=0.5,
                 ent_coef=0.0,
@@ -1973,6 +2144,7 @@ class SACTests(unittest.TestCase):
                 learning_rate=1e-3,
                 buffer_capacity_per_env=4,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 max_grad_norm=None,
                 train_device="cpu",
@@ -2020,6 +2192,7 @@ class SACTests(unittest.TestCase):
                 learning_rate=1e-3,
                 buffer_capacity_per_env=4,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 gamma=0.5,
                 ent_coef=0.25,
@@ -2055,6 +2228,7 @@ class SACTests(unittest.TestCase):
                 learning_rate=1e-3,
                 buffer_capacity_per_env=4,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 ent_coef="auto*0.1",
                 target_entropy="auto*0.25",
@@ -2145,6 +2319,7 @@ class SACTests(unittest.TestCase):
                         learning_rate=1e-3,
                         buffer_capacity_per_env=4,
                         learning_starts=0,
+                        rollout_steps_per_iteration=2,
                         batch_size=2,
                         ent_coef="auto*0.1",
                         target_entropy="auto*0.25",
@@ -2183,6 +2358,7 @@ class SACTests(unittest.TestCase):
                 learning_rate=1e-3,
                 buffer_capacity_per_env=4,
                 learning_starts=0,
+                rollout_steps_per_iteration=2,
                 batch_size=2,
                 gamma=0.5,
                 ent_coef=0.0,

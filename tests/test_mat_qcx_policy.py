@@ -10,6 +10,12 @@ import torch
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.beta_action_dist import BetaConfig
+from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
+    GumbelSoftmaxSignMagnitudeBetaConfig,
+)
+from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
+from swarmbots.learn.action_dists.predicted_std_gaussian_action_dist import PredictedStdGaussianConfig
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.mat_qcx.mat_qcx_decoder import MATQCXDecoderConfig
@@ -47,6 +53,8 @@ def _make_policy(
         assume_agent_mask_is_active_prefix: bool = False,
         add_agent_embeddings: bool = False,
         compile_modules: bool = False,
+        decoder_num_layers: int = 1,
+        continuous_config: ContinuousActionDistConfig | None = None,
 ) -> MATQCXPolicy:
     return MATQCXPolicy(
         env=_DummyMATQCXEnv(),
@@ -60,7 +68,7 @@ def _make_policy(
             decoder_config=MATQCXDecoderConfig(
                 d_model=16,
                 nhead=4,
-                num_layers=1,
+                num_layers=decoder_num_layers,
                 dim_feedforward=32,
                 context_encoder_hidden_dims=[16],
                 action_encoder_dims=[16, 16],
@@ -68,7 +76,7 @@ def _make_policy(
                 add_agent_embeddings=add_agent_embeddings,
                 assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
             ),
-            continuous_config=SignMagnitudeBetaConfig(),
+            continuous_config=SignMagnitudeBetaConfig() if continuous_config is None else continuous_config,
             bernoulli_config=BernoulliConfig(initial_prob=0.5),
             max_agents=8,
             compile_modules=compile_modules,
@@ -132,9 +140,17 @@ def _evaluate_log_probs_and_values(
     return log_probs, values
 
 
-def test_qcx_policy_forward_and_evaluate_actions_handle_arbitrary_masks() -> None:
+@pytest.mark.parametrize("continuous_config", [
+    pytest.param(SignMagnitudeBetaConfig(), id="sign-magnitude-beta"),
+    pytest.param(BetaConfig(), id="beta"),
+    pytest.param(GumbelSoftmaxSignMagnitudeBetaConfig(), id="gumbel-sign-magnitude-beta"),
+    pytest.param(PredictedStdGaussianConfig(base_std=0.5), id="gaussian"),
+])
+def test_qcx_policy_forward_and_evaluate_actions_handle_arbitrary_masks(
+    continuous_config: ContinuousActionDistConfig,
+) -> None:
     torch.manual_seed(0)
-    policy = _make_policy()
+    policy = _make_policy(decoder_num_layers=3, continuous_config=continuous_config)
 
     batch_size = 4
     action_dim = _DummyMATQCXEnv.action_space.total_agent_action_dim

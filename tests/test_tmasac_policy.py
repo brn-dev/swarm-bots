@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Any
 from unittest.mock import Mock, patch
 
+import pytest
 import torch
 from gymnasium import spaces
 
@@ -215,9 +216,16 @@ def _make_segment_batch(batch_size: int = 3, num_next_steps: int = 4) -> OffPoli
     )
 
 
-def test_qcx_cached_sampling_preserves_pathwise_actor_gradients() -> None:
+@pytest.mark.parametrize("continuous_config", [
+    pytest.param(BetaConfig(), id="beta"),
+    pytest.param(GumbelSoftmaxSignMagnitudeBetaConfig(), id="gumbel-sign-magnitude-beta"),
+    pytest.param(PredictedStdGaussianConfig(base_std=0.5), id="gaussian"),
+])
+def test_qcx_cached_sampling_preserves_pathwise_actor_gradients(
+    continuous_config: ContinuousActionDistConfig,
+) -> None:
     torch.manual_seed(516)
-    config = _make_config(actor_head_kind=TMASACActorHeadKind.QCX)
+    config = _make_config(actor_head_kind=TMASACActorHeadKind.QCX, continuous_config=continuous_config)
     config = replace(config, actor_head_config=replace(
         config.actor_head_config,
         qcx_decoder_config=replace(config.actor_head_config.qcx_decoder_config, num_layers=3),
@@ -238,6 +246,14 @@ def test_qcx_cached_sampling_preserves_pathwise_actor_gradients() -> None:
     outputs = policy.action_log_prob(**kwargs)
     for actual, previous in zip(outputs, expected):
         torch.testing.assert_close(actual, previous, atol=2e-5, rtol=1e-5)
+    with torch.no_grad():
+        actor_latents = policy.encode_actor(
+            local_obs=batch.local_obs, global_obs=batch.global_obs, agent_mask=mask,
+        )
+        parallel_latents = policy.actor_head(actor_latents, outputs[0], agent_mask=mask)
+        policy.action_dist.update_latent_features(parallel_latents)
+        reevaluated_log_probs = policy.action_dist.log_prob(outputs[0])
+    torch.testing.assert_close(reevaluated_log_probs[mask], outputs[1][mask], atol=2e-5, rtol=1e-5)
     (outputs[0].square().sum() + 0.1 * outputs[1].sum()).backward()
     (expected[0].square().sum() + 0.1 * expected[1].sum()).backward()
     torch.testing.assert_close(
@@ -245,6 +261,9 @@ def test_qcx_cached_sampling_preserves_pathwise_actor_gradients() -> None:
         {name: parameter.grad for name, parameter in reference.named_parameters()},
         atol=5e-5, rtol=1e-4,
     )
+    for name, parameter in policy.named_parameters():
+        if parameter.grad is not None:
+            assert torch.isfinite(parameter.grad).all(), name
 
 
 def _supported_differentiable_configs() -> list[ContinuousActionDistConfig]:

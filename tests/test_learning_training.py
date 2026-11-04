@@ -32,6 +32,7 @@ from swarmbots.learn.algos.td3 import TD3
 from swarmbots.learn.algos.sac.tmasac_policy import TMASACPolicy
 from swarmbots.learn.checkpointing import capture_env_state
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
+from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.nn_components.feed_forward import MLP, MLPConfig
 from swarmbots.learn.presets.policy_factory import _is_off_policy_variant, _make_base_policy
@@ -119,6 +120,30 @@ def test_on_policy_presets_share_component_learning_rates_unless_explicitly_over
     assert config["parameter_lr_multipliers"] == (multipliers or {})
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["ppo", "mat_qcx", "mat_ind__lstm"])
+@pytest.mark.parametrize("gamma", [None, 0.97])
+def test_on_policy_reward_normalization_uses_learner_discount(variant: str, gamma: float | None) -> None:
+    options: dict[str, Any] = {"use_popart": False}
+    if gamma is not None:
+        options["gamma"] = gamma
+    algorithm = make_training(
+        "SwarmBots-WallEasy-v0", variant, **_training_kwargs(), use_nop=False, algorithm_kwargs=options,
+    )
+    try:
+        expected_gamma = 0.995 if gamma is None else gamma
+        assert algorithm.gamma == expected_gamma
+        wrapper = algorithm.env
+        reward_gammas = []
+        while hasattr(wrapper, "env"):
+            if isinstance(wrapper, TorchNormalizeRewardWrapper):
+                reward_gammas.append(wrapper.gamma)
+            wrapper = wrapper.env
+        assert reward_gammas == [expected_gamma]
+    finally:
+        algorithm.env.close()
+
+
 @pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
 def test_off_policy_presets_share_common_training_defaults(
     capture_training_configuration: None, variant: str,
@@ -126,12 +151,12 @@ def test_off_policy_presets_share_common_training_defaults(
     config = make_training("SwarmBots-WallEasy-v0", variant, num_envs=256)
     assert {key: config[key] for key in (
         "learning_rate", "learning_rate_warmup_updates", "learning_rate_warmup_start_factor",
-        "buffer_capacity_per_env", "learning_starts", "rollout_steps_per_iteration", "gradient_steps",
+        "buffer_capacity_per_env", "learning_starts", "rollout_steps_per_iteration", "replay_exposure",
         "gamma", "tau", "max_grad_norm",
     )} == {
         "learning_rate": 5e-5, "learning_rate_warmup_updates": 500, "learning_rate_warmup_start_factor": 0.01,
         "buffer_capacity_per_env": 1000, "learning_starts": 10_000, "rollout_steps_per_iteration": 256,
-        "gradient_steps": 8, "gamma": 0.99, "tau": 0.005, "max_grad_norm": 2.0,
+        "replay_exposure": 8.0, "gamma": 0.995, "tau": 0.005, "max_grad_norm": 2.0,
     }
     learning_positions = config["batch_size"] * config.get("learning_steps", 1)
     assert learning_positions == 1024
@@ -144,7 +169,7 @@ def test_off_policy_presets_honor_common_training_overrides(
     overrides = {
         "learning_rate": 2e-4, "learning_rate_warmup_updates": 20, "learning_rate_warmup_start_factor": 0.1,
         "buffer_capacity_per_env": 256, "learning_starts": 512, "rollout_steps_per_iteration": 512,
-        "batch_size": 3, "gradient_steps": 2, "gamma": 0.95, "tau": 0.02, "max_grad_norm": 0.7,
+        "batch_size": 4, "replay_exposure": 2, "gamma": 0.95, "tau": 0.02, "max_grad_norm": 0.7,
     }
     config = make_training("SwarmBots-WallEasy-v0", variant, num_envs=256, algorithm_kwargs=overrides)
     assert {key: config[key] for key in overrides} == overrides
@@ -152,7 +177,7 @@ def test_off_policy_presets_honor_common_training_overrides(
 
 @pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
 @pytest.mark.parametrize(("num_envs", "rollout_steps", "learning_steps"), [
-    (64, 1, 64), (256, 1, 64), (1024, 1, 64), (4096, 1, 64), (256, 4, 64), (256, 1, 32), (256, 1, 128),
+    (64, 2, 64), (256, 1, 64), (1024, 1, 64), (4096, 1, 64), (256, 4, 64), (256, 1, 32), (256, 1, 128),
 ])
 def test_recurrent_default_batches_match_feedforward_replay_exposure(
     capture_training_configuration: None, variant: str, num_envs: int, rollout_steps: int, learning_steps: int,
@@ -167,7 +192,7 @@ def test_recurrent_default_batches_match_feedforward_replay_exposure(
     baseline_positions = baseline["batch_size"]
     recurrent_positions = recurrent["batch_size"] * recurrent["learning_steps"]
     assert baseline_positions == recurrent_positions == 1024
-    assert baseline["gradient_steps"] == recurrent["gradient_steps"] == 8
+    assert baseline["replay_exposure"] == recurrent["replay_exposure"] == 8
     assert baseline["rollout_steps_per_iteration"] == recurrent["rollout_steps_per_iteration"] == num_envs * rollout_steps
     assert baseline["learning_rate"] == recurrent["learning_rate"] == 5e-5
     assert {key: recurrent[key] for key in (
@@ -181,7 +206,10 @@ def test_recurrent_default_batches_round_up_to_whole_learning_sequences(
 ) -> None:
     config = make_training(
         "SwarmBots-WallEasy-v0", "tmasac__lstm", num_envs=256, episode_length=max(500, learning_steps),
-        algorithm_kwargs={"learning_steps": learning_steps, "temporal_state_store_interval": 1},
+        algorithm_kwargs={
+            "learning_steps": learning_steps, "temporal_state_store_interval": 1,
+            "replay_exposure": math.ceil(1024 / learning_steps) * learning_steps / 256,
+        },
     )
     positions = config["batch_size"] * config["learning_steps"]
     assert config["batch_size"] >= 1
@@ -207,10 +235,23 @@ def test_explicit_recurrent_batch_size_remains_a_sequence_count(
     config = make_training(
         "SwarmBots-WallEasy-v0", variant, num_envs=256,
         policy_kwargs={"td3_recurrent_actor": True} if variant == "tmatd3" else {},
-        algorithm_kwargs={"batch_size": 7, "learning_steps": 32},
+        algorithm_kwargs={"batch_size": 7, "learning_steps": 32, "replay_exposure": 0.875},
     )
     assert config["batch_size"] == 7
     assert config["learning_steps"] == 32
+
+
+@pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
+@pytest.mark.parametrize("collection_options", [{}, {"rollout_steps_per_iteration": None}])
+def test_fractional_updates_fail_before_environment_construction(
+    monkeypatch: pytest.MonkeyPatch, variant: str, collection_options: dict[str, Any],
+) -> None:
+    def unexpected_environment(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("Fractional replay updates must fail before allocating an environment")
+
+    monkeypatch.setattr("swarmbots.learn.training._make_policy_env", unexpected_environment)
+    with pytest.raises(ValueError, match="whole number of updates"):
+        make_training("SwarmBots-WallEasy-v0", variant, num_envs=64, algorithm_kwargs=collection_options)
 
 
 @pytest.mark.parametrize("variant", ["tmasac__lstm", "tmasac__slstm", "tmatd3"])
@@ -257,7 +298,7 @@ def test_off_policy_training_updates_with_default_batch_budget(variant: str) -> 
     algorithm = make_training(
         "SwarmBots-WallEasy-v0", variant, **kwargs, rollout_steps_per_env=96 if recurrent else 512,
         algorithm_kwargs={
-            "learning_starts": 0, "gradient_steps": 1,
+            "learning_starts": 0, "replay_exposure": 1024 / (2 * (96 if recurrent else 512)),
             "buffer_capacity_per_env": 128 if recurrent else 512, "learning_rate_warmup_updates": 0,
         },
     )
@@ -282,7 +323,7 @@ def test_off_policy_training_updates_with_default_batch_budget(variant: str) -> 
 @pytest.mark.integration
 @pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
 def test_off_policy_presets_retain_algorithm_specific_defaults(variant: str) -> None:
-    algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, rollout_steps_per_env=64, **_training_kwargs())
     try:
         assert algorithm.learning_rate == 5e-5
         for optimizer in (algorithm.actor_optimizer, algorithm.critic_optimizer):
@@ -290,7 +331,7 @@ def test_off_policy_presets_retain_algorithm_specific_defaults(variant: str) -> 
         assert algorithm.learning_rate_warmup_updates == 500
         assert algorithm.learning_rate_warmup_start_factor == 0.01
         assert algorithm.batch_size * getattr(algorithm, "learning_steps", 1) == 1024
-        assert algorithm.gradient_steps == 8
+        assert algorithm.replay_exposure == 8
         assert algorithm.nop_batch_size == algorithm.batch_size
         assert not algorithm.independent_nop_sampling
         if isinstance(algorithm, SAC):
@@ -328,7 +369,7 @@ def test_sac_presets_share_tmasac_training_defaults_and_honor_overrides(variant:
         learning_rate, temperature_rate, entropy, target = 2e-4, 7e-4, "auto_0.2", "auto_0.3"
         options.update(learning_rate=learning_rate, ent_coef_learning_rate=temperature_rate,
                        ent_coef=entropy, target_entropy=target)
-    algorithm = make_training("SwarmBots-WallEasy-v0", variant, algorithm_kwargs=options, **_training_kwargs())
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, rollout_steps_per_env=64, algorithm_kwargs=options, **_training_kwargs())
     try:
         assert algorithm.learning_rate == pytest.approx(learning_rate)
         for optimizer in (algorithm.actor_optimizer, algorithm.critic_optimizer):
@@ -722,7 +763,7 @@ def test_ppo_preset_entropy_default_and_override(coefficient: float | None) -> N
 @pytest.mark.parametrize("variant", ["mat_ind", "tmasac"])
 def test_training_persists_numeric_distribution_entropy_diagnostics(variant: str, tmp_path: Path) -> None:
     algorithm_kwargs = (
-        {"learning_starts": 0, "batch_size": 2, "gradient_steps": 1, "buffer_capacity_per_env": 16}
+        {"learning_starts": 0, "batch_size": 2, "replay_exposure": 1, "buffer_capacity_per_env": 16}
         if variant == "tmasac"
         else {"n_epochs": 1, "target_kl": None, "learning_rate": 1e-3}
     )
@@ -744,7 +785,7 @@ def test_training_persists_numeric_distribution_entropy_diagnostics(variant: str
 @pytest.mark.integration
 @pytest.mark.parametrize("variant", list_variants())
 def test_each_variant_produces_finite_benchmark_actions(variant: str) -> None:
-    algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, rollout_steps_per_env=64, **_training_kwargs())
     try:
         expected_distribution = (
             PredictedStdGaussianActionDist if isinstance(algorithm, SAC) else SignMagnitudeBetaActionDist
@@ -772,7 +813,7 @@ def test_sac_action_distribution_can_be_overridden_without_changing_the_architec
     algorithm = make_training(
         "SwarmBots-WallEasy-v0", variant,
         continuous_action_dist="gumbel_softmax_sign_magnitude_beta",
-        **_training_kwargs(),
+        rollout_steps_per_env=64, **_training_kwargs(),
     )
     try:
         assert all(
@@ -813,12 +854,12 @@ def test_learning_updates_parameters_on_actual_benchmark_transitions(variant: st
             "learning_starts": 0,
             "batch_size": 2,
             "buffer_capacity_per_env": 32,
-            "gradient_steps": 1,
+            "replay_exposure": 1,
             "learning_rate": 1e-3,
             "learning_rate_warmup_updates": 0,
         }
         if policy_options["policy_variant"] in {"tmasac__recurrent"}:
-            algorithm_options.update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
+            algorithm_options.update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1, replay_exposure=0.75)
     else:
         algorithm_options = {"learning_rate": 1e-3, "n_epochs": 1, "target_kl": None}
     algorithm = make_training(
@@ -856,7 +897,7 @@ def test_new_off_policy_train_helper_saves_resumable_targets(variant: str, tmp_p
     )
     kwargs["algorithm_kwargs"] = {
         "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 16,
-        "gradient_steps": 2, "learning_rate_warmup_updates": 0,
+        "replay_exposure": 2, "learning_rate_warmup_updates": 0,
     }
     algorithm = train(
         "SwarmBots-WallEasy-v0", variant, total_timesteps=4, run_dir=tmp_path / "first", **kwargs,
@@ -890,7 +931,7 @@ def test_off_policy_nop_is_enabled_by_default_and_can_train(variant: str, source
         kwargs["policy_kwargs"]["tmasac_nop_latent_source"] = source
     kwargs["algorithm_kwargs"] = {
         "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 16,
-        "gradient_steps": 2, "learning_rate_warmup_updates": 0,
+        "replay_exposure": 2, "learning_rate_warmup_updates": 0,
     }
     algorithm = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
     try:
@@ -980,11 +1021,11 @@ def test_joint_observation_embedding_trains_and_restores_existing_presets(varian
     if _is_off_policy_variant(policy_options["policy_variant"]):
         kwargs["algorithm_kwargs"] = {
             "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 16,
-            "gradient_steps": 1, "learning_rate_warmup_updates": 0,
+            "replay_exposure": 1, "learning_rate_warmup_updates": 0,
             "sac_compile_tensor_operations": False, "sac_compile_optimizer_steps": False,
         }
         if policy_options["policy_variant"] in {"tmasac__recurrent"}:
-            kwargs["algorithm_kwargs"].update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
+            kwargs["algorithm_kwargs"].update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1, replay_exposure=0.75)
     else:
         kwargs["algorithm_kwargs"] = {"learning_rate": 1e-3, "n_epochs": 1, "target_kl": None}
     algorithm = make_training("SwarmBots-PayloadPlane-v0", variant, rollout_steps_per_env=4, **kwargs)
@@ -1040,11 +1081,11 @@ def test_training_levels_apply_independently_to_each_algorithm_family(variant: s
             "learning_starts": 0,
             "batch_size": 2,
             "buffer_capacity_per_env": 16,
-            "gradient_steps": 1,
+            "replay_exposure": 1,
             "learning_rate_warmup_updates": 0,
         }
         if policy_options["policy_variant"] == "tmasac__recurrent":
-            kwargs["algorithm_kwargs"].update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
+            kwargs["algorithm_kwargs"].update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1, replay_exposure=0.75)
     else:
         kwargs["algorithm_kwargs"] = {"n_epochs": 1, "target_kl": None, "learning_rate": 1e-3}
     console_messages: list[str] = []
@@ -1128,7 +1169,7 @@ def test_training_saves_and_resumes_then_evaluates_without_updating_normalizatio
 @pytest.mark.integration
 def test_presets_select_the_intended_algorithm_and_actor() -> None:
     for variant, expected_class in (("mappo__deepset_critic", PPO), ("mat_ind", PPO), ("tmasac", SAC), ("tmasac_dec", SAC), ("tmasac__slstm", RecurrentSAC), ("tmasac__lstm", RecurrentSAC)):
-        algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
+        algorithm = make_training("SwarmBots-WallEasy-v0", variant, rollout_steps_per_env=64, **_training_kwargs())
         try:
             assert isinstance(algorithm, expected_class)
             if variant in {"mappo__deepset_critic"}:
@@ -1199,7 +1240,7 @@ def test_ppo_learning_rate_controller_uses_the_selected_kl_target(target_kl: flo
 @pytest.mark.integration
 @pytest.mark.parametrize("variant", ["mat_ind__lstm", "tmasac__slstm", "tmasac__lstm"])
 def test_benchmark_adapter_resets_memory_for_the_selected_lanes(variant: str) -> None:
-    algorithm = make_training("SwarmBots-WallEasy-v0", variant, **_training_kwargs())
+    algorithm = make_training("SwarmBots-WallEasy-v0", variant, rollout_steps_per_env=64, **_training_kwargs())
     try:
         observations, _ = algorithm.env.unwrapped.reset(seed=17)
         adapter = as_benchmark_policy(algorithm)

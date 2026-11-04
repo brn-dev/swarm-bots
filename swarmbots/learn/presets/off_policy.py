@@ -14,7 +14,7 @@ def make_off_policy_algorithm_options() -> dict[str, Any]:
         "learning_rate_warmup_updates": 500,
         "learning_rate_warmup_start_factor": 0.01,
         "batch_size": 1024,
-        "gradient_steps": 8,
+        "replay_exposure": 8.0,
         "tau": 0.005,
     }
 

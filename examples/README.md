@@ -18,7 +18,7 @@ On Windows:
 .\.venv\Scripts\python.exe examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo__deepset_critic --run-dir runs/first-mappo
 ```
 
-The script trains for one million environment transitions using 1,024 parallel CUDA worlds, evaluates deterministic actions at seed `1000`, then records two episodes at 640 × 480. A short run demonstrates the workflow; it may not learn to solve the task.
+The script trains for ten million environment transitions using 1,024 parallel CUDA worlds, evaluates deterministic actions at seed `1000`, then records two episodes at 640 × 480. Off-policy settings must yield a whole number of replay updates per collection cycle; for example, `--num-envs 64 --rollout-steps-per-env 2` is valid with the default batch and exposure. A short run demonstrates the workflow; it may not learn to solve the task.
 
 Inspect the saved outputs:
 

@@ -40,7 +40,11 @@ def make_parser(
     parser.add_argument("--model-scale", default="5M-2L NOP1M", help="fixed tiers: 2.5M, 5M-2L (default), 5M-3L, 10M-3L, 10M-4L, 10M-5L; custom uses custom widths")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num-envs", type=positive_int, default=1024, help="parallel training worlds")
-    parser.add_argument("--total-timesteps", type=positive_int, default=1_000_000)
+    parser.add_argument(
+        "--rollout-steps-per-env", type=positive_int,
+        help="training collection length; off-policy settings must produce whole replay update counts",
+    )
+    parser.add_argument("--total-timesteps", type=positive_int, default=10_000_000)
     parser.add_argument("--seed", type=int, default=42, help="training seed")
     parser.add_argument("--eval-seed", type=int, default=1000)
     parser.add_argument("--eval-envs", type=positive_int, default=256, help="one evaluation episode per world")
@@ -91,6 +95,7 @@ def run_experiment(
         total_timesteps=args.total_timesteps,
         run_dir=run_dir,
         num_envs=args.num_envs,
+        rollout_steps_per_env=args.rollout_steps_per_env,
         device=args.device,
         seed=args.seed,
         episode_length=args.episode_length,

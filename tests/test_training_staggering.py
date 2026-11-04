@@ -46,6 +46,8 @@ def _episode_end_steps(env: MJWSwarmBotsVectorEnv, *, num_steps: int) -> list[li
 @pytest.mark.parametrize("variant", ["ppo", "masac__deepset_critic"])
 def test_training_staggers_initial_episodes_and_then_uses_full_lengths(variant: str) -> None:
     kwargs = _training_kwargs()
+    if variant == "masac__deepset_critic":
+        kwargs["algorithm_kwargs"] = {"batch_size": 6}
     algorithm = make_training("SwarmBots-MoveToGoal-v0", variant, **kwargs)
     try:
         episode_ends = _episode_end_steps(algorithm.env.unwrapped, num_steps=24)

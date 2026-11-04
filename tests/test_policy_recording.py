@@ -241,6 +241,61 @@ def test_next_step_recording_preserves_history_and_complete_videos(
         env.close()
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("mode", [AutoresetMode.SAME_STEP, AutoresetMode.NEXT_STEP])
+def test_recording_encodes_decodable_complete_and_unstable_episodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: AutoresetMode,
+) -> None:
+    from imageio_ffmpeg import read_frames
+
+    env = recording.make_env(
+        "SwarmBots-MoveToGoal-v0", num_envs=2, device="cpu", episode_length=3,
+        autoreset_mode=mode, compile_tensor_operations=False, simulation_unstable_reward=-2.5,
+        scenario_kwargs={
+            "unit_start_locations": MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=(42000, 42001)),
+            "reset_settle_time": 0.0, "compile_reward_kernel": False,
+        },
+    )
+    monkeypatch.setattr(recording, "make_env", lambda *args, **kwargs: env)
+    run_physics = env._run_physics
+    first_step = True
+
+    def inject_one_failure() -> None:
+        nonlocal first_step
+        run_physics()
+        if first_step:
+            env._qvel[0, 0] = float("nan")
+            first_step = False
+
+    def policy(observations: Mapping[str, torch.Tensor], starts: torch.Tensor) -> dict[str, torch.Tensor]:
+        return {key: torch.zeros(space.shape) for key, space in env.action_space.items()}
+
+    try:
+        with patch.object(env, "_run_physics", inject_one_failure):
+            record_policy(
+                policy, "SwarmBots-MoveToGoal-v0", video_folder=tmp_path, num_episodes=3,
+                max_parallel_episodes=2, device="cpu", width=160, height=120,
+            )
+        videos = list(tmp_path.glob("*.mp4"))
+        assert len(videos) == 3
+        unstable = [video for video in videos if "_unstable" in video.stem]
+        assert len(unstable) == 1
+        assert "ep_rew=-2.5000" in unstable[0].stem
+        for video in videos:
+            reader = read_frames(video)
+            try:
+                metadata = next(reader)
+                frames = list(reader)
+            finally:
+                reader.close()
+            assert metadata["size"] == (160, 120)
+            assert len(frames) == (1 if video in unstable else 4)
+            assert all(len(frame) == 120 * 160 * 3 for frame in frames)
+            assert any(np.frombuffer(frame, dtype=np.uint8).var() > 0 for frame in frames)
+    finally:
+        env.close()
+
+
 def test_record_command_requires_checkpoint_variant() -> None:
     with pytest.raises(SystemExit, match="2"):
         cli.main(["record", "SwarmBots-WallEasy-v0", "--checkpoint", "policy.pt"])
@@ -414,9 +469,11 @@ def checkpoint_construction_options() -> dict[str, Any]:
     }
 
 
-def _checkpoint_algorithm_options(variant: str) -> dict[str, int]:
+def _checkpoint_algorithm_options(variant: str) -> dict[str, int | float]:
     if variant in {"tmasac__lstm", "tmasac__slstm"}:
-        return {"learning_steps": 3, "temporal_state_store_interval": 1}
+        return {"batch_size": 2, "learning_steps": 3, "temporal_state_store_interval": 1, "replay_exposure": 3.0}
+    if variant.startswith(("tmasac", "masac", "tmatd3", "matd3", "maddpg")):
+        return {"batch_size": 2}
     return {}
 
 
@@ -540,7 +597,7 @@ def test_checkpoint_recording_preserves_custom_exploration_noise(
         "batch_size": 2, "buffer_capacity_per_env": 16,
     }
     if recurrent:
-        algorithm_options.update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1)
+        algorithm_options.update(burn_in_steps=1, learning_steps=3, temporal_state_store_interval=1, replay_exposure=3.0)
     trainer = make_training(
         "SwarmBots-WallEasy-v0", variant, num_envs=2, use_nop=False,
         algorithm_kwargs=algorithm_options,

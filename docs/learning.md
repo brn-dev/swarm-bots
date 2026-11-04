@@ -61,7 +61,7 @@ The Python helper and the runnable example use different workload defaults:
 
 | Setting | `train(...)` | `examples/train_policy.py` |
 | --- | --- | --- |
-| Training budget | 100 million transitions | 1 million transitions |
+| Training budget | 100 million transitions | 10 million transitions |
 | Parallel training worlds | 1024 | 1024 |
 | Device | CUDA | CUDA |
 | Training seed | 42 | 42 |
@@ -133,6 +133,12 @@ PPO, SAC, and TD3 accept different learner options. The [recurrent TD3 example](
 
 Off-policy default batches target 1,024 learning positions independently of environment count and rollout length. Feed-forward learners sample 1,024 transitions; recurrent learners divide this budget by their effective `learning_steps`, rounding up to at least one whole sequence. The default 64-step learning horizon therefore uses 16 sequences per update. An explicit `algorithm_kwargs={"batch_size": ...}` overrides this default and counts transitions for feed-forward learners or sequences for recurrent learners. Burn-in adds computation outside the scored learning-position budget.
 
+`algorithm_kwargs={"replay_exposure": 8.0}` sets the average number of scored replay uses per newly collected transition after learning starts. This replaces the constructor's `gradient_steps` setting. The update count is `replay_exposure × collected_transitions / learning_positions_per_batch` and must be a positive whole number. Non-integral configurations are rejected before environment allocation; updates are never rounded or carried between cycles. With a 1,024-position batch, exposure 8 gives eight updates per iteration at 1,024 worlds. At 64 worlds, a one-step collection would require 0.5 updates and is rejected; `rollout_steps_per_env=2` gives one update instead. The example CLI exposes this as `--rollout-steps-per-env 2`. A fractional exposure value is valid when its resulting update count is integral. Uniform replay sampling does not guarantee the same number of uses for each individual transition. Burn-in, separate NOP batches and actor/target update delays are outside this ratio.
+
+Low-level learners with no explicit `rollout_steps_per_iteration` collect one vector-environment step. Collection sizes are never extended to fit replay batches; incompatible exposure, collection and batch settings are rejected.
+
+All registered learning presets use `gamma=0.995`. At the default 0.03-second control interval, this gives an approximately six-second discount horizon. `algorithm_kwargs={"gamma": ...}` overrides it; low-level learner constructors retain their own defaults.
+
 Off-policy observation and reward statistics adapt throughout training. The training environment emits raw observations and rewards for replay; policy inputs are normalized at rollout, and sampled current, successor and terminal observations use one current statistics snapshot per training call. Recurrent burn-in and NOP windows use that same snapshot. Normalization does not update statistics when sampling and adds no calibration rollout. Checkpoint continuation restores the statistics and resumes updating them; benchmark adapters and frozen evaluations use a separate fixed evaluation snapshot.
 
 Off-policy environments accept one `TorchFeatureWiseObsNormWrapper` per observation key; feature groups for the same key belong in one wrapper. Duplicate keys are rejected during initialization, including wrappers separated by transition-observation or other wrappers. Observation normalization compiles by default on CUDA. In low-level environment construction, an explicit `compile_tensor_operations=False` on any participating observation wrapper keeps that combined normalization pass eager, including rollout and evaluation. CPU normalization remains eager.
@@ -147,9 +153,9 @@ Recurrent SAC/TD3 replay supports at most one time-limit truncation per learning
 | --- | --- |
 | Actor/critic optimizer and learning rate | Adam, `5e-5` |
 | Actor/critic learning-rate warmup | 500 critic updates, starting at 1% of the base rate |
-| Learning positions per batch / gradient steps | 1,024 / 8 |
+| Learning positions per batch / replay exposure | 1,024 / 8 scored replay uses per new transition |
 | Rollout | One vector-environment step per iteration |
-| Discount / target mixing coefficient | `gamma=0.99` / `tau=0.005` |
+| Discount / target mixing coefficient | `gamma=0.995` / `tau=0.005` |
 | Maximum gradient norm | `2.0` |
 | Learning starts | `max(10_000, 4 × rollout transitions per iteration)` |
 | Replay capacity per environment | Twice the episode length, enlarged for learning starts, batch positions and recurrent segment storage |
@@ -241,7 +247,7 @@ trainer = train(
 
 Replace the path with the actual checkpoint saved by the training run. Final checkpoints are named `model_<steps>_steps_final.pt`; the actual counter can pass the requested budget by a collection batch.
 
-`total_timesteps` is the final total counter, so resuming at one million with a target of two million adds about one million transitions. Checkpoints restore model parameters, saved optimizer state, counters, and normalization. Loading requires the current checkpoint format and matching model settings. Off-policy replay buffers are rebuilt and refilled after loading.
+`total_timesteps` is the final total counter, so resuming at one million with a target of two million adds about one million transitions. Checkpoints restore model parameters, learned SAC entropy temperature, counters, normalization, and optional optimizer state. Entropy temperature is restored even when optimizer state is omitted or its restoration is disabled. Replay scheduling has no pending fractional state. Loading requires the current checkpoint format and matching model settings. Off-policy replay buffers are rebuilt and refilled after loading.
 
 The Python API supports continuation in an existing run directory. The training example scripts require a fresh directory for each invocation. Checkpoints require matching architectures and observation layouts; matching a variant name alone is insufficient. The [layout versions](policy_parameters/model_scale.md) and [changelog](../CHANGELOG.md) record these changes.
 

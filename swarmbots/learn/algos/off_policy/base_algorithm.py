@@ -30,6 +30,7 @@ from swarmbots.learn.algos.off_policy.action_noise import (
     bounded_action_coordinates,
 )
 from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization
+from swarmbots.learn.algos.off_policy.replay_exposure import resolve_replay_updates
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.optimizers import make_adam, move_adam_state_to_device
 from swarmbots.learn.algos.off_policy.tensor_ops import (
@@ -72,7 +73,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         batch_size: int = 256,
         rollout_steps_per_iteration: int | None = None,
         rollout_warmup_steps_per_env: int = 0,
-        gradient_steps: int = 1,
+        replay_exposure: float = 1.0,
         gamma: float = 0.99,
         tau: float = 0.005,
         target_update_interval: int = 1,
@@ -118,7 +119,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
         self.rollout_warmup_steps_per_env = int(rollout_warmup_steps_per_env)
         self._rollout_warmup_done = self.rollout_warmup_steps_per_env == 0
-        self.gradient_steps = int(gradient_steps)
+        self.replay_exposure = float(replay_exposure)
         self.gamma = float(gamma)
         self.tau = float(tau)
         self.target_update_interval = int(target_update_interval)
@@ -203,7 +204,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             "batch_size": self.batch_size,
             "rollout_steps_per_iteration": self.rollout_steps_per_iteration,
             "rollout_warmup_steps_per_env": self.rollout_warmup_steps_per_env,
-            "gradient_steps": self.gradient_steps,
+            "replay_exposure": self.replay_exposure,
+            "learning_positions_per_batch": self.learning_positions_per_batch,
             "gamma": self.gamma,
             "tau": self.tau,
             "target_update_interval": self.target_update_interval,
@@ -614,9 +616,14 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         return self.policy.has_nop_loss() and self.policy.get_nop_num_next_steps() > 1
 
     def _resolved_gradient_steps(self, rollout_steps: int) -> int:
-        if self.gradient_steps == -1:
-            return rollout_steps
-        return self.gradient_steps
+        return resolve_replay_updates(
+            replay_exposure=self.replay_exposure, rollout_steps=rollout_steps,
+            learning_positions_per_batch=self.learning_positions_per_batch,
+        )
+
+    @property
+    def learning_positions_per_batch(self) -> int:
+        return self.batch_size
 
     def _validate_hyper_parameters(self) -> None:
         if not isinstance(self.policy_delay, int) or isinstance(self.policy_delay, bool) or self.policy_delay < 1:
@@ -652,8 +659,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             )
         if self.rollout_warmup_steps_per_env < 0:
             raise ValueError(f"rollout_warmup_steps_per_env must be >= 0, got {self.rollout_warmup_steps_per_env}")
-        if self.gradient_steps == 0 or self.gradient_steps < -1:
-            raise ValueError(f"gradient_steps must be -1 or > 0, got {self.gradient_steps}")
+        self._resolved_gradient_steps(self.rollout_steps_per_iteration)
         if not (0.0 <= self.gamma <= 1.0):
             raise ValueError(f"gamma must be in [0, 1], got {self.gamma}")
         if not (0.0 < self.tau <= 1.0):

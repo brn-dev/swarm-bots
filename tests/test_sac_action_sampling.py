@@ -59,6 +59,7 @@ def _algorithm(policy: TMASACPolicy, env: object, **kwargs: object) -> SAC:
         env=env,
         buffer_capacity_per_env=8,
         learning_starts=0,
+        rollout_steps_per_iteration=2,
         batch_size=2,
         train_device="cpu",
         replay_storage_device="cpu",
@@ -192,6 +193,7 @@ def test_segment_multisample_training_with_inactive_agents(
         algo = RecurrentSAC(
             policy=policy, env=env, burn_in_steps=0, learning_steps=sequence_length,
             temporal_state_store_interval=1, buffer_capacity_per_env=8, learning_starts=0,
+            rollout_steps_per_iteration=2 * sequence_length,
             batch_size=2, train_device="cpu", replay_storage_device="cpu",
             actor_action_samples=counts[0], target_action_samples=counts[1],
         )
@@ -323,6 +325,7 @@ def test_recurrent_multisample_training(config: object, variant: str, counts: tu
             temporal_state_store_interval=1,
             buffer_capacity_per_env=8,
             learning_starts=0,
+            rollout_steps_per_iteration=6,
             batch_size=2,
             train_device="cpu",
             replay_storage_device="cpu",
@@ -478,6 +481,7 @@ def test_multisample_recurrent_training_with_compiled_encoders(shared: bool, cou
                 temporal_state_store_interval=1,
                 buffer_capacity_per_env=8,
                 learning_starts=0,
+                rollout_steps_per_iteration=6,
                 batch_size=2,
                 train_device="cpu",
                 replay_storage_device="cpu",
@@ -570,7 +574,8 @@ def test_candidate_critics_match_separate_values_and_gradients(
         algo = RecurrentSAC(
             policy=policy, env=env, burn_in_steps=0, learning_steps=3,
             temporal_state_store_interval=1, buffer_capacity_per_env=8,
-            learning_starts=0, batch_size=2, train_device="cpu", replay_storage_device="cpu",
+            learning_starts=0, rollout_steps_per_iteration=6, batch_size=2,
+            train_device="cpu", replay_storage_device="cpu",
         )
         batch = _make_recurrent_critic_batch(env)
         batch.episode_start_mask[0, 1] = True
@@ -682,6 +687,7 @@ def test_compiled_cuda_multisample_training(config: object) -> None:
             env=env,
             buffer_capacity_per_env=8,
             learning_starts=0,
+            rollout_steps_per_iteration=2,
             batch_size=2,
             train_device="cuda",
             replay_storage_device="cpu",
@@ -713,6 +719,7 @@ def test_recurrent_target_samples_final_and_truncation_successors() -> None:
             temporal_state_store_interval=1,
             buffer_capacity_per_env=8,
             learning_starts=0,
+            rollout_steps_per_iteration=6,
             batch_size=2,
             train_device="cpu",
             replay_storage_device="cpu",

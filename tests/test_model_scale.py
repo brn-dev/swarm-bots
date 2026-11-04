@@ -1192,7 +1192,7 @@ def test_scaled_auxiliary_training_and_checkpoint_restore(variant, tmp_path, sca
                 "learning_starts": 0,
                 "batch_size": 2,
                 "buffer_capacity_per_env": 16,
-                "gradient_steps": 1,
+                "replay_exposure": 0.75,
                 "learning_rate_warmup_updates": 0,
                 "burn_in_steps": 0,
                 "learning_steps": 3,

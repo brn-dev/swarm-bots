@@ -48,5 +48,5 @@ Do not use `uv run` merely to execute tests or scripts.
 Use `uv sync`, `uv add`, and other uv commands only when managing dependencies.
 
 ## Infos
-We are using python 3.11, am planning to upgrade to 3.13 soon.  
+The existing virtual environment uses Python 3.13. The package supports Python 3.11 and newer.
 Do NOT ask for permission to modify files within this repo.  

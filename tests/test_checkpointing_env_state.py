@@ -93,6 +93,7 @@ class CheckpointEnvStateTests(unittest.TestCase):
         algorithm = _CheckpointLoadAlgorithm(policy=policy, env=object(), learning_rate=1e-3)
         checkpoint = {
             "policy_state_dict": compiled_state,
+            "algorithm_state_dict": {},
             "n_total_iterations": 7,
             "n_total_updates": 11,
             "n_total_timesteps": 100_000_768,

@@ -276,14 +276,45 @@ def test_scalar_global_count_conditions_q_values_and_receives_gradients(
     assert torch.isfinite(gradient).all() and (gradient.abs() > 0).all()
 
 
-@pytest.mark.parametrize("gated", [False, True])
-def test_action_and_observation_gradients_survive_both_communication_and_readout(gated: bool) -> None:
-    critic = JointTwinCritic(config=aligned_config(gated=gated), **critic_dimensions())
+@pytest.mark.parametrize("critic_kind", ["transformer", "deepset", "gated_deepset"])
+@pytest.mark.parametrize("independent_encoders", [False, True])
+@pytest.mark.parametrize("separate_observation_action_encoders", [False, True])
+def test_action_and_observation_gradients_survive_both_communication_and_readout(
+    critic_kind: str, independent_encoders: bool, separate_observation_action_encoders: bool,
+) -> None:
+    config = aligned_config(gated=critic_kind == "gated_deepset")
+    config = replace(
+        config,
+        independent_encoders=independent_encoders,
+        head_config=replace(
+            config.head_config,
+            independent_encoders=independent_encoders,
+            separate_observation_action_encoders=separate_observation_action_encoders,
+        ),
+    )
+    if critic_kind == "transformer":
+        critic = TransformerTwinCritic(
+            n_agents=3, max_agents=3, local_input_dim=2, global_input_dim=1,
+            hidden_local_vars_dim=1, hidden_global_vars_dim=1, action_dim=1,
+            encoder_config=config.encoder_config, critic_config=config.head_config,
+            act_fn_cls=torch.nn.GELU, dropout=0.0,
+        )
+    else:
+        critic = JointTwinCritic(config=config, **critic_dimensions())
     inputs = observations()
     feature_names = ("local_obs", "global_obs", "hidden_local_vars", "hidden_global_vars", "actions")
     for name in feature_names:
         inputs[name].requires_grad_()
     q1, q2, latents = critic(**inputs)
+    zero_padded_inputs = {
+        name: tensor.masked_fill(~inputs["agent_mask"].unsqueeze(-1), 0.0)
+        if name in {"local_obs", "hidden_local_vars", "actions"} else tensor
+        for name, tensor in inputs.items()
+    }
+    with torch.no_grad():
+        zero_padded_outputs = critic(**zero_padded_inputs)
+    for actual, expected in zip((q1, q2, latents), zero_padded_outputs, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
     (q1.sum() + q2.sum()).backward()
     for name in feature_names:
         gradients = inputs[name].grad
@@ -291,4 +322,7 @@ def test_action_and_observation_gradients_survive_both_communication_and_readout
         assert gradients[0].abs().sum() > 0
         if gradients.ndim == 3:
             assert (gradients[~inputs["agent_mask"]] == 0).all()
+    for name, parameter in critic.named_parameters():
+        if parameter.grad is not None:
+            assert torch.isfinite(parameter.grad).all(), name
     assert latents.shape[-1] == critic.nop_source_latent_dim

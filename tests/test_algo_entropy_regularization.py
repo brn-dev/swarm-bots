@@ -136,7 +136,7 @@ def test_rollout_diagnostics_describe_the_collected_policy_before_replay_trainin
         policy = _make_rollout_policy(env)
         algorithm = SAC(
             policy, env, buffer_capacity_per_env=16, learning_starts=0, batch_size=4,
-            rollout_steps_per_iteration=4, gradient_steps=1, learning_rate_warmup_updates=0,
+            rollout_steps_per_iteration=4, replay_exposure=1.0, learning_rate_warmup_updates=0,
             actor_action_samples=actor_action_samples, target_action_samples=target_action_samples,
             train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
         )
@@ -230,7 +230,8 @@ def test_recurrent_replay_diagnostics_exclude_unused_successor_rows(
             policy = policy_class(env, replace(config, compile_modules=sampling_path == "compiled"))
             algorithm = RecurrentSAC(
                 policy, env, burn_in_steps=0, learning_steps=3, temporal_state_store_interval=1,
-                buffer_capacity_per_env=8, learning_starts=0, batch_size=2, learning_rate_warmup_updates=0,
+                buffer_capacity_per_env=8, learning_starts=0, rollout_steps_per_iteration=6,
+                batch_size=2, learning_rate_warmup_updates=0,
                 train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
             )
         batch = _make_segment_batch(

@@ -12,6 +12,7 @@ from gymnasium.vector import AutoresetMode
 
 from swarmbots import ALL_BENCHMARK_IDS, make_env
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from swarmbots.learn.env_wrappers.multi_scenario_vector_env import MultiScenarioVectorEnv
 from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWStepResult
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
@@ -56,6 +57,92 @@ def _assert_error_observation(obs: dict[str, torch.Tensor], index: int, agent_ma
     assert torch.count_nonzero(obs["hidden_global_vars"][index, 1:]) == 0
     torch.testing.assert_close(obs["agent_mask"][index], agent_mask)
     assert obs["hidden_global_vars"][index, 0] == agent_mask.sum()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mode", [AutoresetMode.SAME_STEP, AutoresetMode.NEXT_STEP])
+@pytest.mark.parametrize("execution", [
+    pytest.param(("cpu", False), id="cpu"),
+    pytest.param(("cuda", False), id="cuda", marks=pytest.mark.cuda),
+    pytest.param(("cuda", True), id="compiled-cuda", marks=pytest.mark.cuda),
+])
+@pytest.mark.parametrize("include_reward_terms", [False, True])
+def test_reward_components_include_instability_and_exclude_reset_only_steps(
+    execution: tuple[str, bool], mode: AutoresetMode, include_reward_terms: bool,
+) -> None:
+    device, compile_operations = execution
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    env = _make_env(
+        device, autoreset_mode=mode, simulation_unstable_reward=-2.5,
+        compile_tensor_operations=compile_operations, compile_reward_kernel=compile_operations,
+    )
+    try:
+        with ExitStack() as patches:
+            if not include_reward_terms:
+                compute_step_rewards = env._scenario_runtime.compute_step_rewards
+
+                def without_reward_terms(*, stable_mask: torch.Tensor) -> MJWStepResult:
+                    result = compute_step_rewards(stable_mask=stable_mask)
+                    return replace(result, info={key: value for key, value in result.info.items() if key != "reward_terms"})
+
+                patches.enter_context(patch.object(env._scenario_runtime, "compute_step_rewards", without_reward_terms))
+            env.reset(seed=7)
+            run_physics = env._run_physics
+
+            def inject_failure() -> None:
+                run_physics()
+                env._qvel[0, 0] = float("nan")
+
+            with patch.object(env, "_run_physics", inject_failure):
+                _, rewards, terminated, _, infos = env.step(_actions(env))
+            assert terminated.tolist() == [True, False]
+            torch.testing.assert_close(rewards[0], torch.tensor(-2.5, device=env.device))
+            instability_term = None
+            if include_reward_terms:
+                torch.testing.assert_close(rewards, sum(infos["reward_terms"].values()))
+                instability_term = infos["reward_terms"]["simulation_instability"]
+                torch.testing.assert_close(instability_term, torch.tensor([-2.5, 0.0], device=env.device))
+            else:
+                assert "reward_terms" not in infos
+
+            _, rewards, _, _, infos = env.step(_actions(env))
+            if include_reward_terms:
+                torch.testing.assert_close(rewards, sum(infos["reward_terms"].values()))
+                assert not infos["reward_terms"]["simulation_instability"].any()
+                torch.testing.assert_close(instability_term, torch.tensor([-2.5, 0.0], device=env.device))
+            else:
+                assert "reward_terms" not in infos
+            if mode is AutoresetMode.NEXT_STEP:
+                assert rewards[0] == 0
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
+def test_multi_scenario_reward_components_preserve_instability_lane_order() -> None:
+    with ExitStack() as cleanup:
+        goal = _make_env("cpu", simulation_unstable_reward=-2.5)
+        cleanup.callback(goal.close)
+        wall = _make_env("cpu", benchmark_id="SwarmBots-WallEasy-v0", simulation_unstable_reward=-4.0)
+        cleanup.callback(wall.close)
+        env = MultiScenarioVectorEnv({"goal": goal, "wall": wall})
+        env.reset(seed=7)
+        run_physics = goal._run_physics
+
+        def inject_failure() -> None:
+            run_physics()
+            goal._qvel[1, 0] = float("nan")
+
+        with patch.object(goal, "_run_physics", inject_failure):
+            actions = {key: torch.zeros(space.shape) for key, space in env.action_space.items()}
+            _, rewards, terminated, _, infos = env.step(actions)
+        assert terminated.tolist() == [False, True, False, False]
+        reward_components = [value for name, value in infos["reward_terms"].items() if not name.startswith("_")]
+        torch.testing.assert_close(rewards, sum(reward_components))
+        torch.testing.assert_close(
+            infos["reward_terms"]["simulation_instability"], torch.tensor([0.0, -2.5, 0.0, 0.0]),
+        )
 
 
 @pytest.mark.parametrize("mode", [AutoresetMode.DISABLED, "Disabled", "unknown"])

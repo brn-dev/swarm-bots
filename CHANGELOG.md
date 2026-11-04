@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Promote review probes to regression tests for actual replay exposure and resume, warmed compiled SAC checkpoint continuation, collector GAE and recurrent PPO/NOP/PopArt updates, policy likelihoods and critic padding, nested-history normalization, optional instability diagnostics, and real video encoding.
+- Save SAC entropy temperature independently of optional optimizer state. Restore learned temperature even when optimizer persistence or restoration is disabled; keep current checkpoints at v1 without compatibility layers or migrations.
+- Replace the off-policy constructor's `gradient_steps` setting with `replay_exposure`, defaulting to eight scored replay uses per new transition in registered presets. Require a positive whole update count per collection cycle and reject incompatible exposure/collection/batch settings before environment allocation. Count recurrent learning positions, exclude burn-in, and omit fractional scheduling and checkpoint credit. Omitted low-level collection lengths use one vector step, without extending rollouts to fit replay batches.
+- Include simulator-instability penalties in optional reward components so diagnostic and recording totals agree with the reward returned to learners, including reset-only steps. Preserve valid runtimes that omit reward decomposition.
+- Increase the main training example budget to ten million transitions and registered presets' discount factor to 0.995. Retain short MAT/RMAT rollouts, record the observed longer-sequence/fewer-worlds regression in agent notes, remove obsolete component-LR preset code, and update the Python environment guidance.
 - Preserve recurrent SAC/TD3 rollout states across compiled policy calls and environment/statistics updates by sharing the existing CUDA-graph inference boundary and output ownership helper.
 - Reject incompatible PPO learning-rate controllers and scheduler layouts before restoring matching policy/optimizer checkpoints. Preserve non-strict partial weight loads by skipping optimizer preflight when aligned policy keys differ.
 - Cover compiled actor/critic optimizer execution and parameter updates after warmup, recurrent action/state retention and eager equivalence with cuDNN enabled, strict/non-strict checkpoint rejection, and automatic replay-normalization activation through trainer-backed evaluation.
