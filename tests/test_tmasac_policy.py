@@ -290,7 +290,6 @@ def _small_nop_config(
         transition_model_dim_feedforward=16,
         next_obs_pred_config=NextObsPredConfig(
             local_scalar_target_indices=[0, 1],
-            predict_delta=False,
         ),
     )
 
@@ -1486,7 +1485,6 @@ class TMASACPolicyTests(unittest.TestCase):
                     transition_model_dim_feedforward=16,
                     next_obs_pred_config=NextObsPredConfig(
                         local_scalar_target_indices=[0],
-                        predict_delta=False,
                     ),
                 ),
                 independent_critic_encoders=True,
@@ -1748,7 +1746,6 @@ class TMASACPolicyTests(unittest.TestCase):
                             transition_model_dim_feedforward=16,
                             next_obs_pred_config=NextObsPredConfig(
                                 local_scalar_target_indices=[0, 1],
-                                predict_delta=False,
                             ),
                         ),
                         shared_encoder_config=(
@@ -1803,7 +1800,6 @@ class TMASACPolicyTests(unittest.TestCase):
                     transition_model_dim_feedforward=16,
                     next_obs_pred_config=NextObsPredConfig(
                         local_scalar_target_indices=[0, 1],
-                        predict_delta=False,
                     ),
                 )
             ),
@@ -1846,7 +1842,6 @@ class TMASACPolicyTests(unittest.TestCase):
                     transition_model_dim_feedforward=16,
                     next_obs_pred_config=NextObsPredConfig(
                         local_scalar_target_indices=[0, 1],
-                        predict_delta=False,
                     ),
                 )
             ),
@@ -1874,7 +1869,6 @@ class TMASACPolicyTests(unittest.TestCase):
                     transition_model_dim_feedforward=16,
                     next_obs_pred_config=NextObsPredConfig(
                         local_scalar_target_indices=[0],
-                        predict_delta=False,
                     ),
                 )
             ),

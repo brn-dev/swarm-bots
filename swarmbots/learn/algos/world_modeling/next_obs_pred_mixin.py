@@ -3,7 +3,6 @@ from __future__ import annotations
 import abc
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
 from typing import Optional, Any
 
 import torch
@@ -17,13 +16,15 @@ from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import flatten_recu
 from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
 from swarmbots.learn.serialization_utils import serialize_value
 
-class PredictDeltaMode(Enum):
-    PER_STEP_DELTA = 1
-    INITIAL_DELTA = 2
-
 
 @dataclass(frozen=True)
 class NextObsPredConfig:
+    """Per-step scalar/angle/rotation deltas and next-state binary targets.
+
+    Zero sine/cosine pairs denote undefined angles; deltas require both endpoints.
+    Global scalar activity masks require unreduced losses with one value per target.
+    """
+
     local_scalar_target_indices: Optional[list[int]] = None
     local_angle_target_indices: Optional[list[int]] = None
     local_rot6d_target_indices: Optional[list[int]] = None
@@ -38,7 +39,6 @@ class NextObsPredConfig:
     global_rot6d_loss_weight: float = 1.0
     binary_target_ema_decay: float = 0.99
     binary_target_ema_eps: float = 1e-4
-    predict_delta: Optional[PredictDeltaMode | bool] = PredictDeltaMode.PER_STEP_DELTA
     global_scalar_active_mask_indices: Optional[list[int]] = None
     global_rot6d_active_mask_indices: Optional[list[int]] = None
 
@@ -83,8 +83,6 @@ class NextObsPredMixin(abc.ABC):
     global_scalar_loss_weight: float
     global_rot6d_loss_weight: float
 
-    predict_delta: bool
-    predict_delta_mode: PredictDeltaMode | None
     skip_first_transition: bool
 
     binary_target_ema: Optional[torch.Tensor]
@@ -177,10 +175,6 @@ class NextObsPredMixin(abc.ABC):
         self.binary_loss_weight = config.binary_loss_weight
         self.global_scalar_loss_weight = config.global_scalar_loss_weight
         self.global_rot6d_loss_weight = config.global_rot6d_loss_weight
-        
-        self.predict_delta_mode = self._normalize_predict_delta_mode(config.predict_delta)
-        self.predict_delta = self.predict_delta_mode is not None
-
         self.binary_target_ema_decay = config.binary_target_ema_decay
         self.binary_target_ema_eps = config.binary_target_ema_eps
 
@@ -236,7 +230,6 @@ class NextObsPredMixin(abc.ABC):
                 "global_rot6d_loss_weight": self.global_rot6d_loss_weight,
                 "binary_target_ema_decay": self.binary_target_ema_decay,
                 "binary_target_ema_eps": self.binary_target_ema_eps,
-                "predict_delta": serialize_value(self.predict_delta_mode),
             },
         }
 
@@ -253,10 +246,9 @@ class NextObsPredMixin(abc.ABC):
 
         pred_scalars = self.local_scalars_predictor(latent_preds)
         target_scalars = next_local_obs[..., self.local_scalar_target_indices]
-        if self.predict_delta:
-            if base_local_obs is None:
-                raise ValueError("local_obs is required when predict_delta is True")
-            target_scalars = target_scalars - base_local_obs[..., self.local_scalar_target_indices]
+        if base_local_obs is None:
+            raise ValueError("local_obs is required for per-step delta targets")
+        target_scalars = target_scalars - base_local_obs[..., self.local_scalar_target_indices]
         scalar_losses = self.scalar_loss_fn(pred_scalars, target_scalars)
         loss_per_item = self._reduce_scalar_feature_loss(
             scalar_losses,
@@ -274,33 +266,29 @@ class NextObsPredMixin(abc.ABC):
         if self.local_angle_target_sin_indices is None:
             return None
 
+        target_angles_sin = next_local_obs[..., self.local_angle_target_sin_indices]
+        target_angles_cos = next_local_obs[..., self.local_angle_target_cos_indices]
+        if base_local_obs is None:
+            raise ValueError("local_obs is required for per-step delta targets")
+        base_angles_sin = base_local_obs[..., self.local_angle_target_sin_indices]
+        base_angles_cos = base_local_obs[..., self.local_angle_target_cos_indices]
+        target_angles_sin, target_angles_cos = (
+            target_angles_sin * base_angles_cos - target_angles_cos * base_angles_sin,
+            target_angles_cos * base_angles_cos + target_angles_sin * base_angles_sin,
+        )
+        # An undefined endpoint also produces a zero delta pair.
+        angle_valid_mask = (target_angles_sin != 0.0) | (target_angles_cos != 0.0)
+        if valid_mask is not None:
+            angle_valid_mask = angle_valid_mask & valid_mask.unsqueeze(-1)
+
         pred_angles = self.local_angles_predictor(latent_preds)
-        if self.predict_delta:
-            if base_local_obs is None:
-                raise ValueError("local_obs is required when predict_delta is True")
-            target_angles_sin = next_local_obs[..., self.local_angle_target_sin_indices]
-            target_angles_cos = next_local_obs[..., self.local_angle_target_cos_indices]
-            base_angles_sin = base_local_obs[..., self.local_angle_target_sin_indices]
-            base_angles_cos = base_local_obs[..., self.local_angle_target_cos_indices]
-            delta_angles_sin = target_angles_sin * base_angles_cos - target_angles_cos * base_angles_sin
-            delta_angles_cos = target_angles_cos * base_angles_cos + target_angles_sin * base_angles_sin
-
-            pred_angles = pred_angles.reshape(*pred_angles.shape[:-1], -1)
-            pred_sin = torch.sin(pred_angles)
-            pred_cos = torch.cos(pred_angles)
-            cosine_sim = pred_sin * delta_angles_sin + pred_cos * delta_angles_cos
-        else:
-            target_angles_sin = next_local_obs[..., self.local_angle_target_sin_indices]
-            target_angles_cos = next_local_obs[..., self.local_angle_target_cos_indices]
-            target_angles = torch.stack((target_angles_sin, target_angles_cos), dim=-1)
-
-            pred_pairs = pred_angles.reshape(*pred_angles.shape[:-1], -1, 2)
-            target_pairs = target_angles.reshape(*target_angles.shape[:-2], -1, 2)
-            cosine_sim = F.cosine_similarity(pred_pairs, target_pairs, dim=-1, eps=1e-8)
+        pred_angles = pred_angles.masked_fill(~angle_valid_mask, 0.0)
+        pred_sin = torch.sin(pred_angles)
+        pred_cos = torch.cos(pred_angles)
+        cosine_sim = pred_sin * target_angles_sin + pred_cos * target_angles_cos
 
         loss_per_angle = 1.0 - cosine_sim
-        loss_per_item = loss_per_angle.mean(dim=-1)
-        return masked_mean(loss_per_item, valid_mask)
+        return masked_mean(loss_per_angle, angle_valid_mask)
 
     def compute_rot6d_loss(
             self,
@@ -332,38 +320,25 @@ class NextObsPredMixin(abc.ABC):
             target_valid_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         target_indices = self._expand_rot6d_indices(target_start_indices)
-        if self.predict_delta:
-            if base_obs is None:
-                raise ValueError("base_obs is required when predict_delta is True")
-            pred_rotvecs = predictor(latent_preds)
-            pred_rotvecs = pred_rotvecs.reshape(*pred_rotvecs.shape[:-1], -1, 3)
+        if base_obs is None:
+            raise ValueError("base_obs is required for per-step delta targets")
+        pred_rotvecs = predictor(latent_preds)
+        pred_rotvecs = pred_rotvecs.reshape(*pred_rotvecs.shape[:-1], -1, 3)
 
-            target_rot6ds = target_obs[..., target_indices]
-            base_rot6ds = base_obs[..., target_indices]
-            target_rot6ds = target_rot6ds.reshape(*target_rot6ds.shape[:-1], -1, 6)
-            base_rot6ds = base_rot6ds.reshape(*base_rot6ds.shape[:-1], -1, 6)
-            if target_valid_mask is not None:
-                pred_rotvecs = pred_rotvecs.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
-                target_rot6ds = target_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
-                base_rot6ds = base_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
+        target_rot6ds = target_obs[..., target_indices]
+        base_rot6ds = base_obs[..., target_indices]
+        target_rot6ds = target_rot6ds.reshape(*target_rot6ds.shape[:-1], -1, 6)
+        base_rot6ds = base_rot6ds.reshape(*base_rot6ds.shape[:-1], -1, 6)
+        if target_valid_mask is not None:
+            pred_rotvecs = pred_rotvecs.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
+            target_rot6ds = target_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
+            base_rot6ds = base_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
 
-            target_mats = self._rot6d_to_matrix(target_rot6ds)
-            base_mats = self._rot6d_to_matrix(base_rot6ds)
-            target_mats = target_mats @ base_mats.transpose(-1, -2)
+        target_mats = self._rot6d_to_matrix(target_rot6ds)
+        base_mats = self._rot6d_to_matrix(base_rot6ds)
+        target_mats = target_mats @ base_mats.transpose(-1, -2)
 
-            pred_mats = self._rotvec_to_matrix(pred_rotvecs)
-        else:
-            pred_rot6ds = predictor(latent_preds)
-            target_rot6ds = target_obs[..., target_indices]
-
-            pred_rot6ds = pred_rot6ds.reshape(*pred_rot6ds.shape[:-1], -1, 6)
-            target_rot6ds = target_rot6ds.reshape(*target_rot6ds.shape[:-1], -1, 6)
-            if target_valid_mask is not None:
-                pred_rot6ds = pred_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
-                target_rot6ds = target_rot6ds.masked_fill(~target_valid_mask.unsqueeze(-1), 0.0)
-
-            pred_mats = self._rot6d_to_matrix(pred_rot6ds)
-            target_mats = self._rot6d_to_matrix(target_rot6ds)
+        pred_mats = self._rotvec_to_matrix(pred_rotvecs)
 
         trace_sim = (pred_mats * target_mats).sum(dim=(-1, -2))
         loss_per_rot = 1.0 - (trace_sim / 3.0)
@@ -416,15 +391,20 @@ class NextObsPredMixin(abc.ABC):
         if target_valid_mask is not None:
             pred_scalars = pred_scalars.masked_fill(~target_valid_mask, 0.0)
             target_scalars = target_scalars.masked_fill(~target_valid_mask, 0.0)
-        if self.predict_delta:
-            if base_global_obs is None:
-                raise ValueError("global_obs is required when predict_delta is True for global scalar targets")
-            base_scalars = base_global_obs[..., self.global_scalar_target_indices]
-            if target_valid_mask is not None:
-                base_scalars = base_scalars.masked_fill(~target_valid_mask, 0.0)
-            target_scalars = target_scalars - base_scalars
+        if base_global_obs is None:
+            raise ValueError("global_obs is required for per-step scalar deltas")
+        base_scalars = base_global_obs[..., self.global_scalar_target_indices]
+        if target_valid_mask is not None:
+            base_scalars = base_scalars.masked_fill(~target_valid_mask, 0.0)
+        target_scalars = target_scalars - base_scalars
         scalar_losses = self.scalar_loss_fn(pred_scalars, target_scalars)
         if target_valid_mask is not None:
+            if scalar_losses.shape != target_scalars.shape:
+                raise ValueError(
+                    "Global scalar activity masks require scalar_loss_fn to return unreduced per-target losses "
+                    f"with shape {tuple(target_scalars.shape)}, got {tuple(scalar_losses.shape)}. "
+                    "Use reduction='none' for standard PyTorch losses."
+                )
             return self._masked_scalar_loss_mean(scalar_losses, target_valid_mask)
         loss_per_item = self._reduce_scalar_feature_loss(
             scalar_losses,
@@ -478,20 +458,23 @@ class NextObsPredMixin(abc.ABC):
         if active_mask_indices is None:
             return None
         target_valid = target_obs[..., active_mask_indices] > 0.0
-        if self.predict_delta and base_obs is not None:
+        if base_obs is not None:
             target_valid = target_valid & (base_obs[..., active_mask_indices] > 0.0)
         if valid_mask is not None:
             target_valid = target_valid & valid_mask.unsqueeze(-1)
         return target_valid
 
     @property
-    def has_local_next_obs_pred_targets(self) -> bool:
+    def has_local_delta_targets(self) -> bool:
         return (
             self.local_scalar_target_indices is not None
             or self.local_angle_target_sin_indices is not None
             or self.local_rot6d_target_indices is not None
-            or self.local_binary_target_indices is not None
         )
+
+    @property
+    def has_local_next_obs_pred_targets(self) -> bool:
+        return self.has_local_delta_targets or self.local_binary_target_indices is not None
 
     @property
     def has_global_next_obs_pred_targets(self) -> bool:
@@ -608,13 +591,13 @@ class NextObsPredMixin(abc.ABC):
 
         # Build delta bases before masking targets: an unscored predecessor can supply a scored delta.
         base_local_obs = None
-        if self.has_local_next_obs_pred_targets and self.predict_delta:
+        if self.has_local_delta_targets:
             if local_obs is None:
-                raise ValueError("local_obs is required when predict_delta is True")
+                raise ValueError("local_obs is required for per-step delta targets")
             base_local_obs = self._build_base_local_obs(local_obs, next_local_obs)
 
         base_global_obs = None
-        if self.has_global_next_obs_pred_targets and self.predict_delta:
+        if self.has_global_next_obs_pred_targets:
             if global_obs is None or next_global_obs is None:
                 raise ValueError("global_obs and next_global_obs are required for global delta targets")
             base_global_obs = self._build_base_global_obs(global_obs, next_global_obs)
@@ -770,18 +753,6 @@ class NextObsPredMixin(abc.ABC):
         return list(values)
 
     @staticmethod
-    def _normalize_predict_delta_mode(
-            predict_delta: PredictDeltaMode | bool | None,
-    ) -> PredictDeltaMode | None:
-        if predict_delta is None or predict_delta is False:
-            return None
-        if isinstance(predict_delta, PredictDeltaMode):
-            return predict_delta
-        if predict_delta is True:
-            return PredictDeltaMode.PER_STEP_DELTA
-        raise ValueError(f"Unsupported predict_delta value: {predict_delta!r}")
-
-    @staticmethod
     def _reduce_feature_loss(losses: torch.Tensor) -> torch.Tensor:
         if losses.ndim < 3:
             return losses
@@ -831,8 +802,6 @@ class NextObsPredMixin(abc.ABC):
 
     def _build_base_local_obs(self, local_obs: torch.Tensor, next_local_obs: torch.Tensor) -> torch.Tensor:
         base_local_obs = self._align_base_local_obs(local_obs, next_local_obs)
-        if self.predict_delta_mode != PredictDeltaMode.PER_STEP_DELTA:
-            return base_local_obs
         if base_local_obs.shape == next_local_obs.shape:
             return base_local_obs
         return torch.cat([base_local_obs, next_local_obs[:, :-1]], dim=1)
@@ -858,8 +827,6 @@ class NextObsPredMixin(abc.ABC):
 
     def _build_base_global_obs(self, global_obs: torch.Tensor, next_global_obs: torch.Tensor) -> torch.Tensor:
         base_global_obs = self._align_base_global_obs(global_obs, next_global_obs)
-        if self.predict_delta_mode != PredictDeltaMode.PER_STEP_DELTA:
-            return base_global_obs
         if base_global_obs.shape == next_global_obs.shape:
             return base_global_obs
         return torch.cat([base_global_obs, next_global_obs[:, :-1]], dim=1)

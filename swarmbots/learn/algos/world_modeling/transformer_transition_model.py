@@ -29,7 +29,6 @@ class TransformerTransitionModelConfig:
     dropout: float = 0.0
     act_fn_cls: ActivationFactory = nn.GELU
     add_agent_embeddings: bool = False
-    predict_delta: bool = True
     coembed_mlp_hidden_dims: list[int] | None = None
     head_mlp_hidden_dims: list[int] | None = None
     coembed_init_gain: float = 1.0
@@ -87,7 +86,6 @@ class TransformerTransitionModel(nn.Module):
         self.dropout = config.dropout
         self.act_fn_cls = config.act_fn_cls
         self.add_agent_embeddings = config.add_agent_embeddings
-        self.predict_delta = config.predict_delta
         self.coembed_mlp_hidden_dims = config.coembed_mlp_hidden_dims
         self.head_mlp_hidden_dims = config.head_mlp_hidden_dims
         self.coembed_init_gain = config.coembed_init_gain
@@ -165,7 +163,6 @@ class TransformerTransitionModel(nn.Module):
             "dropout": self.dropout,
             "act_fn_cls": str(self.act_fn_cls),
             "add_agent_embeddings": self.add_agent_embeddings,
-            "predict_delta": self.predict_delta,
             "coembed_mlp_hidden_dims": self.coembed_mlp_hidden_dims,
             "head_mlp_hidden_dims": self.head_mlp_hidden_dims,
             "coembed_init_gain": self.coembed_init_gain,
@@ -208,7 +205,7 @@ class TransformerTransitionModel(nn.Module):
 
         h = self.encoder(x, src_key_padding_mask=src_key_padding_mask)
         pred = self.head(h)
-        prediction = z_t + pred if self.predict_delta else pred
+        prediction = z_t + pred
         # Absent tokens can reappear later, so training and inference must carry the same masked history.
         return prediction if src_key_padding_mask is None else prediction.masked_fill(
             src_key_padding_mask.unsqueeze(-1), 0.0,

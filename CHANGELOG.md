@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make on-policy and off-policy NOP scalar, angle, and rotation targets always predict per-step deltas. Remove prediction-mode flags, absolute/initial-relative branches, and serialized mode settings without compatibility aliases or migrations; latent transitions always use residual updates and binary targets remain next-state flags.
+- Cover NOP angle averaging with unequal valid-target counts across agents, learned predictor input/parameter gradients, and resumed per-step scoring after connector reconnection, including compiled loss execution.
+- Exclude undefined connector twists from NOP angle losses and their averaging denominator. Require defined base and successor angles for delta targets, keeping connectivity-transition masking on-device without extra observation fields or replay storage.
+- Clarify that custom global scalar losses with per-target payload activity masks must return unreduced losses, with an actionable error instead of a mask-shape mismatch. Preserve per-item custom losses for whole-item masks.
 - Promote review probes to regression tests for actual replay exposure and resume, warmed compiled SAC checkpoint continuation, collector GAE and recurrent PPO/NOP/PopArt updates, policy likelihoods and critic padding, nested-history normalization, optional instability diagnostics, and real video encoding.
 - Save SAC entropy temperature independently of optional optimizer state. Restore learned temperature even when optimizer persistence or restoration is disabled; keep current checkpoints at v1 without compatibility layers or migrations.
 - Replace the off-policy constructor's `gradient_steps` setting with `replay_exposure`, defaulting to eight scored replay uses per new transition in registered presets. Require a positive whole update count per collection cycle and reject incompatible exposure/collection/batch settings before environment allocation. Count recurrent learning positions, exclude burn-in, and omit fractional scheduling and checkpoint credit. Omitted low-level collection lengths use one vector step, without extending rollouts to fit replay batches.

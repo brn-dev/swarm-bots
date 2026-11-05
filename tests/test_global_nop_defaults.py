@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from dataclasses import fields, replace
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +9,7 @@ from torch import nn
 
 from swarmbots.benchmark.registry import ALL_BENCHMARK_IDS, make_scenario
 from swarmbots.learn.algos.off_policy.nop import SACNOPConfig, SACNOPModule
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, PredictDeltaMode
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.hybrid_action_space import HybridActionSpace
 from swarmbots.learn.obs_indices import ObsIndices
@@ -112,11 +112,11 @@ def test_registered_policy_builders_enable_public_global_nop_targets(variant: st
     assert nop.global_rot6ds_predictor is not None
 
 
-def _module(kind: str, predict_delta: bool | PredictDeltaMode) -> NextObsPredWrapper | SACNOPModule:
-    targets = replace(make_next_obs_pred_config(_indices(
+def _module(kind: str) -> NextObsPredWrapper | SACNOPModule:
+    targets = make_next_obs_pred_config(_indices(
         local_scalar_indices=[0], global_scalar_indices=[1, 13], global_rot6d_indices=[4, 16],
         global_scalar_active_mask_indices=[0, 12], global_rot6d_active_mask_indices=[0, 12],
-    )), predict_delta=predict_delta)
+    ))
     if kind == "ppo":
         return NextObsPredWrapper(object(), world_model_config=NOPWorldModelConfig(
             n_agents=2, local_latent_dim=8, action_dim=1, d_model_transition_model=8,
@@ -130,13 +130,12 @@ def _module(kind: str, predict_delta: bool | PredictDeltaMode) -> NextObsPredWra
 
 
 @pytest.mark.parametrize("kind", ["ppo", "off_policy"])
-@pytest.mark.parametrize("predict_delta", [False, PredictDeltaMode.PER_STEP_DELTA, PredictDeltaMode.INITIAL_DELTA])
 @pytest.mark.parametrize("active", [False, True])
 def test_global_payload_prediction_ignores_inactive_slots_before_losses_and_backward(
-    kind: str, predict_delta: bool | PredictDeltaMode, active: bool, compile_nop: bool,
+    kind: str, active: bool, compile_nop: bool,
 ) -> None:
     torch.manual_seed(91)
-    module = _module(kind, predict_delta)
+    module = _module(kind)
     if compile_nop:
         module._compute_next_obs_pred_loss_fn = torch.compile(
             module._compute_next_obs_pred_loss_impl, backend="aot_eager", fullgraph=True,
@@ -168,12 +167,12 @@ def test_global_payload_prediction_ignores_inactive_slots_before_losses_and_back
     scalar_head = next(layer for layer in module.global_scalars_predictor.modules() if isinstance(layer, nn.Linear))
     rotation_head = next(layer for layer in module.global_rot6ds_predictor.modules() if isinstance(layer, nn.Linear))
     assert torch.count_nonzero(scalar_head.weight.grad[1:]) == 0
-    assert torch.count_nonzero(rotation_head.weight.grad[3 if predict_delta else 6:]) == 0
+    assert torch.count_nonzero(rotation_head.weight.grad[3:]) == 0
     if active:
         assert metrics["global_scalar_loss"] > 0
         assert metrics["global_rot6d_loss"] > 0
         assert scalar_head.weight.grad[0].abs().sum() > 0
-        assert rotation_head.weight.grad[:3 if predict_delta else 6].abs().sum() > 0
+        assert rotation_head.weight.grad[:3].abs().sum() > 0
     else:
         assert metrics["global_scalar_loss"] == metrics["global_rot6d_loss"] == 0
         assert torch.count_nonzero(scalar_head.weight.grad) == 0
@@ -184,13 +183,13 @@ def test_zero_valued_goal_coordinates_remain_valid_global_targets() -> None:
     module = SACNOPModule(n_agents=1, source_latent_dim=2, action_dim=1, name="critic", config=SACNOPConfig(
         enabled=True, transition_model_d_model=2, transition_model_nhead=1, transition_model_num_layers=1,
         scalar_loss_fn="smooth_l1", next_obs_pred_config=NextObsPredConfig(
-            global_scalar_target_indices=[0, 1, 2], predict_delta=False,
+            global_scalar_target_indices=[0, 1, 2],
         ),
     ))
     module.global_scalars_predictor = nn.Linear(2, 3)
     nn.init.zeros_(module.global_scalars_predictor.weight)
     nn.init.ones_(module.global_scalars_predictor.bias)
-    loss = module.compute_global_scalar_loss(torch.zeros(1, 2), torch.zeros(1, 3), None, None)
+    loss = module.compute_global_scalar_loss(torch.zeros(1, 2), torch.zeros(1, 3), None, torch.zeros(1, 3))
     assert loss > 0
     loss.backward()
     assert torch.count_nonzero(module.global_scalars_predictor.bias.grad) == 3

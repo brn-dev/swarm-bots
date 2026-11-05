@@ -1823,7 +1823,6 @@ class SACTests(unittest.TestCase):
                     transition_model_dim_feedforward=16,
                     next_obs_pred_config=NextObsPredConfig(
                         local_scalar_target_indices=[0, 1],
-                        predict_delta=False,
                     ),
                 ),
             )
@@ -1931,7 +1930,6 @@ class SACTests(unittest.TestCase):
                     transition_model_dim_feedforward=16,
                     next_obs_pred_config=NextObsPredConfig(
                         local_scalar_target_indices=[0, 1],
-                        predict_delta=False,
                     ),
                 ),
             )
@@ -1998,7 +1996,6 @@ class SACTests(unittest.TestCase):
                     transition_model_dim_feedforward=16,
                     next_obs_pred_config=NextObsPredConfig(
                         local_scalar_target_indices=[0, 1],
-                        predict_delta=False,
                     ),
                 ),
             )
@@ -2062,7 +2059,6 @@ class SACTests(unittest.TestCase):
                     transition_model_dim_feedforward=16,
                     next_obs_pred_config=NextObsPredConfig(
                         local_scalar_target_indices=[0, 1],
-                        predict_delta=False,
                     ),
                 ),
             )

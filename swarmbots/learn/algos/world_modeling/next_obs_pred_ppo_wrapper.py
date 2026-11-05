@@ -51,7 +51,6 @@ class NOPWorldModelConfig:
     add_agent_embeddings_transition_model: bool = False
     transition_model_coembed_hidden_dims: list[int] | None = None
     transition_model_head_hidden_dims: list[int] | None = None
-    transition_model_predict_delta: bool = True
     wm_pre_transition_dims: list[int] | None = None
     wm_pre_predictors_dims: list[int] | None = None
     wm_scalar_predictor_hidden_dims: list[int] | None = None
@@ -391,8 +390,6 @@ class NextObsPredWrapper(
             )
             wm_pre_predictors_dim = world_model_config.wm_pre_predictors_dims[-1]
 
-        angle_output_multiplier = 1 if next_obs_pred_config.predict_delta else 2
-        rot6d_output_multiplier = 3 if next_obs_pred_config.predict_delta else 6
 
         local_scalars_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
@@ -408,7 +405,7 @@ class NextObsPredWrapper(
         local_angles_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
             output_dim=(
-                len(next_obs_pred_config.local_angle_target_indices) * angle_output_multiplier
+                len(next_obs_pred_config.local_angle_target_indices)
                 if next_obs_pred_config.local_angle_target_indices is not None
                 else 0
             ),
@@ -419,7 +416,7 @@ class NextObsPredWrapper(
         local_rot6ds_predictor = _build_predictor(
             input_dim=wm_pre_predictors_dim,
             output_dim=(
-                len(next_obs_pred_config.local_rot6d_target_indices) * rot6d_output_multiplier
+                len(next_obs_pred_config.local_rot6d_target_indices) * 3
                 if next_obs_pred_config.local_rot6d_target_indices is not None
                 else 0
             ),
@@ -467,7 +464,7 @@ class NextObsPredWrapper(
         global_rot6ds_predictor = _build_predictor(
             input_dim=global_predictor_input_dim,
             output_dim=(
-                len(next_obs_pred_config.global_rot6d_target_indices) * rot6d_output_multiplier
+                len(next_obs_pred_config.global_rot6d_target_indices) * 3
                 if next_obs_pred_config.global_rot6d_target_indices is not None
                 else 0
             ),
@@ -488,7 +485,6 @@ class NextObsPredWrapper(
             dropout=self._wm_transition_model_dropout,
             act_fn_cls=self._wm_act_fn_cls,
             add_agent_embeddings=world_model_config.add_agent_embeddings_transition_model,
-            predict_delta=world_model_config.transition_model_predict_delta,
             coembed_mlp_hidden_dims=world_model_config.transition_model_coembed_hidden_dims,
             head_mlp_hidden_dims=world_model_config.transition_model_head_hidden_dims,
             coembed_init_gain=world_model_config.transition_model_coembed_init_gain,

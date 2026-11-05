@@ -1,10 +1,13 @@
+import math
 import unittest
+from copy import deepcopy
 
+import pytest
 import torch
 from torch import nn
 
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin, PredictDeltaMode
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import PPOWMSamples
 
 
@@ -99,6 +102,239 @@ def _make_harness(
     return harness
 
 
+def _angle_observations(angles: torch.Tensor, defined: torch.Tensor) -> torch.Tensor:
+    pairs = torch.stack((angles.sin(), angles.cos()), dim=-1)
+    return pairs.masked_fill(~defined.unsqueeze(-1), 0.0).flatten(-2)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_mixed_angle_counts_preserve_per_target_loss_and_learned_head_gradients(
+    compiled: bool,
+) -> None:
+    predictor = nn.Linear(2, 3, dtype=torch.float64)
+    with torch.no_grad():
+        predictor.weight.copy_(torch.tensor([[0.2, -0.1], [0.3, 0.4], [0.6, -0.2]]))
+        predictor.bias.copy_(torch.tensor([0.05, -0.2, 0.3]))
+    reference_predictor = deepcopy(predictor)
+    harness = _make_harness(
+        config=NextObsPredConfig(local_angle_target_indices=[0, 2, 4]),
+        local_angles_predictor=predictor,
+    )
+    features = torch.tensor([[[1., 0.], [0., 2.]], [[-1., 1.], [2., -1.]]], dtype=torch.float64, requires_grad=True)
+    reference_features = features.detach().clone().requires_grad_()
+    base_angles = torch.tensor([[[0.1, 0.4, 0.], [0.2, 0., 0.]],
+                                [[0., 0., 0.], [0.3, -0.5, 0.2]]], dtype=torch.float64)
+    target_angles = torch.tensor([[[0.8, -0.3, 0.], [1.1, 0., 0.]],
+                                  [[0., 0., 0.], [-0.2, 0.7, -0.6]]], dtype=torch.float64)
+    defined = torch.tensor([[[True, True, False], [True, False, False]],
+                            [[False, False, False], [True, True, True]]])
+    item_mask = torch.tensor([[True, True], [True, False]])
+    reference_outputs = reference_predictor(reference_features)
+    target_values = (0.7, -0.7, 0.9)
+    errors = []
+    for (batch, agent, angle), target in zip(((0, 0, 0), (0, 0, 1), (0, 1, 0)), target_values, strict=True):
+        prediction = reference_outputs[batch, agent, angle]
+        errors.append(1.0 - torch.cos(prediction - target))
+    expected_loss = torch.stack(errors).mean()
+    per_item_average = ((errors[0] + errors[1]) / 2 + errors[2]) / 2
+    assert not torch.isclose(expected_loss, per_item_average)
+    if compiled:
+        torch.compiler.reset()
+    try:
+        loss_fn = harness.compute_angle_loss
+        if compiled:
+            loss_fn = torch.compile(loss_fn, backend="aot_eager", fullgraph=True)
+        loss = loss_fn(
+            features, _angle_observations(target_angles, defined), item_mask,
+            _angle_observations(base_angles, defined),
+        )
+        torch.testing.assert_close(loss, expected_loss)
+        loss.backward()
+        expected_loss.backward()
+        torch.testing.assert_close(features.grad, reference_features.grad)
+        torch.testing.assert_close(features.grad[1], torch.zeros_like(features.grad[1]))
+        for actual, expected in zip(predictor.parameters(), reference_predictor.parameters(), strict=True):
+            assert torch.isfinite(actual.grad).all()
+            torch.testing.assert_close(actual.grad, expected.grad)
+        unused_head_start = 2
+        unused_weight_grad = predictor.weight.grad[unused_head_start:]
+        unused_bias_grad = predictor.bias.grad[unused_head_start:]
+        torch.testing.assert_close(unused_weight_grad, torch.zeros_like(unused_weight_grad))
+        torch.testing.assert_close(unused_bias_grad, torch.zeros_like(unused_bias_grad))
+    finally:
+        if compiled:
+            torch.compiler.reset()
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_per_step_delta_resumes_scoring_after_reconnection(compiled: bool) -> None:
+    harness = _make_harness(
+        config=NextObsPredConfig(local_angle_target_indices=[0]),
+        local_angles_predictor=nn.Identity(),
+    )
+    initial_angle = torch.tensor([[[0.3]]], dtype=torch.float64)
+    initial_obs = _angle_observations(initial_angle, torch.ones_like(initial_angle, dtype=torch.bool))
+    future_angles = torch.tensor([[[[0.7]], [[0.0]], [[1.1]], [[1.7]], [[2.4]]]], dtype=torch.float64)
+    targets = _angle_observations(future_angles, torch.tensor([[[[True]], [[False]], [[True]], [[True]], [[True]]]]))
+    prediction = torch.tensor([[[0.15]]], dtype=torch.float64, requires_grad=True)
+    expected_errors = (0.15 - (0.7 - 0.3), 0.15 - (1.7 - 1.1))
+    expected_loss = sum(1.0 - math.cos(error) for error in expected_errors) / 2
+    expected_gradient = sum(math.sin(error) for error in expected_errors) / 2
+    if compiled:
+        torch.compiler.reset()
+        harness._compute_next_obs_pred_loss_fn = torch.compile(
+            harness._compute_next_obs_pred_loss_impl, backend="aot_eager", fullgraph=True,
+        )
+    try:
+        loss, _ = harness.compute_next_obs_pred_loss(
+            local_latents=prediction, local_obs=initial_obs,
+            next_local_obs=targets, actions=torch.zeros(1, 5, 1, 1, dtype=torch.float64),
+            agent_mask=torch.ones(1, 5, 1, dtype=torch.bool), time_mask=torch.tensor([[True, True, True, True, False]]),
+        )
+        torch.testing.assert_close(loss, prediction.new_tensor(expected_loss))
+        loss.backward()
+        torch.testing.assert_close(prediction.grad, torch.full_like(prediction, expected_gradient))
+    finally:
+        if compiled:
+            torch.compiler.reset()
+
+
+@pytest.mark.parametrize(("base_connected", "target_connected"), [(True, True), (False, False),
+                                                                  (False, True), (True, False)])
+def test_angle_loss_scores_only_defined_connection_targets(
+    base_connected: bool, target_connected: bool,
+) -> None:
+    harness = _make_harness(
+        config=NextObsPredConfig(local_angle_target_indices=[0, 2]),
+        local_angles_predictor=nn.Identity(),
+    )
+    base_obs = torch.tensor([[[math.sin(0.2), math.cos(0.2),
+                               math.sin(0.4) if base_connected else 0.0,
+                               math.cos(0.4) if base_connected else 0.0]]])
+    next_obs = torch.tensor([[[math.sin(0.7), math.cos(0.7),
+                               math.sin(1.0) if target_connected else 0.0,
+                               math.cos(1.0) if target_connected else 0.0]]])
+    connector_valid = target_connected and base_connected
+    predictions = torch.tensor([[[0.1, 0.3 if connector_valid else torch.nan]]], requires_grad=True)
+    errors = [0.1 - (0.7 - 0.2)]
+    if connector_valid:
+        errors.append(0.3 - (1.0 - 0.4))
+    hinge_width = 1
+    loss = harness.compute_angle_loss(predictions, next_obs, None, base_obs)
+    expected_loss = sum(1.0 - math.cos(error) for error in errors) / len(errors)
+    torch.testing.assert_close(loss, torch.tensor(expected_loss))
+    loss.backward()
+    assert torch.isfinite(predictions.grad).all()
+    assert predictions.grad[..., :hinge_width].abs().sum() > 0
+    if not connector_valid:
+        assert torch.count_nonzero(predictions.grad[..., hinge_width:]) == 0
+        reference = _make_harness(
+            config=NextObsPredConfig(local_angle_target_indices=[0]),
+            local_angles_predictor=nn.Identity(),
+        )
+        hinge_predictions = predictions[..., :hinge_width].detach().clone().requires_grad_()
+        reference_loss = reference.compute_angle_loss(hinge_predictions, next_obs[..., :2], None, base_obs[..., :2])
+        reference_loss.backward()
+        torch.testing.assert_close(predictions.grad[..., :hinge_width], hinge_predictions.grad)
+
+
+def test_zero_angle_remains_a_defined_prediction_target() -> None:
+    harness = _make_harness(
+        config=NextObsPredConfig(local_angle_target_indices=[0]),
+        local_angles_predictor=nn.Identity(),
+    )
+    predicted_angle = torch.tensor([[[0.2]]], requires_grad=True)
+    predictions = predicted_angle
+    observations = torch.tensor([[[0.0, 1.0]]])
+    loss = harness.compute_angle_loss(predictions, observations, None, observations)
+    torch.testing.assert_close(loss, torch.tensor(1.0 - math.cos(0.2)))
+    loss.backward()
+    torch.testing.assert_close(predicted_angle.grad, torch.full_like(predicted_angle, math.sin(0.2)))
+
+
+def test_angle_loss_without_defined_targets_is_zero_with_finite_zero_gradients() -> None:
+    harness = _make_harness(
+        config=NextObsPredConfig(local_angle_target_indices=[0]),
+        local_angles_predictor=nn.Identity(),
+    )
+    predictions = torch.full((2, 3, 2, 1), torch.nan, requires_grad=True)
+    observations = torch.zeros(2, 3, 2, 2)
+    loss = harness.compute_angle_loss(predictions, observations, torch.ones(2, 3, 2, dtype=torch.bool), observations)
+    torch.testing.assert_close(loss, torch.tensor(0.0))
+    loss.backward()
+    torch.testing.assert_close(predictions.grad, torch.zeros_like(predictions))
+
+
+def test_multistep_angle_loss_respects_connectivity_and_future_masks() -> None:
+    harness = _make_harness(
+        config=NextObsPredConfig(local_angle_target_indices=[0]),
+        local_angles_predictor=nn.Identity(),
+    )
+    angles = torch.tensor([0.4, 0.7, 0.0, 1.1])
+    targets = torch.stack((angles.sin(), angles.cos()), dim=-1).reshape(1, 4, 1, 2)
+    targets[:, 2] = 0.0
+    predictions = torch.tensor([[[0.15]]])
+    loss, _ = harness.compute_next_obs_pred_loss(
+        local_latents=predictions.requires_grad_(), local_obs=torch.zeros(1, 1, 2),
+        next_local_obs=targets, actions=torch.zeros(1, 4, 1, 1),
+        agent_mask=torch.ones(1, 4, 1, dtype=torch.bool),
+        time_mask=torch.tensor([[True, True, True, False]]),
+    )
+    expected_loss = 1.0 - math.cos(0.15 - (0.7 - 0.4))
+    torch.testing.assert_close(loss, torch.tensor(expected_loss))
+    loss.backward()
+    assert torch.isfinite(predictions.grad).all()
+
+
+def test_compiled_angle_loss_excludes_undefined_targets() -> None:
+    harness = _make_harness(
+        config=NextObsPredConfig(local_angle_target_indices=[0, 2]),
+        local_angles_predictor=nn.Identity(),
+    )
+    predictions = torch.tensor([[[0.1, torch.nan]]], requires_grad=True)
+    next_obs = torch.tensor([[[math.sin(0.7), math.cos(0.7), 0.0, 0.0]]])
+    base_obs = torch.tensor([[[math.sin(0.2), math.cos(0.2), 0.0, 0.0]]])
+    torch.compiler.reset()
+    try:
+        loss_fn = torch.compile(harness.compute_angle_loss, backend="aot_eager", fullgraph=True)
+        loss = loss_fn(predictions, next_obs, torch.ones(1, 1, dtype=torch.bool), base_obs)
+        expected_loss = 1.0 - math.cos(0.1 - (0.7 - 0.2))
+        torch.testing.assert_close(loss, torch.tensor(expected_loss))
+        loss.backward()
+        assert torch.isfinite(predictions.grad).all()
+    finally:
+        torch.compiler.reset()
+
+
+@pytest.mark.parametrize("loss_fn", [_PerItemMSELoss(), nn.MSELoss()])
+def test_global_scalar_activity_masks_explain_unreduced_custom_loss_requirement(loss_fn: nn.Module) -> None:
+    harness = _make_harness(
+        config=NextObsPredConfig(
+            global_scalar_target_indices=[1, 3], global_scalar_active_mask_indices=[0, 2],
+        ),
+        global_scalars_predictor=nn.Identity(), scalar_loss_fn=loss_fn,
+    )
+    with pytest.raises(ValueError, match="activity masks require scalar_loss_fn to return unreduced per-target losses"):
+        observations = torch.tensor([[1., 0., 0., 100.]])
+        harness.compute_global_scalar_loss(torch.ones(1, 2), observations, None, observations)
+
+
+def test_global_scalar_activity_masks_support_unreduced_custom_loss_and_ignore_inactive_gradients() -> None:
+    harness = _make_harness(
+        config=NextObsPredConfig(
+            global_scalar_target_indices=[1, 3], global_scalar_active_mask_indices=[0, 2],
+        ),
+        global_scalars_predictor=nn.Identity(), scalar_loss_fn=nn.MSELoss(reduction="none"),
+    )
+    predictions = torch.tensor([[2., torch.nan], [torch.nan, torch.nan]], requires_grad=True)
+    targets = torch.tensor([[1., 1., 0., torch.nan], [0., torch.nan, 0., torch.nan]])
+    current_obs = torch.tensor([[1., 0., 0., 0.], [0., 0., 0., 0.]])
+    loss = harness.compute_global_scalar_loss(predictions, targets, None, current_obs)
+    torch.testing.assert_close(loss, torch.tensor(1.0))
+    loss.backward()
+    torch.testing.assert_close(predictions.grad, torch.tensor([[2., 0.], [0., 0.]]))
+
+
 class NextObsPredGlobalTests(unittest.TestCase):
     def test_empty_global_target_lists_are_noop(self) -> None:
         harness = _make_harness(
@@ -106,7 +342,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
                 local_scalar_target_indices=[0],
                 global_scalar_target_indices=[],
                 global_rot6d_target_indices=[],
-                predict_delta=False,
             ),
             local_scalars_predictor=nn.Identity(),
         )
@@ -115,6 +350,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         actions = torch.zeros(1, 2, 1)
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            local_obs=torch.zeros_like(next_local_obs),
             local_latents=local_latents,
             next_local_obs=next_local_obs,
             actions=actions,
@@ -128,7 +364,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 local_scalar_target_indices=[0],
-                predict_delta=False,
             ),
             local_scalars_predictor=nn.Identity(),
         )
@@ -137,6 +372,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         actions = torch.zeros(1, 2, 1)
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            local_obs=torch.zeros_like(next_local_obs),
             local_latents=local_latents,
             next_local_obs=next_local_obs,
             actions=actions,
@@ -151,7 +387,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 local_scalar_target_indices=[0],
-                predict_delta=True,
             ),
             local_scalars_predictor=nn.Identity(),
         )
@@ -171,38 +406,36 @@ class NextObsPredGlobalTests(unittest.TestCase):
         self.assertAlmostEqual(loss.item(), 0.0)
         self.assertEqual(metrics["scalar_loss"], 0.0)
 
-    def test_delta_targets_retain_unscored_predecessors_and_initial_observations(self) -> None:
-        for mode in (PredictDeltaMode.PER_STEP_DELTA, PredictDeltaMode.INITIAL_DELTA):
-            with self.subTest(mode=mode):
-                harness = _make_harness(
-                    config=NextObsPredConfig(
-                        local_scalar_target_indices=[0], global_scalar_target_indices=[0], predict_delta=mode,
-                    ),
-                    local_scalars_predictor=nn.Identity(), global_scalars_predictor=nn.Identity(),
-                )
-                origin = 10.0 if mode == PredictDeltaMode.PER_STEP_DELTA else 13.0
-                loss, metrics = harness.compute_next_obs_pred_loss(
-                    local_latents=torch.full((1, 2, 1), 4.0),
-                    local_obs=torch.tensor([[[origin], [origin + 10.0]]]),
-                    global_obs=torch.tensor([[origin]]),
-                    next_local_obs=torch.tensor([[[[13.0], [23.0]], [[17.0], [27.0]]]]),
-                    next_global_obs=torch.tensor([[[13.0], [17.0]]]),
-                    actions=torch.zeros(1, 2, 2, 1), time_mask=torch.tensor([[False, True]]),
-                )
-                self.assertEqual(loss.item(), 0.0)
-                self.assertEqual(metrics["scalar_loss"], 0.0)
-                self.assertEqual(metrics["global_scalar_loss"], 0.0)
+    def test_delta_targets_retain_unscored_predecessors(self) -> None:
+        harness = _make_harness(
+            config=NextObsPredConfig(
+                local_scalar_target_indices=[0], global_scalar_target_indices=[0],
+            ),
+            local_scalars_predictor=nn.Identity(), global_scalars_predictor=nn.Identity(),
+        )
+        origin = 10.0
+        loss, metrics = harness.compute_next_obs_pred_loss(
+            local_latents=torch.full((1, 2, 1), 4.0),
+            local_obs=torch.tensor([[[origin], [origin + 10.0]]]),
+            global_obs=torch.tensor([[origin]]),
+            next_local_obs=torch.tensor([[[[13.0], [23.0]], [[17.0], [27.0]]]]),
+            next_global_obs=torch.tensor([[[13.0], [17.0]]]),
+            actions=torch.zeros(1, 2, 2, 1), time_mask=torch.tensor([[False, True]]),
+        )
+        self.assertEqual(loss.item(), 0.0)
+        self.assertEqual(metrics["scalar_loss"], 0.0)
+        self.assertEqual(metrics["global_scalar_loss"], 0.0)
 
     def test_local_loss_uses_next_state_agent_mask(self) -> None:
         harness = _make_harness(
             config=NextObsPredConfig(
                 local_scalar_target_indices=[0],
-                predict_delta=False,
             ),
             local_scalars_predictor=nn.Identity(),
         )
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            local_obs=torch.zeros(1, 2, 1),
             local_latents=torch.tensor([[[1.0], [100.0]]]),
             next_local_obs=torch.tensor([[[1.0], [999.0]]]),
             actions=torch.zeros(1, 2, 1),
@@ -217,13 +450,13 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 local_scalar_target_indices=[0],
-                predict_delta=False,
             ),
             local_scalars_predictor=nn.Identity(),
             scalar_loss_fn=_PerItemMSELoss(),
         )
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            local_obs=torch.zeros(1, 2, 1),
             local_latents=torch.tensor([[[1.0], [100.0]]]),
             next_local_obs=torch.tensor([[
                 [[0.0], [99.0]],
@@ -242,7 +475,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 local_angle_target_indices=[0],
-                predict_delta=True,
             ),
             local_angles_predictor=nn.Identity(),
         )
@@ -265,7 +497,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
             config=NextObsPredConfig(
                 local_binary_target_indices=[0],
                 binary_target_ema_decay=0.0,
-                predict_delta=False,
             ),
             local_binaries_predictor=nn.Identity(),
         )
@@ -285,7 +516,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 local_rot6d_target_indices=[0],
-                predict_delta=True,
             ),
             local_rot6ds_predictor=nn.Identity(),
         )
@@ -324,7 +554,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
                 scalar_loss_fn="mse",
                 next_obs_pred_config=NextObsPredConfig(
                     local_scalar_target_indices=[0],
-                    predict_delta=True,
                 ),
             ),
         )
@@ -362,7 +591,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_scalar_target_indices=[0, 1],
-                predict_delta=True,
             ),
             global_scalars_predictor=nn.Identity(),
         )
@@ -389,13 +617,13 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_scalar_target_indices=[0, 1],
-                predict_delta=False,
             ),
             global_scalars_predictor=nn.Identity(),
             scalar_loss_fn=nn.MSELoss(),
         )
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            global_obs=torch.zeros(2, 2),
             local_latents=torch.tensor([
                 [[1.0, 3.0], [1.0, 3.0]],
                 [[2.0, 4.0], [2.0, 4.0]],
@@ -412,13 +640,13 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_scalar_target_indices=[0, 1],
-                predict_delta=False,
             ),
             global_scalars_predictor=nn.Identity(),
             scalar_loss_fn=_PerItemMSELoss(),
         )
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            global_obs=torch.zeros(2, 2),
             local_latents=torch.tensor([
                 [[100.0, 100.0], [100.0, 100.0]],
                 [[2.0, 4.0], [2.0, 4.0]],
@@ -437,7 +665,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_scalar_target_indices=[0],
-                predict_delta=False,
             ),
             global_scalars_predictor=nn.Identity(),
         )
@@ -445,6 +672,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         next_global_obs = torch.tensor([[2.0]])
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            global_obs=torch.zeros(1, 1),
             local_latents=local_latents,
             next_local_obs=torch.zeros(1, 3, 1),
             next_global_obs=next_global_obs,
@@ -460,12 +688,12 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_scalar_target_indices=[0],
-                predict_delta=False,
             ),
             global_scalars_predictor=nn.Identity(),
         )
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            global_obs=torch.zeros(2, 1),
             local_latents=torch.tensor([[[100.0], [200.0]], [[1.0], [3.0]]]),
             next_local_obs=torch.zeros(2, 2, 1),
             next_global_obs=torch.tensor([[999.0], [2.0]]),
@@ -477,16 +705,15 @@ class NextObsPredGlobalTests(unittest.TestCase):
         self.assertAlmostEqual(loss.item(), 0.0)
         self.assertEqual(metrics["global_scalar_loss"], 0.0)
 
-    def test_global_targets_require_next_global_obs_only_when_configured(self) -> None:
+    def test_global_delta_targets_require_current_and_successor_observations(self) -> None:
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_scalar_target_indices=[0],
-                predict_delta=False,
             ),
             global_scalars_predictor=nn.Identity(),
         )
 
-        with self.assertRaisesRegex(ValueError, "next_global_obs is required"):
+        with self.assertRaisesRegex(ValueError, "global_obs and next_global_obs are required"):
             harness.compute_next_obs_pred_loss(
                 local_latents=torch.ones(1, 2, 1),
                 next_local_obs=torch.zeros(1, 2, 1),
@@ -497,7 +724,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_scalar_target_indices=[0, 1],
-                predict_delta=True,
             ),
             global_scalars_predictor=nn.Identity(),
         )
@@ -524,7 +750,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_scalar_target_indices=[0],
-                predict_delta=False,
             ),
             global_scalars_predictor=nn.Identity(),
         )
@@ -535,6 +760,7 @@ class NextObsPredGlobalTests(unittest.TestCase):
         time_mask = torch.tensor([[True, False]])
 
         loss, metrics = harness.compute_next_obs_pred_loss(
+            global_obs=torch.zeros(1, 1),
             local_latents=local_latents,
             next_local_obs=next_local_obs,
             next_global_obs=next_global_obs,
@@ -550,18 +776,18 @@ class NextObsPredGlobalTests(unittest.TestCase):
         harness = _make_harness(
             config=NextObsPredConfig(
                 global_rot6d_target_indices=[0],
-                predict_delta=False,
             ),
             global_rot6ds_predictor=nn.Identity(),
         )
-        local_latents = identity_rot6d.view(1, 1, 6).expand(1, 2, 6).clone()
+        local_latents = torch.tensor([[[0.0, 0.0, 0.2], [0.0, 0.0, 0.6]]])
         actions = torch.zeros(1, 2, 1)
-        next_global_obs = identity_rot6d.view(1, 6)
+        next_global_obs = torch.tensor([[math.cos(0.4), math.sin(0.4), 0.0, -math.sin(0.4), math.cos(0.4), 0.0]])
         next_local_obs = torch.zeros(1, 2, 1)
 
         loss, metrics = harness.compute_next_obs_pred_loss(
             local_latents=local_latents,
             next_local_obs=next_local_obs,
+            global_obs=identity_rot6d.view(1, 6),
             next_global_obs=next_global_obs,
             actions=actions,
         )
@@ -582,7 +808,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
                 dim_feedforward_transition_model=8,
                 next_obs_pred_config=NextObsPredConfig(
                     local_scalar_target_indices=[0],
-                    predict_delta=False,
                 ),
             ),
         )
@@ -606,7 +831,6 @@ class NextObsPredGlobalTests(unittest.TestCase):
                 next_obs_pred_config=NextObsPredConfig(
                     global_scalar_target_indices=[0],
                     global_rot6d_target_indices=[1],
-                    predict_delta=False,
                 ),
             ),
         )

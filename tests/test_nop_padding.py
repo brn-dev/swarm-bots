@@ -8,7 +8,7 @@ from torch import nn
 
 from swarmbots.learn.algos.off_policy.nop import SACNOPConfig, SACNOPModule, SACNOPSequenceBatch
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACPolicy
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, PredictDeltaMode
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from tests.test_recurrent_tmasac import (
     _DummyContinuousEnv, _actor_state_critic_inputs, _shared_recurrent_policy_config,
 )
@@ -39,7 +39,7 @@ def _nop_module(
         config=SACNOPConfig(
             enabled=True, nop_latent_dim=8, transition_model_d_model=8, transition_model_nhead=2,
             transition_model_num_layers=1, transition_model_dim_feedforward=16,
-            next_obs_pred_config=target_config or NextObsPredConfig(local_scalar_target_indices=[0], predict_delta=False),
+            next_obs_pred_config=target_config or NextObsPredConfig(local_scalar_target_indices=[0]),
         ),
     ).to(device)
 
@@ -198,9 +198,8 @@ def test_nop_ignores_unused_action_tails_and_preserves_unscored_action_context(
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
 @pytest.mark.parametrize("compiled", [False, True])
-@pytest.mark.parametrize("predict_delta", [False, PredictDeltaMode.PER_STEP_DELTA, PredictDeltaMode.INITIAL_DELTA])
 def test_all_nop_targets_ignore_padding_without_erasing_delta_predecessors(
-    device: str, compiled: bool, predict_delta: bool | PredictDeltaMode,
+    device: str, compiled: bool,
 ) -> None:
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("requires CUDA")
@@ -208,7 +207,6 @@ def test_all_nop_targets_ignore_padding_without_erasing_delta_predecessors(
     module = _nop_module(device, skip_first_transition=False, target_config=NextObsPredConfig(
         local_scalar_target_indices=[0], local_angle_target_indices=[1], local_rot6d_target_indices=[3],
         local_binary_target_indices=[9], global_scalar_target_indices=[0], global_rot6d_target_indices=[1],
-        predict_delta=predict_delta,
     ))
     reference = deepcopy(module)
     agent_mask = torch.tensor([[[True, True, False]] * 2], device=device)
@@ -216,14 +214,10 @@ def test_all_nop_targets_ignore_padding_without_erasing_delta_predecessors(
     target_valid = agent_mask.unsqueeze(2) & time_mask.unsqueeze(-1)
     needed_local_targets = target_valid.clone()
     needed_global_targets = time_mask.clone()
-    if predict_delta == PredictDeltaMode.PER_STEP_DELTA:
-        needed_local_targets[:, :, :-1] |= target_valid[:, :, 1:]
-        needed_global_targets[:, :, :-1] |= time_mask[:, :, 1:]
+    needed_local_targets[:, :, :-1] |= target_valid[:, :, 1:]
+    needed_global_targets[:, :, :-1] |= time_mask[:, :, 1:]
     origin_valid = target_valid[:, :, 0]
     global_origin_valid = time_mask[:, :, 0]
-    if predict_delta == PredictDeltaMode.INITIAL_DELTA:
-        origin_valid = target_valid.any(dim=2)
-        global_origin_valid = time_mask.any(dim=2)
     observations = {
         "local_obs": (torch.randn(1, 2, 3, 10, device=device), origin_valid),
         "global_obs": (torch.randn(1, 2, 7, device=device), global_origin_valid),

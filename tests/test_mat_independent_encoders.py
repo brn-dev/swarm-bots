@@ -242,7 +242,7 @@ def test_nop_trains_critic_features_without_updating_actor_or_value_head(
         n_agents=3, local_latent_dim=policy.nop_latent_dim, action_dim=2,
         d_model_transition_model=12, nhead_transition_model=2, num_layers_transition_model=1,
         dim_feedforward_transition_model=24, wm_pre_transition_dims=[12],
-        next_obs_pred_config=NextObsPredConfig(local_scalar_target_indices=[0, 1], predict_delta=False),
+        next_obs_pred_config=NextObsPredConfig(local_scalar_target_indices=[0, 1]),
     )).to(device)
     obs = {key: value.to(device) for key, value in observations().items()}
     with torch.no_grad():

@@ -94,6 +94,8 @@ NOP means **next-observation prediction**, an auxiliary training objective enabl
 
 Default targets include public local observations and public global scalars and rotations, such as payload poses and task goals. Inactive MultiPayloadGoal records are excluded from global losses using their payload-active flags. Adding global predictors changes NOP checkpoint shapes for tasks with public global observations; checkpoints require the matching target configuration.
 
+NOP always predicts per-step changes for scalar, angle, and rotation targets. Binary targets predict next-state flags, and latent transitions use residual updates. Undefined connector twists use zero sine/cosine pairs and are excluded from angle losses. Angle deltas require defined angles at both endpoints, so a newly connected twist starts contributing on its next defined transition. Custom scalar losses used with global payload activity masks must return one unreduced loss per target, such as `nn.MSELoss(reduction="none")`. Per-item losses remain supported when masking applies to whole items.
+
 The scale names describe approximate feed-forward budgets, not exact counts or GPU memory requirements. Recurrent memory and optional gates add parameters; targets and optimizer state need additional memory. Fewer parallel worlds or a smaller model scale reduce memory requirements.
 
 `model_scale=None` (CLI: `--model-scale custom`) enables custom widths; fixed scales take precedence over width overrides. The [model layouts](policy_parameters/model_scale.md) and [parameter inspection guide](policy_parameters/README.md) cover detailed comparisons.

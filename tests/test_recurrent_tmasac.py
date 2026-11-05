@@ -390,7 +390,6 @@ def _small_nop_config(
         next_obs_pred_config=NextObsPredConfig(
             local_scalar_target_indices=[0],
             global_scalar_target_indices=global_scalar_target_indices,
-            predict_delta=False,
         ),
     )
 

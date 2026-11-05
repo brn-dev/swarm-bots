@@ -47,7 +47,6 @@ def _nop_config(*, compile_modules: bool = False, nop_loss_coef: float = 1.0) ->
             local_binary_target_indices=[9],
             global_scalar_target_indices=[0],
             global_rot6d_target_indices=[1],
-            predict_delta=False,
         ),
     )
 
@@ -164,6 +163,36 @@ def _move_batch_to_cuda(batch: OffPolicyReplayBatch) -> OffPolicyReplayBatch:
 
 
 class SACNOPTests(unittest.TestCase):
+    def test_per_step_scalar_deltas_match_aligned_replay_and_origin_inputs(self) -> None:
+        module = _make_module(config=replace(
+            _nop_config(), next_obs_pred_config=NextObsPredConfig(
+                local_scalar_target_indices=[0], global_scalar_target_indices=[0],
+            ),
+        ))
+        with torch.no_grad():
+            for predictor in (module.local_scalars_predictor, module.global_scalars_predictor):
+                for parameter in predictor.parameters():
+                    parameter.zero_()
+        batch = _make_segment_batch()
+        batch.local_obs[..., 0] = torch.tensor([10., 11., 13.]).reshape(1, 3, 1)
+        batch.next_local_obs[..., 0] = torch.tensor([11., 13., 16.]).reshape(1, 3, 1)
+        batch.global_obs[..., 0] = torch.tensor([10., 11., 13.])
+        batch.next_global_obs[..., 0] = torch.tensor([11., 13., 16.])
+        mask = torch.ones(2, 3, 3, dtype=torch.bool)
+        batch = replace(batch, agent_mask=mask, next_agent_mask=mask, train_mask=torch.ones(2, 3, dtype=torch.bool))
+        source_latents = torch.randn(2, 3, 6)
+        replay_loss, metrics = module.compute_loss(source_latents=source_latents, batch=batch)
+        origin_loss, _ = module.compute_next_obs_pred_loss(
+            local_latents=source_latents, local_obs=batch.local_obs[:, 0], next_local_obs=batch.next_local_obs,
+            global_obs=batch.global_obs[:, 0], next_global_obs=batch.next_global_obs, actions=batch.actions,
+            agent_mask=batch.agent_mask, loss_agent_mask=batch.next_agent_mask, time_mask=batch.train_mask,
+        )
+        expected_scalar_loss = torch.tensor((1.0 ** 2 + 2.0 ** 2 + 3.0 ** 2) / 3)
+        torch.testing.assert_close(metrics["test_nop_scalar_loss"], expected_scalar_loss)
+        torch.testing.assert_close(metrics["test_nop_global_scalar_loss"], expected_scalar_loss)
+        torch.testing.assert_close(replay_loss, 2 * expected_scalar_loss)
+        torch.testing.assert_close(replay_loss, origin_loss)
+
     @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA compilation")
     def test_cuda_inductor_full_graph_matches_eager_loss_and_backward(self) -> None:
         torch.manual_seed(5)

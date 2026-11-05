@@ -19,6 +19,20 @@ def single_thread() -> Iterator[None]:
     torch.set_num_threads(previous)
 
 
+def test_zero_residual_preserves_the_current_latent_state() -> None:
+    model = TransformerTransitionModel(TransformerTransitionModelConfig(
+        n_agents=3, latent_dim=8, action_dim=2, d_model=8, nhead=2, num_layers=1, dim_feedforward=16,
+    ))
+    with torch.no_grad():
+        for parameter in model.head.parameters():
+            parameter.zero_()
+    latents = torch.randn(2, 3, 8)
+    actions = torch.randn(2, 3, 2)
+    mask = torch.tensor([[True, True, False], [True, False, True]])
+    prediction = model(latents, actions, mask)
+    torch.testing.assert_close(prediction, latents.masked_fill(~mask.unsqueeze(-1), 0.0))
+
+
 @pytest.mark.parametrize("norm_first", [True, False])
 @pytest.mark.parametrize("hidden_layers", [2, 3])
 def test_deep_transition_trains_every_hidden_layer_and_ignores_masked_agents(
@@ -83,17 +97,16 @@ def test_deep_transition_compilation_preserves_multi_step_predictions_and_gradie
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
 @pytest.mark.parametrize("compiled", [False, True])
-@pytest.mark.parametrize("predict_delta", [False, True])
 @pytest.mark.parametrize("time_varying_mask", [False, True])
 def test_transition_padding_preserves_gradients_and_history_across_execution_modes(
-    device: str, compiled: bool, predict_delta: bool, time_varying_mask: bool,
+    device: str, compiled: bool, time_varying_mask: bool,
 ) -> None:
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("requires CUDA")
     torch.manual_seed(35)
     model = TransformerTransitionModel(TransformerTransitionModelConfig(
         n_agents=3, latent_dim=8, action_dim=2, d_model=8, nhead=2, num_layers=1,
-        dim_feedforward=16, predict_delta=predict_delta,
+        dim_feedforward=16,
     )).to(device)
     reference = deepcopy(model)
     masks = torch.tensor([

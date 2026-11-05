@@ -59,7 +59,6 @@ class SACNOPConfig:
     transition_model_dim_feedforward: int = 256
     transition_model_num_feedforward_hidden_layers: int = 1
     transition_model_add_agent_embeddings: bool = False
-    transition_model_predict_delta: bool = True
     transition_model_coembed_hidden_dims: list[int] | None = None
     transition_model_head_hidden_dims: list[int] | None = None
     transition_model_coembed_init_gain: float = 1.0
@@ -145,8 +144,6 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             predictor_input_dim = config.pre_predictors_hidden_dims[-1]
 
         next_obs_config = config.next_obs_pred_config
-        angle_output_multiplier = 1 if next_obs_config.predict_delta else 2
-        rot6d_output_multiplier = 3 if next_obs_config.predict_delta else 6
 
         has_global_targets = (
             bool(next_obs_config.global_scalar_target_indices)
@@ -176,7 +173,6 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             dropout=config.transition_model_dropout,
             act_fn_cls=config.act_fn_cls,
             add_agent_embeddings=config.transition_model_add_agent_embeddings,
-            predict_delta=config.transition_model_predict_delta,
             coembed_mlp_hidden_dims=config.transition_model_coembed_hidden_dims,
             head_mlp_hidden_dims=config.transition_model_head_hidden_dims,
             coembed_init_gain=config.transition_model_coembed_init_gain,
@@ -198,14 +194,14 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             ),
             local_angles_predictor=self._build_predictor(
                 input_dim=predictor_input_dim,
-                output_dim=self._target_count(next_obs_config.local_angle_target_indices) * angle_output_multiplier,
+                output_dim=self._target_count(next_obs_config.local_angle_target_indices),
                 hidden_dims=config.angle_predictor_hidden_dims,
                 act_fn_cls=config.act_fn_cls,
                 init_gain=config.predictor_init_gain,
             ),
             local_rot6ds_predictor=self._build_predictor(
                 input_dim=predictor_input_dim,
-                output_dim=self._target_count(next_obs_config.local_rot6d_target_indices) * rot6d_output_multiplier,
+                output_dim=self._target_count(next_obs_config.local_rot6d_target_indices) * 3,
                 hidden_dims=config.rot6d_predictor_hidden_dims,
                 act_fn_cls=config.act_fn_cls,
                 init_gain=config.predictor_init_gain,
@@ -227,7 +223,7 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             ),
             global_rot6ds_predictor=self._build_predictor(
                 input_dim=global_predictor_input_dim,
-                output_dim=self._target_count(next_obs_config.global_rot6d_target_indices) * rot6d_output_multiplier,
+                output_dim=self._target_count(next_obs_config.global_rot6d_target_indices) * 3,
                 hidden_dims=config.global_rot6d_predictor_hidden_dims,
                 act_fn_cls=config.act_fn_cls,
                 init_gain=config.predictor_init_gain,
