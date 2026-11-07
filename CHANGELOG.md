@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Give shared off-policy test fixtures a whole-update collection schedule and explicit CPU devices for invalid replay-exposure tests, fixing CPU CI setup failures.
 - Include attached NOP parameters in PPO's detailed total gradient norm so it covers the same parameter set as clipping.
 - Use shared float64 norm accumulation for read-only policy gradient diagnostics, preventing float32 reduction overflow in detailed total/component metrics.
 - Set the SAC Adam-selection test's replay storage device explicitly so its CPU case runs without CUDA.

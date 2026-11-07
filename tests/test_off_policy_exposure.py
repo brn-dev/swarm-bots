@@ -265,6 +265,9 @@ def test_invalid_replay_exposure_is_rejected(exposure: float) -> None:
     env = _make_env()
     try:
         with pytest.raises(ValueError, match="replay_exposure"):
-            SAC(policy=_make_policy(env), env=env, replay_exposure=exposure)
+            SAC(
+                policy=_make_policy(env), env=env, replay_exposure=exposure,
+                train_device="cpu", rollout_device="cpu", replay_storage_device="cpu",
+            )
     finally:
         env.close()

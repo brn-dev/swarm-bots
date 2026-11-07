@@ -51,6 +51,7 @@ def _make_algorithm(
         buffer_capacity_per_env=32,
         learning_starts=0,
         batch_size=2,
+        rollout_steps_per_iteration=2,
         learning_rate_warmup_updates=0,
         nop_batch_size=3 if independent_nop_sampling else None,
         independent_nop_sampling=independent_nop_sampling,
