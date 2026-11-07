@@ -6,6 +6,7 @@ from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
 import torch
 from torch import nn
 
+from swarmbots.learn.optimizers import clip_grad_norm_
 from swarmbots.learn.temporal_state import clone_temporal_state
 
 
@@ -143,10 +144,7 @@ class BasePolicy(nn.Module, abc.ABC):
 
     @staticmethod
     def _grad_norm_from_parameters(parameters: Iterable[nn.Parameter]) -> float:
-        gradients = [parameter.grad for parameter in parameters if parameter.grad is not None]
-        if not gradients:
-            return 0.0
-        return float(nn.utils.get_total_norm(gradients, norm_type=2.0).item())
+        return float(clip_grad_norm_(parameters, max_norm=None))
 
     @classmethod
     def _module_grad_norm(cls, module: nn.Module | None) -> float:

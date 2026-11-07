@@ -268,8 +268,106 @@ def _make_ppo(
         max_episode_length=2,
         n_epochs=1,
         parameter_lr_multipliers=parameter_lr_multipliers,
+        train_device="cpu",
+        rollout_device="cpu",
     )
     return ppo, policy
+
+
+def _step_with_distinct_gradients(algorithm: PPO) -> None:
+    for index, parameter in enumerate(algorithm.policy.parameters(), start=1):
+        parameter.grad = torch.full_like(parameter, float(index))
+    algorithm.optimizer.step()
+    algorithm.optimizer.zero_grad(set_to_none=True)
+
+
+def _assert_optimizer_state_equal(algorithm: PPO, expected: dict[str, Any]) -> None:
+    for key, value in algorithm._get_optimizer_state_dict().items():
+        if key == "state":
+            torch.testing.assert_close(value, expected[key], rtol=0, atol=0)
+        else:
+            assert value == expected[key]
+
+
+@pytest.mark.parametrize("source_groups,target_groups", [
+    ({"shared": 0.5}, {"query_encoder": 0.5}),
+    ({"shared": 0.5, "query_encoder": 0.25}, {"shared": 0.25, "query_encoder": 0.5}),
+    ({"decoder": 0.5}, {"shared": 0.5}),
+    ({}, {"shared": 0.5}),
+    ({"shared": 0.5}, {"shared": 0.25}),
+])
+@pytest.mark.parametrize("strict", [False, True])
+def test_checkpoint_rejects_changed_parameter_groups_before_mutating_trainer(
+    tmp_path: Path, source_groups: dict[str, float], target_groups: dict[str, float], strict: bool,
+) -> None:
+    source, _ = _make_ppo(source_groups, learning_rate=0.02)
+    target, _ = _make_ppo(target_groups, learning_rate=0.001)
+    with torch.no_grad():
+        for parameter in source.policy.parameters():
+            parameter.fill_(2.0)
+    _step_with_distinct_gradients(source)
+    _step_with_distinct_gradients(target)
+    source.n_total_timesteps = 42
+    path = tmp_path / "different_groups.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    weights = deepcopy(target.policy.state_dict())
+    optimizer_state = deepcopy(target._get_optimizer_state_dict())
+    rollout_state = object()
+    target._rollout_state = rollout_state
+
+    with pytest.raises(ValueError, match="parameter.*groups.*restore_optimizer_state=False"):
+        target.load(path, strict_load_state_dict=strict)
+
+    torch.testing.assert_close(target.policy.state_dict(), weights, rtol=0, atol=0)
+    _assert_optimizer_state_equal(target, optimizer_state)
+    assert target.learning_rate == 0.001
+    assert target.parameter_lr_multipliers == target_groups
+    assert target.n_total_timesteps == 0
+    assert target._rollout_state is rollout_state
+
+
+def test_matching_checkpoint_parameter_groups_restore_moments_to_their_parameters(tmp_path: Path) -> None:
+    groups = {"decoder": 0.5, "query_encoder": 0.25}
+    source, _ = _make_ppo(groups)
+    _step_with_distinct_gradients(source)
+    path = tmp_path / "matching_groups.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    target, _ = _make_ppo(groups, learning_rate=0.123)
+
+    target.load(path, restore_env_state=False)
+
+    source_parameters = dict(source.policy.named_parameters())
+    for name, parameter in target.policy.named_parameters():
+        source_parameter = source_parameters[name]
+        torch.testing.assert_close(target.optimizer.state[parameter], source.optimizer.state[source_parameter])
+    _step_with_distinct_gradients(source)
+    _step_with_distinct_gradients(target)
+    torch.testing.assert_close(target.policy.state_dict(), source.policy.state_dict(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("partial_load", [False, True])
+def test_changed_parameter_groups_allow_weights_only_checkpoint_loading(tmp_path: Path, partial_load: bool) -> None:
+    source, _ = _make_ppo({"shared": 0.5})
+    target, _ = _make_ppo({"query_encoder": 0.5}, learning_rate=0.001)
+    if partial_load:
+        target.policy.register_buffer("extra_features", torch.tensor([7.0]))
+    _step_with_distinct_gradients(source)
+    _step_with_distinct_gradients(target)
+    optimizer_state = deepcopy(target._get_optimizer_state_dict())
+    path = tmp_path / "weights_only_groups.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+
+    target.load(
+        path, restore_optimizer_state=partial_load, strict_load_state_dict=not partial_load,
+        restore_env_state=False,
+    )
+
+    source_parameters = dict(source.policy.named_parameters())
+    for name, parameter in target.policy.named_parameters():
+        torch.testing.assert_close(parameter, source_parameters[name], rtol=0, atol=0)
+    _assert_optimizer_state_equal(target, optimizer_state)
+    assert target.parameter_lr_multipliers == {"query_encoder": 0.5}
+    assert target.learning_rate == 0.001
 
 
 def _param_group_by_parameter_id(ppo: PPO) -> dict[int, dict[str, object]]:

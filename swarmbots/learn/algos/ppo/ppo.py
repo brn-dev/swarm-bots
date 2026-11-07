@@ -1,5 +1,5 @@
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -33,8 +33,9 @@ from swarmbots.learn.gsde_reset import (
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.masking import masked_mean
+from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys
 from swarmbots.learn.metrics_list import MetricsLists, materialize_scalar_metrics
-from swarmbots.learn.optimizers import make_adam, move_adam_state_to_device
+from swarmbots.learn.optimizers import clip_grad_norm_, make_adam, move_adam_state_to_device
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_fn
 from swarmbots.learn.scheduling.schedulers import SchedulerManager
@@ -638,7 +639,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                         detailed_grad_norms.add(self.policy.get_grad_norms())
                     compute_grad_norms_timings.append(compute_grad_norms_timer.get_duration())
 
-                total_grad_norm = torch.nn.utils.clip_grad_norm_(
+                total_grad_norm = clip_grad_norm_(
                     self.policy.parameters(),
                     self.max_grad_norm,
                     error_if_nonfinite=True,
@@ -1073,10 +1074,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
     def _validate_optimizer_checkpoint(
             self,
-            *,
-            learning_rate: LearningRate,
-            optimizer_state_dict: dict[str, Any],
+            checkpoint: dict[str, Any],
     ) -> None:
+        learning_rate = checkpoint["hyper_parameters"]["learning_rate"]
+        optimizer_state_dict = checkpoint["optimizer_state_dict"]
         automatic_lr_state = optimizer_state_dict["automatic_lr"]
         scheduler_state = optimizer_state_dict["schedulers"]
         if (automatic_lr_state is None) != (self.automatic_lr is None):
@@ -1091,6 +1092,43 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 _validate_automatic_learning_rate(float(group["lr"]))
                 _validate_automatic_learning_rate(float(group.get("lr_multiplier", 1.0)), name="lr_multiplier")
             _validate_automatic_learning_rate(self._optimizer_base_learning_rate(optimizer_state_dict))
+
+        parameters_by_name = dict(self.policy.named_parameters(remove_duplicate=False))
+        source_names = align_torch_compile_state_dict_keys(
+            {name: name for name in checkpoint["policy_state_dict"]}, target_keys=parameters_by_name,
+        )
+        source_parameters: list[tuple[str, nn.Parameter]] = []
+        seen_parameters: set[int] = set()
+        for target_name, source_name in source_names.items():
+            parameter = parameters_by_name.get(target_name)
+            if parameter is not None and id(parameter) not in seen_parameters:
+                source_parameters.append((source_name, parameter))
+                seen_parameters.add(id(parameter))
+        source_groups = self._group_named_parameters(
+            source_parameters,
+            checkpoint["hyper_parameters"]["parameter_lr_multipliers"],
+            learning_rate,
+        )
+
+        def group_layout(groups: list[dict[str, Any]]) -> list[tuple[float, int]]:
+            return [
+                (float(group.get("lr_multiplier", 1.0)), len(group["params"]))
+                for group in groups
+            ]
+
+        def group_members(groups: list[dict[str, Any]]) -> list[list[int]]:
+            return [[id(parameter) for parameter in group["params"]] for group in groups]
+
+        # Resolve saved rules against original parameter names/order: tied prefixes depend on dict insertion order.
+        if (
+            group_layout(optimizer_state_dict["param_groups"]) != group_layout(source_groups)
+            or group_layout(source_groups) != group_layout(self.optimizer.param_groups)
+            or group_members(source_groups) != group_members(self.optimizer.param_groups)
+        ):
+            raise ValueError(
+                "Checkpoint parameter learning-rate groups do not match the trainer; configure matching "
+                "parameter_lr_multipliers or set restore_optimizer_state=False."
+            )
 
     def _apply_optimizer_state_dict(
             self,
@@ -1152,18 +1190,25 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
     def _make_optimizer_param_groups(self, base_lr: float) -> Any:
         if not self.parameter_lr_multipliers:
             return self.policy.parameters()
+        return self._group_named_parameters(self.policy.named_parameters(), self.parameter_lr_multipliers, base_lr)
 
+    def _group_named_parameters(
+            self,
+            named_parameters: Iterable[tuple[str, nn.Parameter]],
+            parameter_lr_multipliers: Mapping[str, float],
+            base_lr: float,
+    ) -> list[dict[str, Any]]:
         param_groups: dict[float, list[torch.nn.Parameter]] = {}
         matched_prefixes: set[str] = set()
         group_names: dict[float, set[str]] = {}
-        for name, param in self.policy.named_parameters():
-            lr_multiplier, prefix = self._resolve_parameter_lr_multiplier(name)
+        for name, param in named_parameters:
+            lr_multiplier, prefix = self._resolve_parameter_lr_multiplier(name, parameter_lr_multipliers)
             param_groups.setdefault(lr_multiplier, []).append(param)
             group_names.setdefault(lr_multiplier, set()).add(prefix or "default")
             if prefix is not None:
                 matched_prefixes.add(prefix)
 
-        unmatched_prefixes = sorted(set(self.parameter_lr_multipliers) - matched_prefixes)
+        unmatched_prefixes = sorted(set(parameter_lr_multipliers) - matched_prefixes)
         if unmatched_prefixes:
             logger.warning(f"Parameter LR multiplier prefixes did not match any parameters: {unmatched_prefixes}")
 
@@ -1180,10 +1225,12 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             )
         ]
 
-    def _resolve_parameter_lr_multiplier(self, parameter_name: str) -> tuple[float, str | None]:
+    def _resolve_parameter_lr_multiplier(
+            self, parameter_name: str, parameter_lr_multipliers: Mapping[str, float],
+    ) -> tuple[float, str | None]:
         best_prefix: str | None = None
         best_multiplier = 1.0
-        for prefix, multiplier in self.parameter_lr_multipliers.items():
+        for prefix, multiplier in parameter_lr_multipliers.items():
             if self._parameter_name_matches_prefix(parameter_name, prefix) and (
                     best_prefix is None or len(prefix) > len(best_prefix)
             ):

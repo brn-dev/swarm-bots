@@ -22,6 +22,7 @@ from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig
 from tests.test_sac_algorithm import _make_env, _make_policy
 from tests.test_deterministic_baselines import make_policy
 from tests.test_recurrent_tmasac import (
+    _make_env as _make_recurrent_env,
     _make_recurrent_critic_algorithm,
     _make_segment_batch,
     _small_nop_config,
@@ -359,6 +360,56 @@ def test_recurrent_sac_shared_encoder_keeps_critic_gradients_on_delayed_steps(en
     assert any(not torch.equal(a, b) for a, b in zip(before_shared, policy.shared_observation_encoder.parameters()))
     metrics, _, _ = algorithm._train_step(recurrent_batch(env), global_update_idx=1)
     assert metrics["actor_updated"] == 1
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+def test_shared_recurrent_sac_learns_from_identical_finite_initial_observations(device: str) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    torch.manual_seed(193)
+    environment = _make_recurrent_env()
+    try:
+        policy = RecurrentTMASACPolicy(environment, _shared_recurrent_policy_config())
+        options = algorithm_options()
+        options.update(
+            train_device=device, sac_compile_optimizer_steps=False, sac_compile_tensor_operations=False,
+            learning_rate_warmup_updates=2,
+        )
+        algorithm = RecurrentSAC(
+            policy, environment, **options, burn_in_steps=0, learning_steps=3,
+            temporal_state_store_interval=1, policy_delay=2,
+        )
+        batch = _make_segment_batch(
+            batch_size=2, sequence_length=3, n_agents=environment.n_agents,
+            local_obs_dim=environment.local_obs_dim, global_obs_dim=environment.global_obs_dim,
+            hidden_local_vars_dim=environment.hidden_local_vars_dim,
+            hidden_global_vars_dim=environment.hidden_global_vars_dim,
+            action_dim=environment.action_space.total_agent_action_dim,
+        )
+        batch.actions.mul_(0.25)
+        batch.previous_actions.zero_()
+        batch.previous_actions[:, 1:].copy_(batch.actions[:, :-1])
+        batch.rewards.copy_(torch.tensor([1.0, 2.0, 3.0]).expand_as(batch.rewards))
+        batch.episode_start_mask[:, 0] = True
+        batch = replace(batch, **{
+            field.name: value.to(device)
+            for field in fields(batch) if torch.is_tensor(value := getattr(batch, field.name))
+        })
+        before_shared = parameter_snapshot(policy.shared_observation_encoder.parameters())
+        before_nop = parameter_snapshot(policy.critic_nop.parameters())
+
+        for index in range(4):
+            _metrics, actor_norm, critic_norm = algorithm._train_step(batch, global_update_idx=index)
+            assert torch.isfinite(torch.as_tensor(actor_norm))
+            assert torch.isfinite(torch.as_tensor(critic_norm))
+            assert all(torch.isfinite(parameter).all() for parameter in policy.parameters())
+
+        assert any(not torch.equal(old, new) for old, new in zip(
+            before_shared, policy.shared_observation_encoder.parameters(), strict=True,
+        ))
+        assert any(not torch.equal(old, new) for old, new in zip(before_nop, policy.critic_nop.parameters(), strict=True))
+    finally:
+        environment.close()
 
 
 @pytest.mark.parametrize("recurrent,recurrent_critic", [(False, False), (True, False), (True, True)])

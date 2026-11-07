@@ -129,9 +129,7 @@ class BaseAlgorithm(abc.ABC):
 
     def _validate_optimizer_checkpoint(
             self,
-            *,
-            learning_rate: LearningRate,
-            optimizer_state_dict: dict[str, Any],
+            checkpoint: dict[str, Any],
     ) -> None:
         """Reject invalid optimizer settings before loading any trainer state."""
 
@@ -512,10 +510,7 @@ class BaseAlgorithm(abc.ABC):
         if optimizer_state_dict is not None and (
             strict_load_state_dict or policy_state_dict.keys() == target_policy_keys
         ):
-            self._validate_optimizer_checkpoint(
-                learning_rate=checkpoint["hyper_parameters"]["learning_rate"],
-                optimizer_state_dict=optimizer_state_dict,
-            )
+            self._validate_optimizer_checkpoint(checkpoint)
         missing_keys, unexpected_keys = self.policy.load_state_dict(
             policy_state_dict,
             strict=strict_load_state_dict

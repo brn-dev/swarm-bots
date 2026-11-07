@@ -1,5 +1,6 @@
 """Sequence replay and history branching shared by recurrent off-policy learners."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 import torch
@@ -130,6 +131,50 @@ class RecurrentOffPolicyMixin:
             max_train_truncations=self.max_truncations_per_segment,
         )
         return batch, None, False
+
+    def _build_nop_training_batch(
+        self,
+        *,
+        batch: OffPolicyReplayEpisodeSegmentBatch,
+        critic_latents: torch.Tensor | None,
+        actor_latents: torch.Tensor | None = None,
+    ) -> "_RecurrentNOPTrainingBatch | None":
+        if not self.policy.has_nop_loss():
+            return None
+        num_next_steps = self.policy.get_nop_num_next_steps()
+        num_origins = batch.sequence_length - num_next_steps + 1
+        nop_modules = (self.policy.actor_nop, self.policy.critic_nop)
+        nop_batch = _parallel_nop_windows(
+            batch,
+            window_length=num_next_steps,
+            include_global_obs=any(
+                module is not None and module.has_global_next_obs_pred_targets for module in nop_modules
+            ),
+        )
+        return _RecurrentNOPTrainingBatch(
+            batch=nop_batch,
+            actor_source_latents=(
+                None if self.policy.actor_nop is None or actor_latents is None else actor_latents[:, :num_origins]
+            ),
+            critic_source_latents=None if critic_latents is None else critic_latents[:, :num_origins],
+        )
+
+    def _optimize_recurrent_loss(
+        self,
+        loss: torch.Tensor,
+        *,
+        optimizer: torch.optim.Optimizer,
+        parameters: list[torch.nn.Parameter],
+        compiled_step: Callable[[], None],
+        global_update_idx: int,
+    ) -> float | torch.Tensor:
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        grad_norm = self._clip_grad_norm(parameters)
+        self._step_actor_or_critic_optimizer(
+            optimizer=optimizer, compiled_step=compiled_step, global_update_idx=global_update_idx,
+        )
+        return grad_norm
 
     def _burn_in_critic_state(
         self,

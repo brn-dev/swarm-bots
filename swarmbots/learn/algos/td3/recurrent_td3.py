@@ -7,9 +7,7 @@ import torch
 from swarmbots.learn.algos.off_policy.base_algorithm import TrainStepResult
 from swarmbots.learn.algos.off_policy.recurrent import (
     RecurrentOffPolicyMixin,
-    _RecurrentNOPTrainingBatch,
     _final_and_truncation_actor_inputs,
-    _parallel_nop_windows,
     _slice_segment,
     _successor_sequence,
 )
@@ -139,32 +137,18 @@ class RecurrentTD3(RecurrentOffPolicyMixin, TD3):
             actor_state=current_actor_state,
         )
         critic_loss = self._tensor_operations.critic_loss(q1, q2, target_q)
-        nop_training = None
+        nop_training = self._build_nop_training_batch(batch=learning, critic_latents=critic_latents)
         critic_nop_loss, critic_nop_metrics = None, {}
-        if self.policy.has_nop_loss():
-            origins = learning.sequence_length - self.policy.get_nop_num_next_steps() + 1
-            nop_training = _RecurrentNOPTrainingBatch(
-                batch=_parallel_nop_windows(
-                    learning,
-                    window_length=self.policy.get_nop_num_next_steps(),
-                    include_global_obs=any(
-                        module is not None and module.has_global_next_obs_pred_targets
-                        for module in (self.policy.actor_nop, self.policy.critic_nop)
-                    ),
-                ),
-                actor_source_latents=None,
-                critic_source_latents=None if critic_latents is None else critic_latents[:, :origins],
-            )
+        if nop_training is not None:
             critic_nop_loss, critic_nop_metrics = self.policy.compute_critic_nop_loss_from_latents(
                 source_latents=nop_training.critic_source_latents,
                 batch=nop_training.batch,
             )
         critic_total_loss = critic_loss if critic_nop_loss is None else critic_loss + critic_nop_loss
-        self.critic_optimizer.zero_grad(set_to_none=True)
-        critic_total_loss.backward()
-        critic_grad_norm = self._clip_grad_norm(self.policy.critic_parameters())
-        self._step_actor_or_critic_optimizer(
+        critic_grad_norm = self._optimize_recurrent_loss(
+            critic_total_loss,
             optimizer=self.critic_optimizer,
+            parameters=self.policy.critic_parameters(),
             compiled_step=self._critic_optimizer_step,
             global_update_idx=global_update_idx,
         )
@@ -204,15 +188,14 @@ class RecurrentTD3(RecurrentOffPolicyMixin, TD3):
                 actor_nop_loss, actor_nop_metrics = None, {}
                 if nop_training is not None and self.policy.actor_nop is not None:
                     actor_nop_loss, actor_nop_metrics = self.policy.compute_actor_nop_loss_from_latents(
-                        source_latents=actor_latents[:, :origins],
+                        source_latents=actor_latents[:, :nop_training.batch.local_obs.shape[1]],
                         batch=nop_training.batch,
                     )
                 actor_total_loss = actor_loss if actor_nop_loss is None else actor_loss + actor_nop_loss
-                self.actor_optimizer.zero_grad(set_to_none=True)
-                actor_total_loss.backward()
-                actor_grad_norm = self._clip_grad_norm(self.policy.actor_parameters())
-                self._step_actor_or_critic_optimizer(
+                actor_grad_norm = self._optimize_recurrent_loss(
+                    actor_total_loss,
                     optimizer=self.actor_optimizer,
+                    parameters=self.policy.actor_parameters(),
                     compiled_step=self._actor_optimizer_step,
                     global_update_idx=global_update_idx,
                 )

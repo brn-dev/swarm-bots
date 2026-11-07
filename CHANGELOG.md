@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Include attached NOP parameters in PPO's detailed total gradient norm so it covers the same parameter set as clipping.
+- Use shared float64 norm accumulation for read-only policy gradient diagnostics, preventing float32 reduction overflow in detailed total/component metrics.
+- Set the SAC Adam-selection test's replay storage device explicitly so its CPU case runs without CUDA.
+- Use shared float64 norm accumulation for PPO gradient clipping. Preserve rejection of genuinely non-finite gradients before scaling or optimizer updates, while allowing finite gradients whose float32 norm reduction overflows.
+- Reconstruct PPO checkpoint optimizer ownership from original saved parameter names/order and ordered learning-rate rules before trainer mutation. Reject overlapping-prefix collisions even when group labels, multipliers, counts and dictionary contents match; preserve compiler-key alignment, tied parameters, matching restoration and weights-only/partial loads without changing the checkpoint format.
+- Accumulate off-policy gradient norms in float64 with batched foreach reductions, then scale gradients in their computation dtype. Avoid finite-gradient overflow silently zeroing critic/NOP updates while retaining fast device-local clipping, mixed-dtype groups and unclipped diagnostics.
+- Share recurrent SAC/TD3 NOP window preparation and backward/gradient-clipping/optimizer-step mechanics while keeping their actor histories, objectives and update schedules explicit.
 - Make on-policy and off-policy NOP scalar, angle, and rotation targets always predict per-step deltas. Remove prediction-mode flags, absolute/initial-relative branches, and serialized mode settings without compatibility aliases or migrations; latent transitions always use residual updates and binary targets remain next-state flags.
 - Cover NOP angle averaging with unequal valid-target counts across agents, learned predictor input/parameter gradients, and resumed per-step scoring after connector reconnection, including compiled loss execution.
 - Exclude undefined connector twists from NOP angle losses and their averaging denominator. Require defined base and successor angles for delta targets, keeping connectivity-transition masking on-device without extra observation fields or replay storage.

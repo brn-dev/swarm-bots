@@ -278,6 +278,7 @@ class NextObsPredWrapper(
         grad_norms = self.policy.get_grad_norms()
         grad_norms.update(
             {
+                "total": self._module_grad_norm(self),
                 "wm_pre_transition_transform": self._module_grad_norm(self.pre_transition_transform),
                 "wm_transition_model": self._module_grad_norm(self.transition_model),
                 "wm_pre_predictors_transform": self._module_grad_norm(self.pre_predictors_transform),

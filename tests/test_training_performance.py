@@ -13,7 +13,7 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.metrics_list import MetricsLists, materialize_scalar_metrics
-from swarmbots.learn.optimizers import make_adam
+from swarmbots.learn.optimizers import clip_grad_norm_, make_adam
 from swarmbots.learn.rollout_utils import append_episode_infos
 from swarmbots.learn.summary_statistics import (
     NO_DATA, TensorSummaryStatistics, compute_summary_statistics, compute_tensor_summary_statistics,
@@ -281,16 +281,16 @@ def test_ppo_training_preserves_updates_and_kl_early_stopping(device: str, early
     )
     initial_parameters = [value.detach().clone() for value in algorithm.policy.parameters()]
     expected_norms = []
-    clip_grad_norm = torch.nn.utils.clip_grad_norm_
 
-    def record_gradient_norm(*args: Any, **kwargs: Any) -> torch.Tensor:
-        norm = clip_grad_norm(*args, **kwargs)
-        expected_norms.append(float(norm.detach().cpu()))
+    def record_gradient_norm(*args: Any, **kwargs: Any) -> float | torch.Tensor:
+        norm = clip_grad_norm_(*args, **kwargs)
+        expected_norms.append(float(norm))
         return norm
 
-    with patch.object(torch.nn.utils, "clip_grad_norm_", side_effect=record_gradient_norm):
+    with patch("swarmbots.learn.algos.ppo.ppo.clip_grad_norm_", side_effect=record_gradient_norm):
         metrics = algorithm.train([segment])
     assert metrics["updates"] == algorithm.n_total_updates == (0 if early_stop else 4)
+    assert len(expected_norms) == metrics["updates"]
     assert metrics["grad_norm"].n == metrics["updates"]
     assert metrics["ratio"].n == (4 if early_stop else 16)
     assert 0 <= metrics["grad_clip_frac"] <= 1
@@ -363,6 +363,7 @@ def test_sac_selects_adam_for_actor_critic_and_temperature(device: str) -> None:
         def make_algorithm() -> SAC:
             return SAC(_make_sac_policy(env), env, train_device=device, buffer_capacity_per_env=16,
                        batch_size=2, rollout_steps_per_iteration=2, learning_starts=0,
+                       replay_storage_device=device,
                        sac_compile_tensor_operations=False, sac_compile_optimizer_steps=False)
 
         def optimizers(algorithm: SAC) -> tuple[torch.optim.Adam, ...]:

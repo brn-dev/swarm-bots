@@ -32,7 +32,7 @@ from swarmbots.learn.algos.off_policy.action_noise import (
 from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization
 from swarmbots.learn.algos.off_policy.replay_exposure import resolve_replay_updates
 from swarmbots.learn.base_policy import BasePolicy
-from swarmbots.learn.optimizers import make_adam, move_adam_state_to_device
+from swarmbots.learn.optimizers import clip_grad_norm_, make_adam, move_adam_state_to_device
 from swarmbots.learn.algos.off_policy.tensor_ops import (
     build_optimizer_step,
     build_sac_tensor_operations,
@@ -489,12 +489,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
 
     def _clip_grad_norm(self, parameters: list[torch.nn.Parameter]) -> TrainMetric:
-        if self.max_grad_norm is None:
-            gradients = [parameter.grad for parameter in parameters if parameter.grad is not None]
-            if not gradients:
-                return 0.0
-            return torch.nn.utils.get_total_norm(gradients, norm_type=2.0)
-        return torch.nn.utils.clip_grad_norm_(parameters, self.max_grad_norm)
+        return clip_grad_norm_(parameters, self.max_grad_norm)
 
     def _apply_actor_critic_learning_rate_for_update(self, update_idx: int) -> float:
         lr = self._actor_critic_learning_rate_for_update(update_idx)

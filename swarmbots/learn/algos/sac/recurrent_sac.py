@@ -23,8 +23,6 @@ from swarmbots.learn.algos.off_policy.recurrent import (
     _final_and_truncation_actor_inputs as _final_and_truncation_actor_inputs,
     _successor_sequence as _successor_sequence,
     _slice_segment as _slice_segment,
-    _RecurrentNOPTrainingBatch as _RecurrentNOPTrainingBatch,
-    _parallel_nop_windows as _parallel_nop_windows,
     _flatten_segment as _flatten_segment,
     _flatten_sequence_tensor as _flatten_sequence_tensor,
 )
@@ -200,11 +198,10 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
             )
         critic_total_loss = critic_loss if critic_nop_loss is None else critic_loss + critic_nop_loss
 
-        self.critic_optimizer.zero_grad()
-        critic_total_loss.backward()
-        critic_grad_norm = self._clip_grad_norm(self.policy.critic_parameters())
-        self._step_actor_or_critic_optimizer(
+        critic_grad_norm = self._optimize_recurrent_loss(
+            critic_total_loss,
             optimizer=self.critic_optimizer,
+            parameters=self.policy.critic_parameters(),
             compiled_step=self._critic_optimizer_step,
             global_update_idx=global_update_idx,
         )
@@ -243,11 +240,10 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
                 )
             actor_total_loss = actor_loss if actor_nop_loss is None else actor_loss + actor_nop_loss
 
-            self.actor_optimizer.zero_grad()
-            actor_total_loss.backward()
-            actor_grad_norm = self._clip_grad_norm(self.policy.actor_parameters())
-            self._step_actor_or_critic_optimizer(
+            actor_grad_norm = self._optimize_recurrent_loss(
+                actor_total_loss,
                 optimizer=self.actor_optimizer,
+                parameters=self.policy.actor_parameters(),
                 compiled_step=self._actor_optimizer_step,
                 global_update_idx=global_update_idx,
             )
@@ -457,28 +453,3 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
                 truncation_mask,
             )
         return next_actions, next_log_probs, next_actor_state_input
-
-    def _build_nop_training_batch(
-        self,
-        *,
-        batch: OffPolicyReplayEpisodeSegmentBatch,
-        actor_latents: torch.Tensor,
-        critic_latents: torch.Tensor | None,
-    ) -> "_RecurrentNOPTrainingBatch | None":
-        if not self.policy.has_nop_loss():
-            return None
-        num_next_steps = self.policy.get_nop_num_next_steps()
-        num_origins = batch.sequence_length - num_next_steps + 1
-        nop_modules = (self.policy.actor_nop, self.policy.critic_nop)
-        nop_batch = _parallel_nop_windows(
-            batch,
-            window_length=num_next_steps,
-            include_global_obs=any(
-                module is not None and module.has_global_next_obs_pred_targets for module in nop_modules
-            ),
-        )
-        return _RecurrentNOPTrainingBatch(
-            batch=nop_batch,
-            actor_source_latents=(None if self.policy.actor_nop is None else actor_latents[:, :num_origins]),
-            critic_source_latents=(None if critic_latents is None else critic_latents[:, :num_origins]),
-        )

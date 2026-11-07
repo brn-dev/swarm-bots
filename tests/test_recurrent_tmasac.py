@@ -3754,7 +3754,7 @@ class RecurrentTMASACTests(unittest.TestCase):
                 action_dim=env.action_space.total_agent_action_dim,
             )
             with patch(
-                    "swarmbots.learn.algos.sac.recurrent_sac._parallel_nop_windows",
+                    "swarmbots.learn.algos.off_policy.recurrent._parallel_nop_windows",
                     side_effect=AssertionError("NOP-disabled path must not construct windows"),
             ):
                 self.assertIsNone(recurrent_sac._build_nop_training_batch(
