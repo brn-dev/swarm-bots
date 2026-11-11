@@ -1,11 +1,14 @@
 """Behavioral regressions for shared off-policy code and opt-in update variants."""
 
 import copy
+from collections.abc import Iterable
 from dataclasses import fields, replace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 import torch
+from torch import nn
 
 from swarmbots.learn.algos.mat.mat_encoder import MATEncoderConfig
 from swarmbots.learn.algos.off_policy import collect_off_policy_steps
@@ -13,15 +16,17 @@ from swarmbots.learn.algos.off_policy.nop import SACNOPLatentSource
 from swarmbots.learn.algos.off_policy.transformer_critic import TransformerCriticConfig
 from swarmbots.learn.algos.off_policy.actor_state_critic import ActorStateCriticInputConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
-from swarmbots.learn.algos.sac import SAC, RecurrentSAC
+from swarmbots.learn.algos.sac import SAC, RecurrentSAC, TMASACPolicy
 from swarmbots.learn.algos.sac.recurrent_tmasac_policy import RecurrentTMASACPolicy
 from swarmbots.learn.algos.td3 import RecurrentTD3, RecurrentTD3Policy, RecurrentTD3PolicyConfig, TD3
 from swarmbots.learn.algos.td3.td3_policy import TD3Policy
-from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadConfig
+from swarmbots.learn.algos.off_policy.actor_heads import TMASACActorHeadConfig, TMASACActorHeadKind
 from swarmbots.learn.algos.off_policy.joint_critic import JointCriticConfig
+from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from tests.test_sac_algorithm import _make_env, _make_policy
 from tests.test_deterministic_baselines import make_policy
 from tests.test_recurrent_tmasac import (
+    _actor_head_config,
     _make_env as _make_recurrent_env,
     _make_recurrent_critic_algorithm,
     _make_segment_batch,
@@ -65,13 +70,48 @@ def make_batch(algorithm):
     return algorithm.replay_buffer.sample(2)
 
 
-def assert_parameters_equal(before, parameters):
+def assert_parameters_equal(before: Iterable[torch.Tensor], parameters: Iterable[torch.Tensor]) -> None:
     for old, new in zip(before, parameters, strict=True):
         torch.testing.assert_close(old, new, rtol=0, atol=0)
 
 
-def parameter_snapshot(parameters):
+def assert_parameters_changed(before: Iterable[torch.Tensor], parameters: Iterable[torch.Tensor]) -> None:
+    assert any(not torch.equal(old, new) for old, new in zip(before, parameters, strict=True))
+
+
+def parameter_snapshot(parameters: Iterable[torch.Tensor]) -> list[torch.Tensor]:
     return [value.detach().clone() for value in parameters]
+
+
+def actor_learning_modules(policy: TMASACPolicy) -> dict[str, nn.Module]:
+    modules = {"actor_encoder": policy.actor_encoder, "actor_head": policy.actor_head}
+    for index, distribution in enumerate(policy.action_dist.distributions):
+        modules[f"action_mean_{index}"] = distribution.action_net
+        modules[f"action_log_std_{index}"] = distribution.log_std_net
+    return modules
+
+
+def assert_nonzero_finite_gradients(gradients: Iterable[torch.Tensor | None]) -> None:
+    gradients = list(gradients)
+    assert gradients
+    assert all(gradient is not None and torch.isfinite(gradient).all() for gradient in gradients)
+    assert any(gradient.count_nonzero() > 0 for gradient in gradients if gradient is not None)
+
+
+def assert_optimizer_owns(optimizer: torch.optim.Optimizer, modules: Iterable[nn.Module]) -> None:
+    expected = {id(parameter) for module in modules for parameter in module.parameters()}
+    actual = [parameter for group in optimizer.param_groups for parameter in group["params"]]
+    assert len(actual) == len(expected)
+    assert {id(parameter) for parameter in actual} == expected
+
+
+def assert_polyak_parameters(
+    previous: Iterable[torch.Tensor], source: nn.Module, target: nn.Module, tau: float,
+) -> None:
+    for old_target, online, actual in zip(previous, source.parameters(), target.parameters(), strict=True):
+        expected = (1.0 - tau) * old_target + tau * online.detach()
+        torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-8)
+        assert not actual.requires_grad and actual.grad is None
 
 
 @pytest.mark.parametrize("variant", ["tmasac", "tmasac_dec", "tmatd3", "tmatd3_dec", "masac__deepset_critic", "matd3__deepset_critic"])
@@ -111,27 +151,177 @@ def test_sac_defaults_match_explicit_disabled_options_for_every_update(env, vari
     assert algorithm.get_hyper_parameters()["target_noise_clip"] == 0
 
 
-def test_sac_delay_freezes_actor_and_temperature_but_updates_critic_and_targets(env):
-    policy = _make_policy(env)
-    algorithm = SAC(policy, env, **algorithm_options(), policy_delay=3)
+@pytest.mark.parametrize("shared_encoder", [False, True])
+@pytest.mark.parametrize("actor_head_kind", [TMASACActorHeadKind.INDEPENDENT, TMASACActorHeadKind.QCX])
+@pytest.mark.parametrize("action_samples", [1, 3])
+@pytest.mark.parametrize("use_nop", [False, True])
+def test_sac_delay_freezes_actor_and_temperature_but_updates_critic_and_targets(
+    env: SwarmBotsLearnEnvWrapper, shared_encoder: bool, actor_head_kind: TMASACActorHeadKind,
+    action_samples: int, use_nop: bool,
+) -> None:
+    torch.manual_seed(123)
+    env.action_space.seed(123)
+    nop_config = (
+        replace(_small_nop_config(num_next_steps=1), skip_first_transition_for_critic=False) if use_nop else None
+    )
+    policy = _make_policy(
+        env, nop_config=nop_config,
+        actor_head_config=_actor_head_config(actor_head_kind),
+        shared_encoder=shared_encoder,
+    )
+    algorithm = SAC(
+        policy, env, **algorithm_options(), policy_delay=3,
+        actor_action_samples=action_samples, target_action_samples=action_samples, tau=0.25,
+    )
     batch = make_batch(algorithm)
-    before_actor = parameter_snapshot(policy.actor_parameters())
-    before_critic = parameter_snapshot(policy.critic_parameters())
-    before_temperature = algorithm.log_ent_coef.detach().clone()
-    with patch.object(policy, "polyak_update_targets", wraps=policy.polyak_update_targets) as targets:
-        for index in (0, 1):
-            metrics, actor_norm, _critic_norm = algorithm._train_step(batch, global_update_idx=index)
-            assert metrics["actor_updated"] == 0 and actor_norm == 0
-            assert "actor_loss" not in metrics and "ent_coef_loss" not in metrics
-            assert_parameters_equal(before_actor, policy.actor_parameters())
-            torch.testing.assert_close(before_temperature, algorithm.log_ent_coef, rtol=0, atol=0)
-        assert targets.call_count == 2
-        metrics, _, _ = algorithm._train_step(batch, global_update_idx=2)
-        assert metrics["actor_updated"] == 1
-        assert "actor_loss" in metrics and "ent_coef_loss" in metrics
-    assert any(not torch.equal(a, b) for a, b in zip(before_actor, policy.actor_parameters()))
-    assert any(not torch.equal(a, b) for a, b in zip(before_critic, policy.critic_parameters()))
-    assert not torch.equal(before_temperature, algorithm.log_ent_coef)
+    actor_modules = actor_learning_modules(policy)
+    critic_modules = {
+        "critic_encoder": policy.critic.encoder,
+        "q1": policy.critic.q1,
+        "q2": policy.critic.q2,
+    }
+    target_pairs = {"critic": (policy.critic, policy.critic_target)}
+    if shared_encoder:
+        critic_modules["shared_encoder"] = policy.shared_observation_encoder
+        target_pairs["shared_encoder"] = (
+            policy.shared_observation_encoder, policy.shared_observation_encoder_target,
+        )
+    if use_nop:
+        actor_modules["actor_nop"] = policy.actor_nop
+        critic_modules["critic_nop"] = policy.critic_nop
+    assert_optimizer_owns(algorithm.actor_optimizer, actor_modules.values())
+    assert_optimizer_owns(algorithm.critic_optimizer, critic_modules.values())
+    component_parameters = {
+        name: list(module.parameters()) for name, module in {**actor_modules, **critic_modules}.items()
+    }
+    sampling_gradients: list[tuple[bool, bool]] = []
+    sample_actions = policy.action_log_prob
+
+    def record_sampling_gradients(**kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
+        actions, log_probs = sample_actions(**kwargs)
+        sampling_gradients.append((actions.requires_grad, log_probs.requires_grad))
+        return actions, log_probs
+
+    with (
+        patch.object(policy, "polyak_update_targets", wraps=policy.polyak_update_targets) as targets,
+        patch.object(policy, "action_log_prob", side_effect=record_sampling_gradients),
+    ):
+        for index, actor_updated in enumerate((False, False, True, False, False, True)):
+            before = {name: parameter_snapshot(parameters) for name, parameters in component_parameters.items()}
+            before_targets = {
+                name: parameter_snapshot(target.parameters()) for name, (_, target) in target_pairs.items()
+            }
+            before_temperature = algorithm.log_ent_coef.detach().clone()
+            sampling_gradients.clear()
+            metrics, actor_norm, critic_norm = algorithm._train_step(batch, global_update_idx=index)
+
+            assert metrics["actor_updated"] == float(actor_updated)
+            assert critic_norm > 0
+            assert sampling_gradients == [(actor_updated, actor_updated), (False, False)]
+            assert targets.call_count == index + 1
+            for name, parameters in component_parameters.items():
+                if name in actor_modules and not actor_updated:
+                    assert_parameters_equal(before[name], parameters)
+                else:
+                    assert_parameters_changed(before[name], parameters)
+            for name, (online, target) in target_pairs.items():
+                assert_polyak_parameters(before_targets[name], online, target, algorithm.tau)
+            if actor_updated:
+                assert actor_norm > 0
+                assert "actor_loss" in metrics and "ent_coef_loss" in metrics
+                assert not torch.equal(before_temperature, algorithm.log_ent_coef)
+            else:
+                assert actor_norm == 0
+                assert "actor_loss" not in metrics and "ent_coef_loss" not in metrics
+                torch.testing.assert_close(before_temperature, algorithm.log_ent_coef, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("shared_encoder", [False, True])
+@pytest.mark.parametrize("actor_head_kind", [TMASACActorHeadKind.INDEPENDENT, TMASACActorHeadKind.QCX])
+@pytest.mark.parametrize("action_samples", [1, 3])
+def test_sac_actor_learns_from_q_without_entropy_or_nop(
+    env: SwarmBotsLearnEnvWrapper, shared_encoder: bool, actor_head_kind: TMASACActorHeadKind,
+    action_samples: int,
+) -> None:
+    torch.manual_seed(764)
+    env.action_space.seed(764)
+    policy = _make_policy(env, actor_head_config=_actor_head_config(actor_head_kind), shared_encoder=shared_encoder)
+    algorithm = SAC(
+        policy, env, **algorithm_options(), policy_delay=3, ent_coef=0.0,
+        actor_action_samples=action_samples, target_action_samples=action_samples,
+    )
+    batch = make_batch(algorithm)
+    assert not policy.has_nop_loss()
+    actor_modules = tuple(actor_learning_modules(policy).values())
+    for index, actor_updated in enumerate((False, False, True, False, False, True)):
+        before = [parameter_snapshot(module.parameters()) for module in actor_modules]
+        metrics, actor_norm, _critic_norm = algorithm._train_step(batch, global_update_idx=index)
+        assert metrics["actor_updated"] == float(actor_updated)
+        assert metrics["ent_coef"] == 0.0
+        assert "ent_coef_loss" not in metrics
+        if actor_updated:
+            assert actor_norm > 0
+            for previous, module in zip(before, actor_modules, strict=True):
+                assert_parameters_changed(previous, module.parameters())
+        else:
+            assert actor_norm == 0
+            for previous, module in zip(before, actor_modules, strict=True):
+                assert_parameters_equal(previous, module.parameters())
+
+
+@pytest.mark.parametrize("shared_encoder", [False, True])
+@pytest.mark.parametrize("loss_source,reuse_critic_latents", [
+    pytest.param("actor", False, id="actor"),
+    pytest.param("critic", False, id="critic"),
+    pytest.param("critic", True, id="critic-cached"),
+])
+def test_sac_nop_gradients_reach_only_their_source_encoders(
+    env: SwarmBotsLearnEnvWrapper, shared_encoder: bool, loss_source: str, reuse_critic_latents: bool,
+) -> None:
+    torch.manual_seed(831)
+    env.action_space.seed(831)
+    policy = _make_policy(
+        env, shared_encoder=shared_encoder,
+        nop_config=replace(_small_nop_config(num_next_steps=1), skip_first_transition_for_critic=False),
+    )
+    algorithm = SAC(policy, env, **algorithm_options())
+    batch = make_batch(algorithm)
+    policy.zero_grad(set_to_none=True)
+    source_latents = None
+    if loss_source == "actor":
+        loss, _metrics = policy.compute_actor_nop_loss(batch)
+        learning_modules = [policy.actor_encoder, policy.actor_nop]
+        untouched_modules = [policy.critic, policy.critic_nop]
+        if shared_encoder:
+            untouched_modules.append(policy.shared_observation_encoder)
+    else:
+        if reuse_critic_latents:
+            _q1, _q2, source_latents = policy.q_values_with_nop_latents(
+                local_obs=batch.local_obs,
+                global_obs=batch.global_obs,
+                actions=batch.actions,
+                hidden_local_vars=batch.hidden_local_vars,
+                hidden_global_vars=batch.hidden_global_vars,
+                agent_mask=batch.agent_mask,
+            )
+            assert source_latents is not None and source_latents.requires_grad
+            source_latents.retain_grad()
+        loss, _metrics = policy.compute_critic_nop_loss(batch, source_latents=source_latents)
+        learning_modules = [policy.critic.encoder, policy.critic_nop]
+        untouched_modules = [policy.actor_encoder, policy.actor_nop, policy.critic.q1, policy.critic.q2]
+        if shared_encoder:
+            learning_modules.append(policy.shared_observation_encoder)
+    untouched_modules.extend((policy.actor_head, policy.action_dist))
+    loss.backward()
+    if reuse_critic_latents:
+        assert source_latents.grad is not None
+        assert_nonzero_finite_gradients((source_latents.grad,))
+    for module in learning_modules:
+        assert_nonzero_finite_gradients(
+            parameter.grad for parameter in module.parameters() if parameter.requires_grad
+        )
+    for module in untouched_modules:
+        assert all(parameter.grad is None for parameter in module.parameters())
 
 
 @pytest.mark.parametrize("samples", [1, 3])

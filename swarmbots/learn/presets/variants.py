@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from swarmbots.learn.presets.policy_factory import PolicyVariant
 from swarmbots.learn.presets.tmasac import TMASACVariant
@@ -45,24 +45,12 @@ VARIANT_CONFIGS.update({
     for name in ("tmasac", "tmasac_dec", "tmasac__slstm", "tmasac__lstm")
 })
 VARIANT_CONFIGS.update({
-    "mat_qcx__no_nop": LearningVariantConfig(policy_variant="mat_qcx", use_nop=False),
-    "tmasac__no_nop": LearningVariantConfig(tmasac_variant="tmasac", use_nop=False),
+    "mat_qcx__no_nop": LearningVariantConfig(policy_variant="mat_qcx", use_nop=False, hidden=True),
+    "tmasac__no_nop": LearningVariantConfig(tmasac_variant="tmasac", use_nop=False, hidden=True),
 })
 VARIANT_CONFIGS.update({
     f"{algorithm}__gated_deepset_critic": LearningVariantConfig(
-        policy_variant=f"{algorithm}__deepset_critic", gated_deepset=True,
+        policy_variant=f"{algorithm}__deepset_critic", gated_deepset=True, hidden=True,
     )
     for algorithm in ("maddpg", "matd3", "masac")
 })
-
-# Auxiliary-loss and attention controls remain explicit selections.
-_DEFAULT_VARIANTS = {
-    "ppo", "mappo__deepset_critic", "mat_orig", "mat_ind", "mat_dec", "mat_qcx",
-    "mat_ind__lstm", "mat_qcx__lstm", "maddpg__deepset_critic", "matd3__deepset_critic",
-    "masac__deepset_critic", "tmatd3", "tmatd3_dec", "tmasac", "tmasac_dec",
-    "tmasac__slstm", "tmasac__lstm",
-}
-VARIANT_CONFIGS = {
-    name: replace(config, hidden=name not in _DEFAULT_VARIANTS)
-    for name, config in VARIANT_CONFIGS.items()
-}

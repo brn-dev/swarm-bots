@@ -1,8 +1,8 @@
-# Reference learning baselines
+# Baseline reinforcement learning algorithms
 
-`swarmbots.learn` provides included policy learners, checkpoint continuation, evaluation adapters, and recording helpers. The presets are starting configurations, not published reference scores or required benchmark settings.
+SwarmBots includes a suite of PPO, MAPPO, MAT, SAC, DDPG, and TD3-based learners for training policies and comparing multi-agent architectures. The suite spans centralized and decentralized actors, attention and Deep Set communication, recurrent memory, and optional next-observation prediction (NOP). Fixed model-size tiers support comparisons across these choices; the [comparison reference](policy_parameters/model_scale.md#experimental-comparisons) describes matched components and remaining differences.
 
-The [runnable examples](../examples/README.md) combine training, evaluation, and recording in one script. The [Python API](api.md) supports custom-learner integration.
+`swarmbots.learn` provides training presets, checkpoint continuation, evaluation adapters, and recording helpers. The presets are starting configurations, not published reference scores or required benchmark settings. The [runnable examples](../examples/README.md) combine training, evaluation, and recording in one script. Custom algorithms use the separate [benchmark Python API](api.md).
 
 The presets and options below describe the current source checkout. The published `0.1.0a3` release has a [versioned learning guide](https://github.com/brn-dev/swarm-bots/blob/v0.1.0a3/docs/learning.md); its preset names and available options differ.
 

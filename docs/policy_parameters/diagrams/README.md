@@ -46,6 +46,6 @@ Each `.mmd` works in Mermaid-compatible Markdown. A `.dot` can be rerendered wit
 dot -Tsvg 5M-2L/tmasac.dot -o tmasac.svg
 ```
 
-The graph connections are explicit architecture rules checked against the policy implementation. Dimensions, MLP chains, and counts come from the actual constructed policies' audited configuration, layer, and module metadata. Module counts deduplicate aliased weights within each subtree; they are inclusive subtotals and must not be summed with their children. The builder assigns each online parameter to one box and checks reconciliation against the role totals. If a new architecture changes its dependencies, update the graph builder and its semantic tests. Counts and dimensions are measured again on the next invocation.
+Dimensions, MLP chains, and counts come from the selected policies. Module counts deduplicate shared weights within each subtree; they are inclusive subtotals and must not be summed with their children. Each online parameter contributes to one outer box, whose counts reconcile with the actor, critic, and NOP totals. Counts and dimensions are measured again on the next invocation.
 
 [Model-scale layouts](../model_scale.md) · [Parameter reports](../README.md)

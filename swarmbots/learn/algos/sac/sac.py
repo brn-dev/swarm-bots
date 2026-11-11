@@ -157,17 +157,18 @@ class SAC(OffPolicyAlgorithm):
         nop_loss_batch = batch if nop_batch is None else nop_batch
         skip_multi_step_nop_loss = self._uses_multi_step_nop() and nop_batch is None
         self._reset_train_gsde_noise(batch.local_obs)
-        actions_pi, log_prob_pi = self.policy.action_log_prob(
-            num_action_samples=self.actor_action_samples,
-            local_obs=batch.local_obs,
-            global_obs=batch.global_obs,
-            hidden_local_vars=batch.hidden_local_vars,
-            hidden_global_vars=batch.hidden_global_vars,
-            agent_mask=batch.agent_mask,
-            **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
-            previous_actions=batch.previous_actions,
-            deterministic=False,
-        )
+        with torch.set_grad_enabled(update_actor):
+            actions_pi, log_prob_pi = self.policy.action_log_prob(
+                num_action_samples=self.actor_action_samples,
+                local_obs=batch.local_obs,
+                global_obs=batch.global_obs,
+                hidden_local_vars=batch.hidden_local_vars,
+                hidden_global_vars=batch.hidden_global_vars,
+                agent_mask=batch.agent_mask,
+                **({} if batch.scenario_ids is None else {"scenario_ids": batch.scenario_ids}),
+                previous_actions=batch.previous_actions,
+                deterministic=False,
+            )
         log_prob_pi_mean = self._mean_agent_log_probs(log_prob_pi, batch.agent_mask)
         ent_coef, ent_coef_loss = self._update_entropy_coefficient(
             log_prob_mean=self._mean_action_samples(log_prob_pi_mean, self.actor_action_samples),

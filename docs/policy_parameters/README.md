@@ -2,9 +2,9 @@
 
 The [fixed layouts and allocation rules](model_scale.md) define model sizes; the [online diagram viewer](https://brn-dev.github.io/swarm-bots/policy-diagrams/) and [diagram guide](diagrams/README.md) explain the generated architectures. The viewer requires no local installation or generated data. The commands below are [installed tools](../tools.md), with output paths relative to the repository root.
 
-Parameter counts and layer dimensions are measured from current policies when requested. The repository keeps explanatory guides; generated counts and comparison reports are local outputs, so architecture changes do not require synchronizing documentation snapshots.
+Parameter counts and layer dimensions are measured from the selected policies. Use the same task, model scale, and overrides when comparing methods: observation and action dimensions affect the counts.
 
-Detailed Markdown reports and CSV exports live in `generated/<scale>/`; rendered diagrams, their export formats, and the offline gallery live in `diagrams/`. Generated outputs are excluded from Git and source packages. GitHub Pages hosts a separately generated gallery for browsing online; existing local outputs remain usable.
+Detailed Markdown reports and CSV exports are saved locally in `generated/<scale>/`; rendered diagrams, their export formats, and the offline gallery are saved in `diagrams/`.
 
 Generate the gallery and parameter reports from current presets:
 

@@ -1,5 +1,6 @@
 import copy
 from collections.abc import Callable
+from functools import partial
 
 import pytest
 import torch
@@ -35,13 +36,19 @@ def _decode_steps(
 @pytest.mark.parametrize("bias", [False, True])
 @pytest.mark.parametrize("layers,memory_width", [(1, 8), (3, 7)])
 @pytest.mark.parametrize("mask_kind", ["none", "prefix", "arbitrary"])
+@pytest.mark.parametrize("activation_factory", [
+    pytest.param(nn.GELU, id="gelu"),
+    pytest.param(partial(nn.RReLU, lower=0.1, upper=0.1), id="deterministic-rrelu"),
+])
 def test_incremental_decoder_preserves_outputs_and_gradients(
     norm_first: bool, bias: bool, layers: int, memory_width: int, mask_kind: str,
+    activation_factory: ActivationFactory,
 ) -> None:
     torch.manual_seed(731)
     decoder = MATQCXDecoder(
         MATQCXDecoderConfig(
             d_model=8, nhead=2, num_layers=layers, dim_feedforward=13,
+            act_fn_cls=activation_factory,
             bias=bias, norm_first=norm_first,
             query_encoder_hidden_dims=[11], context_encoder_hidden_dims=[9],
             normalize_context_input=True, normalize_context_tokens=True,
@@ -58,6 +65,7 @@ def test_incremental_decoder_preserves_outputs_and_gradients(
     queries = torch.randn(3, 4, 6, dtype=torch.float64, requires_grad=True)
     actions = torch.randn(3, 4, 5, dtype=torch.float64, requires_grad=True)
     memory = torch.randn(3, 4, memory_width, dtype=torch.float64, requires_grad=True)
+    assert decoder.create_step_cache(memory) is not None
     inputs = (queries, actions, memory)
     reference_inputs = tuple(tensor.detach().clone().requires_grad_() for tensor in inputs)
     mask = None

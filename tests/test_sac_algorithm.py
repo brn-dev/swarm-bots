@@ -100,6 +100,8 @@ def _make_policy(
         *,
         continuous_config: ContinuousActionDistConfig | None = None,
         nop_config: SACNOPConfig | None = None,
+        actor_head_config: TMASACActorHeadConfig | None = None,
+        shared_encoder: bool = False,
         compile_modules: bool = False,
 ) -> TMASACPolicy:
     encoder_config = MATEncoderConfig(
@@ -113,7 +115,10 @@ def _make_policy(
         config=TMASACPolicyConfig(
             actor_encoder_config=encoder_config,
             critic_encoder_config=encoder_config,
-            actor_head_config=TMASACActorHeadConfig(hidden_dims=[8]),
+            shared_encoder_config=encoder_config if shared_encoder else None,
+            actor_head_config=(
+                TMASACActorHeadConfig(hidden_dims=[8]) if actor_head_config is None else actor_head_config
+            ),
             critic_config=TransformerCriticConfig(
                 n_local_projection_hidden_layers=1,
                 n_value_regressor_hidden_layers=1,

@@ -136,9 +136,9 @@ Only the source adapter input depends on the policy encoder width. MAT/RMAT and 
 
 ## Registry, counts and checkpoints
 
-The default list contains 17 core presets. `list_variants(include_hidden=True)` also lists two NOP controls (`mat_qcx__no_nop`, `tmasac__no_nop`) and the three gated Deep Set presets. `mat_ind__no_attention` is removed. MLP-suffixed, SwiGLU, shared-encoder, optional recurrent-control and segment presets remain unregistered; their low-level implementation machinery remains. Plain PPO and MAPPO remain registered.
+`list_variants()` lists the core presets. `list_variants(include_hidden=True)` also lists two NOP controls (`mat_qcx__no_nop`, `tmasac__no_nop`) and the three gated Deep Set presets. The [available-variant reference](../learning.md#select-a-variant-and-task) describes the baseline families.
 
-Names follow `base_variant__modifier__modifier`: major architecture names keep single underscores (`mat_qcx`, `tmasac_dec`), while additional modifiers use double underscores (`mat_qcx__lstm`, `matd3__deepset_critic`). Superseded spellings are rejected without aliases. This naming change preserves architecture, checkpoint weight keys and layout versions. The [available-variant reference](../learning.md#select-a-variant-and-task) lists current names; the [changelog](../../CHANGELOG.md) records historical changes.
+Preset modifiers follow a double underscore, as in `mat_qcx__lstm` and `matd3__deepset_critic`. Training, recording, and inspection accept the same names.
 
 Checkpoints record resolved actor/critic configs and the layout version. Loading requires the current checkpoint format, task, distribution, NOP settings, architecture and observation layout.
 

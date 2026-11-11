@@ -516,7 +516,7 @@ class MATQCXDecoder(nn.Module):
         # Prefix recomputation redraws activation noise, including modules nested
         # inside activation factories. Reusing that noise changes the joint policy.
         if any(module.training and module.p > 0.0 for module in self._dropout_modules) or any(
-            module.training for module in self._randomized_activations
+            module.training and module.lower != module.upper for module in self._randomized_activations
         ) or any(
             module.training and module.dropout > 0.0 for module in self._attention_modules
         ):
