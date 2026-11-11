@@ -1,11 +1,227 @@
 import math
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
 import torch
 
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+from swarmbots.learn.action_dists.gsde_noise import reset_noise_masked_
+
+
+CUDA = pytest.param("cuda", marks=[
+    pytest.mark.cuda, pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"),
+])
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("mask_layout", ["agent", "environment", "empty", "strided"])
+@pytest.mark.parametrize(("latent_dim", "action_dim"), [(64, 8), (7, 3)])
+def test_cuda_masked_noise_resets_preserve_other_agents_without_host_reads(
+    mask_layout: str, latent_dim: int, action_dim: int,
+) -> None:
+    pytest.importorskip("triton")
+    dist = GSDEActionDist(latent_dim=latent_dim, action_dim=action_dim, base_std=.5).cuda()
+    dist.reset_noise((128, 5))
+    if mask_layout == "strided":
+        dist.set_temporal_correlation_state(torch.randn(128, 5, latent_dim, action_dim * 2, device="cuda")[..., ::2])
+    mask = torch.arange(128 * 5, device="cuda").reshape(128, 5) % 6 == 0
+    if mask_layout == "environment":
+        mask = mask[:, 0]
+    elif mask_layout == "empty":
+        mask.zero_()
+    with torch.no_grad():
+        dist.reset_noise_masked(mask)
+    original = dist.get_temporal_correlation_state().clone()
+    with (
+        torch.no_grad(),
+        patch.object(torch.Tensor, "item", side_effect=AssertionError("resets must stay on device")),
+        patch.object(torch.Tensor, "cpu", side_effect=AssertionError("resets must stay on device")),
+        patch.object(torch.Tensor, "__bool__", side_effect=AssertionError("resets must stay on device")),
+    ):
+        dist.reset_noise_masked(mask)
+    updated = dist.get_temporal_correlation_state()
+    expanded_mask = mask[:, None].expand(128, 5) if mask.ndim == 1 else mask
+    torch.testing.assert_close(updated[~expanded_mask], original[~expanded_mask], rtol=0, atol=0)
+    if mask_layout != "empty":
+        assert not torch.equal(updated[expanded_mask], original[expanded_mask])
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_masked_noise_is_seeded_independent_standard_normal() -> None:
+    dist = GSDEActionDist(latent_dim=64, action_dim=8, base_std=.5).cuda()
+    dist.reset_noise((256, 5))
+    mask = torch.ones(256, 5, device="cuda", dtype=torch.bool)
+    with torch.no_grad():
+        torch.manual_seed(1234)
+        dist.reset_noise_masked(mask)
+        first = dist.get_temporal_correlation_state().clone()
+        torch.manual_seed(1234)
+        dist.reset_noise_masked(mask)
+    torch.testing.assert_close(dist.get_temporal_correlation_state(), first, rtol=0, atol=0)
+    assert first.mean().abs() < .01
+    assert (first.std() - 1).abs() < .01
+    assert (first[:, 0] * first[:, 1]).mean().abs() < .01
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_masked_noise_follows_the_current_stream() -> None:
+    dist = GSDEActionDist(latent_dim=7, action_dim=3, base_std=.5).cuda()
+    dist.reset_noise((128, 5))
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream), torch.no_grad():
+        dist.set_temporal_correlation_state(torch.zeros(128, 5, 7, 3, device="cuda"))
+        mask = torch.arange(128 * 5, device="cuda").reshape(128, 5) % 6 == 0
+        dist.reset_noise_masked(mask)
+        snapshot = dist.get_temporal_correlation_state().clone()
+    stream.synchronize()
+    assert torch.count_nonzero(snapshot[~mask]) == 0
+    assert torch.count_nonzero(snapshot[mask]) > 0
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_masked_noise_retains_autograd_mutation_detection() -> None:
+    dist = GSDEActionDist(latent_dim=7, action_dim=3, base_std=.5).cuda()
+    dist.reset_noise((2, 5))
+    features = torch.ones_like(dist.get_temporal_correlation_state(), requires_grad=True)
+    loss = (features * dist.get_temporal_correlation_state()).sum()
+    with torch.no_grad():
+        dist.reset_noise_masked(torch.ones(2, 5, dtype=torch.bool, device="cuda"))
+    with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+        loss.backward()
+
+
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+@pytest.mark.parametrize("reset_kind", ["empty", "partial", "full", "restored"])
+@pytest.mark.parametrize("reset_context", ["grad", "no_grad", "inference"])
+@pytest.mark.parametrize("std_learnable", [False, True])
+def test_rsample_gradients_survive_noise_resets(
+    device: str, reset_kind: str, reset_context: str, std_learnable: bool,
+) -> None:
+    dist = GSDEActionDist(4, 2, .5, std_learnable=std_learnable).to(device)
+    dist.reset_noise((2, 3))
+    reference = deepcopy(dist)
+    features = torch.randn(2, 3, 4, device=device, requires_grad=True)
+    reference_features = features.detach().clone().requires_grad_()
+    loss = dist.update_latent_features(features).rsample().square().sum()
+    reference_loss = reference.update_latent_features(reference_features).rsample().square().sum()
+    if reset_kind == "restored":
+        state = dist.get_temporal_correlation_state()
+        dist.reset_noise((2, 3))
+        dist.set_temporal_correlation_state(state.view_as(state))
+    mask = torch.arange(6, device=device).reshape(2, 3) % 2 == 0
+    if reset_kind == "empty":
+        mask.zero_()
+    elif reset_kind == "full":
+        mask.fill_(True)
+    with torch.inference_mode(reset_context == "inference"), torch.set_grad_enabled(reset_context == "grad"):
+        dist.reset_noise_masked(mask)
+    loss.backward()
+    reference_loss.backward()
+    torch.testing.assert_close(features.grad, reference_features.grad)
+    for parameter, expected_parameter in zip(dist.parameters(), reference.parameters(), strict=True):
+        torch.testing.assert_close(parameter.grad, expected_parameter.grad)
+    dist.zero_grad()
+    dist.update_latent_features(features.detach()).rsample().sum().backward()
+    assert dist.action_net.weight.grad is not None
+
+
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+def test_multiple_pending_rsample_generations_survive_later_resets(device: str) -> None:
+    dist = GSDEActionDist(4, 2, .5).to(device)
+    dist.reset_noise((2, 3))
+    losses, expected_losses, references = [], [], []
+    for index in range(3):
+        reference = GSDEActionDist(4, 2, .5).to(device)
+        reference.load_state_dict(dist.state_dict())
+        reference.set_temporal_correlation_state(dist.get_temporal_correlation_state().clone())
+        features = torch.randn(2, 1, 4, device=device)
+        losses.append(dist.update_latent_features(features).rsample(agent=1).square().sum())
+        expected_losses.append(reference.update_latent_features(features).rsample(agent=1).square().sum())
+        references.append(reference)
+        with torch.no_grad():
+            dist.reset_noise_masked(torch.tensor([index % 2 == 0, True], device=device))
+    sum(losses).backward()
+    sum(expected_losses).backward()
+    for name, parameter in dist.named_parameters():
+        expected = sum(dict(reference.named_parameters())[name].grad for reference in references)
+        torch.testing.assert_close(parameter.grad, expected)
+
+
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+@pytest.mark.parametrize("reset_grad_enabled", [False, True])
+def test_inference_noise_cannot_be_mutated_outside_inference_mode(
+    device: str, reset_grad_enabled: bool,
+) -> None:
+    dist = GSDEActionDist(4, 2, .5).to(device)
+    with torch.inference_mode():
+        dist.reset_noise((2, 3))
+    original = dist.get_temporal_correlation_state().clone()
+    mask = torch.zeros(2, 3, device=device, dtype=torch.bool)
+    with torch.set_grad_enabled(reset_grad_enabled):
+        dist.reset_noise_masked(mask)
+        torch.testing.assert_close(dist.get_temporal_correlation_state(), original, rtol=0, atol=0)
+        mask[0, 1] = True
+        with pytest.raises(RuntimeError, match="Inplace update to inference tensor outside InferenceMode"):
+            dist.reset_noise_masked(mask)
+    torch.testing.assert_close(dist.get_temporal_correlation_state(), original, rtol=0, atol=0)
+    with torch.inference_mode():
+        dist.reset_noise_masked(mask)
+    updated = dist.get_temporal_correlation_state()
+    torch.testing.assert_close(updated[~mask], original[~mask], rtol=0, atol=0)
+    assert not torch.equal(updated[mask], original[mask])
+
+
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+@pytest.mark.parametrize("batch_shape", [(), (4,), (2, 3), (2, 3, 4)])
+@pytest.mark.parametrize("force_fallback", [False, True])
+@pytest.mark.parametrize("contiguous", [False, True])
+def test_selective_noise_resets_preserve_unselected_storage(
+    device: str, batch_shape: tuple[int, ...], force_fallback: bool, contiguous: bool,
+) -> None:
+    if contiguous:
+        backing = torch.zeros(*batch_shape, 5, 3, device=device)
+        noise = backing
+    else:
+        backing = torch.zeros(*reversed(batch_shape), 6, 5, device=device)
+        noise = backing.permute(*reversed(range(len(batch_shape))), len(batch_shape) + 1, len(batch_shape))[..., ::2]
+    mask = torch.arange(math.prod(batch_shape), device=device).reshape(batch_shape) % 2 == 0
+    with torch.no_grad():
+        if force_fallback:
+            with patch("swarmbots.learn.action_dists.gsde_noise._masked_normal_kernel", return_value=None):
+                reset_noise_masked_(noise, mask)
+        else:
+            reset_noise_masked_(noise, mask)
+    assert torch.count_nonzero(noise[~mask]) == 0
+    assert torch.count_nonzero(noise[mask]) == int(mask.sum()) * 15
+    if not contiguous:
+        assert torch.count_nonzero(backing[..., 1::2, :]) == 0
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("selected_rows", [0, 10, 5120 // 6])
+def test_cuda_fallback_temporary_storage_scales_with_selected_rows(selected_rows: int) -> None:
+    dist = GSDEActionDist(256, 8, .5).cuda()
+    dist.reset_noise((1024, 5))
+    noise = dist.get_temporal_correlation_state()
+    mask = torch.arange(5120, device="cuda").reshape(1024, 5) < selected_rows
+    with torch.no_grad(), patch("swarmbots.learn.action_dists.gsde_noise._masked_normal_kernel", return_value=None):
+        dist.reset_noise_masked(mask)
+        torch.cuda.synchronize()
+        baseline = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        dist.reset_noise_masked(mask)
+        torch.cuda.synchronize()
+        extra = torch.cuda.max_memory_allocated() - baseline
+    # Allow allocator rounding and the mask reduction, but exclude full-batch temporaries.
+    assert extra <= selected_rows * 256 * 8 * noise.element_size() + 65536
+    assert dist.get_temporal_correlation_state() is noise
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=[

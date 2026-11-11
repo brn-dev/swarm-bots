@@ -8,6 +8,9 @@ from swarmbots.learn.presets.policy_factory import PolicyVariant
 from swarmbots.learn.presets.tmasac import TMASACVariant
 
 
+DEFAULT_LEARNING_VARIANT = "mappo__deepset_critic"
+
+
 @dataclass(frozen=True)
 class LearningVariantConfig:
     policy_variant: PolicyVariant | None = None

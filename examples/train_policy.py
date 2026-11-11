@@ -12,6 +12,7 @@ from swarmbots import evaluate_policy, record_policy
 from swarmbots.learn import as_benchmark_policy, list_variants, train
 from swarmbots.learn.logging_levels import LOGGING_LEVELS
 from swarmbots.learn.presets.model_scale import SCALE_LAYOUTS, normalize_model_scale
+from swarmbots.learn.presets.variants import DEFAULT_LEARNING_VARIANT
 
 
 def positive_int(value: str) -> int:
@@ -25,7 +26,7 @@ def make_parser(
     *,
     description: str = __doc__,
     variants: tuple[str, ...] | None = None,
-    default_variant: str = "mappo__deepset_critic",
+    default_variant: str = DEFAULT_LEARNING_VARIANT,
     run_dir_help: str = "fresh directory under runs/<benchmark-id>/<variant>/<scale>/seed-<seed>/",
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)

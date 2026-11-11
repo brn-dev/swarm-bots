@@ -8,6 +8,7 @@ from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
+from swarmbots.learn.action_dists.gsde_noise import reset_noise_masked_
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
 from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
@@ -126,19 +127,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             self.reset_noise(expected_batch_shape)
             return
 
-        num_resets = int(mask.sum().item())
-        if num_resets == 0:
-            return
-
-        with torch.no_grad():
-            mask_flat = mask.to(self._exploration_noise.device, dtype=torch.bool).reshape(-1)
-            noise = torch.randn(
-                (num_resets, self.latent_sde_dim, self.action_dim),
-                device=self._exploration_noise.device,
-                dtype=self._exploration_noise.dtype,
-            )
-            exploration_noise_flat = self._exploration_noise.reshape(-1, self.latent_sde_dim, self.action_dim)
-            exploration_noise_flat[mask_flat] = noise
+        reset_noise_masked_(self._exploration_noise, mask)
 
     def reset_on_ep_start(self, mask: torch.Tensor) -> None:
         self.reset_noise_masked(mask)
@@ -251,7 +240,11 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         else:
             exploration_noise = self._exploration_noise
 
-        exploration_matrices = exploration_noise * self._get_std_matrix(self.log_stds)
+        std_matrix = self._get_std_matrix(self.log_stds)
+        if std_matrix.requires_grad:
+            # Std gradients need immutable noise across later resets and state swaps.
+            exploration_noise = exploration_noise.clone()
+        exploration_matrices = exploration_noise * std_matrix
         noise = torch.einsum("...d,...da->...a", self._latent_sde, exploration_matrices)
         return self.distribution.mean + noise
 

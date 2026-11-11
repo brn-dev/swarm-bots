@@ -1,9 +1,18 @@
 from pathlib import Path
+import inspect
 from unittest.mock import Mock
 
 import pytest
 
 from examples.train_policy import create_run_directory, make_parser, run_experiment
+from swarmbots.learn import make_training, train
+
+
+def test_python_and_example_share_the_default_architecture() -> None:
+    example_variant = make_parser().parse_args([]).variant
+    assert example_variant == "mappo__deepset_critic"
+    for function in (make_training, train):
+        assert inspect.signature(function).parameters["variant"].default == example_variant
 
 
 @pytest.mark.parametrize("scale", ["5M-2L", "5M-3L", "custom"])

@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -9,36 +10,91 @@ from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 from swarmbots.learn.tensor_conversion import to_torch_tensor
 
 
+_FINAL_OBS_REQUIRED_MESSAGE = (
+    "SAME_STEP rollouts require infos['final_obs'] and infos['_final_obs'] for done environments."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RolloutStepMetadata:
+    completed_indices: list[int]
+    has_truncations: bool
+    has_ongoing: bool
+    final_obs_mask: torch.Tensor | None
+
+
+def _episode_info_source(infos: dict[str, Any]) -> dict[str, Any] | None:
+    if "episode" in infos:
+        source = infos
+    else:
+        source = infos.get("final_info")
+        if not isinstance(source, dict) or "episode" not in source:
+            return None
+    if not isinstance(source["episode"], dict):
+        raise ValueError(f"Expected infos['episode'] to be a dict, got {type(source['episode'])}")
+    return source
+
+
+def _info_mask(infos: dict[str, Any], key: str, dones: torch.Tensor) -> torch.Tensor:
+    mask = to_torch_tensor(infos.get(key, dones), device=dones.device, dtype=torch.bool).reshape(-1)
+    if tuple(mask.shape) != tuple(dones.shape):
+        raise ValueError(f"Expected infos['{key}'] shape {tuple(dones.shape)}, got {tuple(mask.shape)}")
+    return mask
+
+
+def collect_rollout_step_metadata(
+    *, infos: dict[str, Any], dones: torch.Tensor, terminations: torch.Tensor, truncations: torch.Tensor,
+) -> RolloutStepMetadata:
+    source = _episode_info_source(infos)
+    episode_mask = dones if source is None else _info_mask(source, "_episode", dones)
+    final_obs_mask = (
+        _info_mask(infos, "_final_obs", dones)
+        if "final_obs" in infos and "_final_obs" in infos else None
+    )
+    if source is None and final_obs_mask is None:
+        has_dones, has_truncations = torch.stack((dones, truncations & ~terminations)).any(dim=1).tolist()
+        if has_dones:
+            raise ValueError(_FINAL_OBS_REQUIRED_MESSAGE)
+        return RolloutStepMetadata([], has_truncations, dones.numel() > 0, None)
+    # Bootstrap decisions, episode indices and mask validation share one device transfer.
+    dones_cpu, truncations_cpu, episode_mask_cpu, final_obs_mask_cpu = torch.stack((
+        dones, truncations & ~terminations, episode_mask, dones if final_obs_mask is None else final_obs_mask,
+    )).detach().cpu()
+    if not torch.equal(episode_mask_cpu, dones_cpu):
+        raise ValueError("Expected infos['_episode'] to match computed dones.")
+    completed_indices = torch.nonzero(dones_cpu, as_tuple=False).flatten().tolist()
+    if completed_indices:
+        if final_obs_mask is None:
+            raise ValueError(_FINAL_OBS_REQUIRED_MESSAGE)
+        if not torch.equal(final_obs_mask_cpu, dones_cpu):
+            raise ValueError("Expected infos['_final_obs'] to match computed dones.")
+    return RolloutStepMetadata(
+        completed_indices=completed_indices,
+        has_truncations=bool(truncations_cpu.any()),
+        has_ongoing=len(completed_indices) < dones.numel(),
+        final_obs_mask=final_obs_mask,
+    )
+
+
 def append_episode_infos(
         *,
         episode_infos: list[dict[str, Any]],
         infos: dict[str, Any],
         dones: torch.Tensor,
+        step_metadata: RolloutStepMetadata | None = None,
 ) -> None:
-    info_source = infos
-    if "episode" not in info_source:
-        final_info = infos.get("final_info", None)
-        if isinstance(final_info, dict) and "episode" in final_info:
-            info_source = final_info
-        else:
-            return
-
+    info_source = _episode_info_source(infos)
+    if info_source is None:
+        return
     episode_stats = info_source["episode"]
-    if not isinstance(episode_stats, dict):
-        raise ValueError(f"Expected infos['episode'] to be a dict, got {type(episode_stats)}")
-
-    episode_mask = to_torch_tensor(
-        info_source.get("_episode", dones),
-        device=dones.device,
-        dtype=torch.bool,
-    ).reshape(-1)
-    if tuple(episode_mask.shape) != tuple(dones.shape):
-        raise ValueError(f"Expected infos['_episode'] shape {tuple(dones.shape)}, got {tuple(episode_mask.shape)}")
-    episode_mask_cpu, dones_cpu = torch.stack((episode_mask, dones)).detach().cpu()
-    if not torch.equal(episode_mask_cpu, dones_cpu):
-        raise ValueError("Expected infos['_episode'] to match computed dones.")
-
-    completed_indices = torch.nonzero(episode_mask_cpu, as_tuple=False).flatten().tolist()
+    if step_metadata is None:
+        episode_mask = _info_mask(info_source, "_episode", dones)
+        episode_mask_cpu, dones_cpu = torch.stack((episode_mask, dones)).detach().cpu()
+        if not torch.equal(episode_mask_cpu, dones_cpu):
+            raise ValueError("Expected infos['_episode'] to match computed dones.")
+        completed_indices = torch.nonzero(episode_mask_cpu, as_tuple=False).flatten().tolist()
+    else:
+        completed_indices = step_metadata.completed_indices
     if not completed_indices:
         return
     statistic_names = tuple(key for key in episode_stats if not key.startswith("_"))
@@ -101,26 +157,39 @@ def extract_bootstrap_obs(
         infos: dict[str, Any],
         dones: torch.Tensor,
         has_dones: bool | None = None,
+        step_metadata: RolloutStepMetadata | None = None,
 ) -> dict[str, torch.Tensor]:
+    if step_metadata is not None:
+        has_dones = bool(step_metadata.completed_indices)
     if not (bool(dones.any()) if has_dones is None else has_dones):
         return next_obs
 
-    final_obs_mask = _validated_final_obs_mask(infos=infos, dones=dones)
+    final_obs_mask = (
+        _validated_final_obs_mask(infos=infos, dones=dones)
+        if step_metadata is None else step_metadata.final_obs_mask
+    )
+    assert final_obs_mask is not None
     expected_obs_keys = set(next_obs)
-    bootstrap_obs = {key: value.clone() for key, value in next_obs.items()}
     final_obs_value = infos["final_obs"]
     if isinstance(final_obs_value, dict):
         final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_value)
-        _validate_final_obs_keys(final_obs=final_obs, expected_obs_keys=expected_obs_keys)
-        for key in expected_obs_keys:
-            bootstrap_obs[key][final_obs_mask] = final_obs[key][final_obs_mask]
-        return bootstrap_obs
+        _validate_final_obs(final_obs=final_obs, expected_obs=next_obs, batched=True)
+        return {
+            key: torch.where(
+                final_obs_mask.reshape((-1,) + (1,) * (value.ndim - 1)), final_obs[key], value,
+            )
+            for key, value in next_obs.items()
+        }
 
+    bootstrap_obs = {key: value.clone() for key, value in next_obs.items()}
     final_obs_entries = np.asarray(final_obs_value, dtype=object).reshape(-1)
-
-    for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
+    completed_indices = (
+        torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist()
+        if step_metadata is None else step_metadata.completed_indices
+    )
+    for env_idx in completed_indices:
         final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_entries[env_idx])
-        _validate_final_obs_keys(final_obs=final_obs, expected_obs_keys=expected_obs_keys)
+        _validate_final_obs(final_obs=final_obs, expected_obs=next_obs)
         for key in expected_obs_keys:
             bootstrap_obs[key][env_idx] = final_obs[key]
 
@@ -142,7 +211,7 @@ def extract_terminal_obs(
     final_obs_value = infos["final_obs"]
     if isinstance(final_obs_value, dict):
         final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_value)
-        _validate_final_obs_keys(final_obs=final_obs, expected_obs_keys=expected_obs_keys)
+        _validate_final_obs(final_obs=final_obs, expected_obs=next_obs, batched=True)
         return {key: final_obs[key][final_obs_mask] for key in expected_obs_keys}
 
     final_obs_entries = np.asarray(final_obs_value, dtype=object).reshape(-1)
@@ -150,7 +219,7 @@ def extract_terminal_obs(
 
     for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
         final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_entries[env_idx])
-        _validate_final_obs_keys(final_obs=final_obs, expected_obs_keys=expected_obs_keys)
+        _validate_final_obs(final_obs=final_obs, expected_obs=next_obs)
         for key in expected_obs_keys:
             terminal_obs[key].append(final_obs[key])
 
@@ -163,11 +232,9 @@ def _validated_final_obs_mask(
         dones: torch.Tensor,
 ) -> torch.Tensor:
     if "final_obs" not in infos or "_final_obs" not in infos:
-        raise ValueError("SAME_STEP rollouts require infos['final_obs'] and infos['_final_obs'] for done environments.")
+        raise ValueError(_FINAL_OBS_REQUIRED_MESSAGE)
 
-    final_obs_mask = to_torch_tensor(infos["_final_obs"], device=dones.device, dtype=torch.bool).reshape(-1)
-    if tuple(final_obs_mask.shape) != tuple(dones.shape):
-        raise ValueError(f"Expected infos['_final_obs'] shape {tuple(dones.shape)}, got {tuple(final_obs_mask.shape)}")
+    final_obs_mask = _info_mask(infos, "_final_obs", dones)
     if not torch.equal(final_obs_mask, dones):
         raise ValueError("Expected infos['_final_obs'] to match computed dones.")
     return final_obs_mask
@@ -185,14 +252,21 @@ def _final_obs_to_torch(
         raise ValueError(f"Expected final_obs to contain observation key {missing_key!r}.") from exc
 
 
-def _validate_final_obs_keys(
+def _validate_final_obs(
         *,
         final_obs: dict[str, torch.Tensor],
-        expected_obs_keys: set[str],
+        expected_obs: dict[str, torch.Tensor],
+        batched: bool = False,
 ) -> None:
-    missing_keys = expected_obs_keys.difference(final_obs)
+    missing_keys = expected_obs.keys() - final_obs.keys()
     if missing_keys:
         raise ValueError(f"Expected final_obs to contain observation keys {sorted(missing_keys)}.")
+    if batched:
+        for key, value in expected_obs.items():
+            if final_obs[key].shape != value.shape:
+                raise ValueError(
+                    f"Expected final_obs[{key!r}] shape {tuple(value.shape)}, got {tuple(final_obs[key].shape)}."
+                )
 
 
 def to_python_episode_stat(value: Any) -> Any:

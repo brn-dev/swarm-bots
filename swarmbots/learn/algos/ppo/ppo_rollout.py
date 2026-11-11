@@ -14,7 +14,14 @@ from swarmbots.learn.gsde_reset import (
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.performance_timer import PerformanceTimer
-from swarmbots.learn.rollout_utils import append_episode_infos, extract_bootstrap_obs, initial_previous_actions, snapshot_obs
+from swarmbots.learn.rollout_utils import (
+    RolloutStepMetadata,
+    append_episode_infos,
+    collect_rollout_step_metadata,
+    extract_bootstrap_obs,
+    initial_previous_actions,
+    snapshot_obs,
+)
 from swarmbots.learn.summary_statistics import compute_summary_statistics
 from swarmbots.learn.temporal_state import move_temporal_state
 from swarmbots.learn.torch_device import as_device
@@ -124,21 +131,17 @@ def _collect_bootstrap_values(
         infos: dict[str, Any],
         dones: torch.Tensor,
         terminations: torch.Tensor,
-        truncations: torch.Tensor,
+        step_metadata: RolloutStepMetadata,
         previous_actions: torch.Tensor | None,
         temporal_state: Any,
         values: torch.Tensor,
         timers: _RolloutTimers,
         final_step: bool = False,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    # Share the autoreset host decision instead of synchronizing again for truncations.
-    has_dones, has_truncations, has_ongoing = torch.stack(
-        (dones, truncations & ~terminations, ~dones),
-    ).any(dim=1).tolist()
     bootstrap_obs = extract_bootstrap_obs(
-        env=env, next_obs=next_obs, infos=infos, dones=dones, has_dones=has_dones,
+        env=env, next_obs=next_obs, infos=infos, dones=dones, step_metadata=step_metadata,
     )
-    if not (has_truncations or (final_step and has_ongoing)):
+    if not (step_metadata.has_truncations or (final_step and step_metadata.has_ongoing)):
         return bootstrap_obs, torch.zeros_like(values)
 
     # Full batches keep compiled critic shapes stable as the set of truncated lanes changes.
@@ -250,12 +253,15 @@ def _collect_rollout_step(
     timers.env_step_timings.append(timers.env_step_timer.get_duration())
 
     dones = torch.logical_or(terminations, truncations)
-    append_episode_infos(episode_infos=episode_infos, infos=infos, dones=dones)
+    step_metadata = collect_rollout_step_metadata(
+        infos=infos, dones=dones, terminations=terminations, truncations=truncations,
+    )
+    append_episode_infos(episode_infos=episode_infos, infos=infos, dones=dones, step_metadata=step_metadata)
 
     bootstrap_previous_actions = None if state.previous_actions is None else actions.detach()
     bootstrap_obs, bootstrap_values = _collect_bootstrap_values(
         env=env, policy=policy, next_obs=next_obs, infos=infos, dones=dones,
-        terminations=terminations, truncations=truncations,
+        terminations=terminations, step_metadata=step_metadata,
         previous_actions=bootstrap_previous_actions, temporal_state=next_temporal_state,
         values=values, timers=timers, final_step=final_step,
     )

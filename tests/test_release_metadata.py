@@ -20,6 +20,7 @@ PROJECT_ROOT = Path(__file__).parents[1]
 
 def test_public_action_distributions_include_only_the_supported_families() -> None:
     assert {module.name for module in pkgutil.iter_modules(action_dists.__path__)} == {
+        "_gsde_noise_triton",
         "action_dist",
         "action_sampling",
         "bernoulli_action_dist",
@@ -29,6 +30,7 @@ def test_public_action_distributions_include_only_the_supported_families() -> No
         "discrete_action_dist",
         "entropy_utils",
         "gsde_action_dist",
+        "gsde_noise",
         "gumbel_softmax_sign_magnitude_action_dist",
         "hybrid_action_dist",
         "predicted_std_gaussian_action_dist",

@@ -163,6 +163,28 @@ def test_off_policy_presets_share_common_training_defaults(
 
 
 @pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
+@pytest.mark.parametrize(("rollout_steps_per_env", "overrides", "expected_learning_starts", "expected_capacity"), [
+    (1, {"rollout_steps_per_iteration": 8192}, 32768, 1000),
+    (128, {"rollout_steps_per_iteration": 1024}, 10000, 1000),
+    (1024, {"rollout_steps_per_iteration": 1024}, 10000, 1000),
+    (8, {"rollout_steps_per_iteration": None}, 10000, 1000),
+    (1, {"rollout_steps_per_iteration": 1048576}, 4194304, 4096),
+    (1, {"rollout_steps_per_iteration": 8192, "learning_starts": 2048}, 2048, 1000),
+    (1024, {"rollout_steps_per_iteration": None, "learning_starts": 0}, 0, 1000),
+])
+def test_off_policy_startup_defaults_follow_effective_collection_and_explicit_overrides(
+    capture_training_configuration: None, variant: str, rollout_steps_per_env: int,
+    overrides: dict[str, Any], expected_learning_starts: int, expected_capacity: int,
+) -> None:
+    config = make_training(
+        "SwarmBots-WallEasy-v0", variant, num_envs=1024, rollout_steps_per_env=rollout_steps_per_env,
+        algorithm_kwargs=overrides,
+    )
+    assert config["learning_starts"] == expected_learning_starts
+    assert config["buffer_capacity_per_env"] == expected_capacity
+
+
+@pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
 def test_off_policy_presets_honor_common_training_overrides(
     capture_training_configuration: None, variant: str,
 ) -> None:

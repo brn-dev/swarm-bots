@@ -1284,8 +1284,6 @@ class OffPolicyReplayBuffer:
     ) -> Any:
         assert self._temporal_state_indices is not None
         checkpoint_slots = self._temporal_state_indices[env_indices, obs_slots]
-        if torch.any(checkpoint_slots < 0):
-            raise RuntimeError("Requested observation slot has no temporal-state checkpoint.")
         return self._temporal_state_tree_rows(
             state=self.temporal_states,
             env_indices=env_indices,

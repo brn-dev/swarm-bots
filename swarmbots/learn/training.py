@@ -43,7 +43,7 @@ from swarmbots.learn.presets.nop import make_next_obs_pred_config
 from swarmbots.learn.presets.tmasac import make_tmasac_options
 from swarmbots.learn.presets.sac import make_sac_algorithm_options
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig, NOPInitGains
-from swarmbots.learn.presets.variants import VARIANT_CONFIGS
+from swarmbots.learn.presets.variants import DEFAULT_LEARNING_VARIANT, VARIANT_CONFIGS
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
 from swarmbots.learn.scheduling.schedulers import ScheduleUnit
@@ -221,7 +221,7 @@ def _make_policy_env(
 
 def make_training(
     benchmark_id: str,
-    variant: str = "mat_qcx",
+    variant: str = DEFAULT_LEARNING_VARIANT,
     *,
     num_envs: int = 1024,
     device: str | torch.device = "cuda",
@@ -300,10 +300,9 @@ def make_training(
             off_policy_options["batch_size"] = max(1, math.ceil(off_policy_options["batch_size"] / learning_steps))
         learning_positions = int(off_policy_options["batch_size"]) * learning_steps
         collection_steps = off_policy_options.setdefault("rollout_steps_per_iteration", rollout_samples)
-        if collection_steps is None:
-            collection_steps = num_envs
+        collection_steps = num_envs if collection_steps is None else int(collection_steps)
         resolve_replay_updates(
-            replay_exposure=float(off_policy_options["replay_exposure"]), rollout_steps=int(collection_steps),
+            replay_exposure=float(off_policy_options["replay_exposure"]), rollout_steps=collection_steps,
             learning_positions_per_batch=learning_positions,
         )
     training_metadata = serialize_value({
@@ -367,7 +366,7 @@ def make_training(
                 algorithm_class = DDPG if policy_variant.startswith("maddpg") else RecurrentTD3 if recurrent else TD3
             algorithm_config = {
                 "buffer_capacity_per_env": vector_env.episode_length * 2,
-                "learning_starts": max(10_000, rollout_samples * 4),
+                "learning_starts": max(10_000, collection_steps * 4),
                 "replay_storage_device": device,
                 **shared_options,
                 **off_policy_options,
@@ -447,7 +446,7 @@ def make_training(
 
 def train(
     benchmark_id: str,
-    variant: str = "mat_qcx",
+    variant: str = DEFAULT_LEARNING_VARIANT,
     *,
     total_timesteps: int = 100_000_000,
     run_dir: str | Path | None = None,

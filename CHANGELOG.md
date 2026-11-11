@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Include the gSDE noise helpers in the release module inventory while retaining the strict package-content guard.
+- Load the gSDE Triton kernel lazily with module-level bindings, retaining compatibility with Triton 3.2/3.3 on supported older Torch installations while keeping CPU resets independent of Triton.
+- Derive off-policy learning-start thresholds and replay capacity from the resolved collection size, retaining explicit overrides. Restore flat indexing for contiguous gSDE Torch fallback resets while preserving writes to strided storage.
+- Keep gSDE masked resets sparse without Triton and support strided noise in the selective CUDA kernel. Protect pending sampling gradients across resets/state restoration, enforce inference-tensor write ownership, and reject malformed tensor terminal observations before broadcasting can mix batch or agent axes.
+- Make training documentation emphasize high CUDA parallelism and recommend increasing environment counts for fractional replay-update errors, replacing the 64-world, longer-collection workaround.
+- Share MAPPO with a Deep Set critic as the default architecture across the Python training helpers and example CLI.
+- Remove redundant recurrent replay checkpoint validation from the CUDA sampling path. Share PPO bootstrap, episode and terminal-mask metadata in one host transfer, and select tensor terminal observations without CUDA row compaction.
+- Generate masked gSDE CUDA noise only for selected agents using a lazily loaded Triton kernel, with a Torch fallback when Triton is unavailable. Keep unselected noise unchanged and preserve Torch seeding and RNG isolation; exact seeded CUDA trajectories change because masked resets use a new sampling stream.
 - Give shared off-policy test fixtures a whole-update collection schedule and explicit CPU devices for invalid replay-exposure tests, fixing CPU CI setup failures.
 - Include attached NOP parameters in PPO's detailed total gradient norm so it covers the same parameter set as clipping.
 - Use shared float64 norm accumulation for read-only policy gradient diagnostics, preventing float32 reduction overflow in detailed total/component metrics.

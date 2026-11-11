@@ -61,6 +61,7 @@ The Python helper and the runnable example use different workload defaults:
 
 | Setting | `train(...)` | `examples/train_policy.py` |
 | --- | --- | --- |
+| Policy variant | `mappo__deepset_critic` | `mappo__deepset_critic` |
 | Training budget | 100 million transitions | 10 million transitions |
 | Parallel training worlds | 1024 | 1024 |
 | Device | CUDA | CUDA |
@@ -68,6 +69,8 @@ The Python helper and the runnable example use different workload defaults:
 | Model scale | `5M-2L NOP1M` | `5M-2L NOP1M` |
 | Policy compilation | Disabled | Disabled |
 | Evaluation and videos | Separate evaluation and recording helpers | One evaluation seed, then two videos |
+
+Training is designed for high CUDA parallelism, with 1,024 parallel worlds as the recommended starting configuration. Small CPU workloads serve execution checks and debugging.
 
 Tasks normally have a 500-control-step episode limit. Training spreads the first episode endings across worlds to avoid simultaneous resets; subsequent episodes use the full limit. Evaluation and recording start with full episodes.
 
@@ -96,7 +99,7 @@ Default targets include public local observations and public global scalars and 
 
 NOP always predicts per-step changes for scalar, angle, and rotation targets. Binary targets predict next-state flags, and latent transitions use residual updates. Undefined connector twists use zero sine/cosine pairs and are excluded from angle losses. Angle deltas require defined angles at both endpoints, so a newly connected twist starts contributing on its next defined transition. Custom scalar losses used with global payload activity masks must return one unreduced loss per target, such as `nn.MSELoss(reduction="none")`. Per-item losses remain supported when masking applies to whole items.
 
-The scale names describe approximate feed-forward budgets, not exact counts or GPU memory requirements. Recurrent memory and optional gates add parameters; targets and optimizer state need additional memory. Fewer parallel worlds or a smaller model scale reduce memory requirements.
+The scale names describe approximate feed-forward budgets, not exact counts or GPU memory requirements. Recurrent memory and optional gates add parameters; targets and optimizer state need additional memory. A smaller model scale reduces model and optimizer memory while retaining parallel collection.
 
 `model_scale=None` (CLI: `--model-scale custom`) enables custom widths; fixed scales take precedence over width overrides. The [model layouts](policy_parameters/model_scale.md) and [parameter inspection guide](policy_parameters/README.md) cover detailed comparisons.
 
@@ -135,7 +138,7 @@ PPO, SAC, and TD3 accept different learner options. The [recurrent TD3 example](
 
 Off-policy default batches target 1,024 learning positions independently of environment count and rollout length. Feed-forward learners sample 1,024 transitions; recurrent learners divide this budget by their effective `learning_steps`, rounding up to at least one whole sequence. The default 64-step learning horizon therefore uses 16 sequences per update. An explicit `algorithm_kwargs={"batch_size": ...}` overrides this default and counts transitions for feed-forward learners or sequences for recurrent learners. Burn-in adds computation outside the scored learning-position budget.
 
-`algorithm_kwargs={"replay_exposure": 8.0}` sets the average number of scored replay uses per newly collected transition after learning starts. This replaces the constructor's `gradient_steps` setting. The update count is `replay_exposure × collected_transitions / learning_positions_per_batch` and must be a positive whole number. Non-integral configurations are rejected before environment allocation; updates are never rounded or carried between cycles. With a 1,024-position batch, exposure 8 gives eight updates per iteration at 1,024 worlds. At 64 worlds, a one-step collection would require 0.5 updates and is rejected; `rollout_steps_per_env=2` gives one update instead. The example CLI exposes this as `--rollout-steps-per-env 2`. A fractional exposure value is valid when its resulting update count is integral. Uniform replay sampling does not guarantee the same number of uses for each individual transition. Burn-in, separate NOP batches and actor/target update delays are outside this ratio.
+`algorithm_kwargs={"replay_exposure": 8.0}` sets the average number of scored replay uses per newly collected transition after learning starts. This replaces the constructor's `gradient_steps` setting. The update count is `replay_exposure × collected_transitions / learning_positions_per_batch` and must be a positive whole number. Non-integral configurations are rejected before environment allocation; updates are never rounded or carried between cycles. With a 1,024-position batch, exposure 8 gives eight updates per one-step collection at the default 1,024 worlds. If a reduced world count would produce fractional updates, increase `num_envs` to a compatible parallel workload; `num_envs=1024` (CLI: `--num-envs 1024`) is the recommended starting point with the default batch and exposure. A fractional exposure value is valid when its resulting update count is integral. Uniform replay sampling does not guarantee the same number of uses for each individual transition. Burn-in, separate NOP batches and actor/target update delays are outside this ratio.
 
 Low-level learners with no explicit `rollout_steps_per_iteration` collect one vector-environment step. Collection sizes are never extended to fit replay batches; incompatible exposure, collection and batch settings are rejected.
 

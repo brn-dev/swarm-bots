@@ -91,7 +91,7 @@ Without `--compiled`, the smoke command exercises simulation and settled resets 
 | PyTorch's CUDA check fails | Check `nvidia-smi`, then verify that CUDA PyTorch is installed in the same environment. Windows application projects need the [published-package configuration](#using-the-published-package). |
 | Simulation works but `--compiled` fails | Check the C++ compiler and matching Triton setup in the platform instructions above. On Windows, use the x64 Native Tools Command Prompt. |
 | The first run takes a long time | Kernel compilation can take longer on the first invocation. Start with two worlds and check the final summary. |
-| A run exceeds GPU memory | Reduce parallel worlds with `--num-envs`; the training example also supports `--eval-envs` and `--model-scale 2.5M`. |
+| A run exceeds GPU memory | Use a smaller model such as `--model-scale 2.5M` or a compatible parallel workload such as `--num-envs 512` with the default replay settings. `--eval-envs` controls evaluation memory. |
 | Simulation succeeds but headless recording fails | Check the [EGL/OpenGL prerequisites](#headless-video-recording) and driver rendering backend. The smoke test does not render video. |
 
 For a small CPU installation check, run `swarmbots smoke SwarmBots-WallEasy-v0 --device cpu --num-envs 2`. This checks simulation; it does not verify CUDA or compilation. If setup still fails, include the full command, error, Python/PyTorch versions, and GPU/driver information in a [bug report](https://github.com/brn-dev/swarm-bots/issues).

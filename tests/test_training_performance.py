@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import fields
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -14,7 +15,9 @@ from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.metrics_list import MetricsLists, materialize_scalar_metrics
 from swarmbots.learn.optimizers import clip_grad_norm_, make_adam
-from swarmbots.learn.rollout_utils import append_episode_infos
+from swarmbots.learn.rollout_utils import (
+    append_episode_infos, collect_rollout_step_metadata, extract_bootstrap_obs, extract_terminal_obs,
+)
 from swarmbots.learn.summary_statistics import (
     NO_DATA, TensorSummaryStatistics, compute_summary_statistics, compute_tensor_summary_statistics,
 )
@@ -28,12 +31,72 @@ CUDA = pytest.param("cuda", marks=(
 ))
 
 
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+def test_ppo_step_shares_host_metadata_and_preserves_owned_terminal_observations(device: str) -> None:
+    dones = torch.tensor([True, False, True], device=device)
+    observations = {"local_obs": torch.arange(18, device=device).reshape(3, 2, 3).float()}
+    terminal = {"local_obs": observations["local_obs"] + 100}
+    infos = {
+        "episode": {"r": torch.tensor([4., 0., 7.], device=device)},
+        "_episode": dones.clone(), "final_obs": terminal, "_final_obs": dones.clone(),
+    }
+    transfers = []
+    original_cpu, original_equal, original_nonzero = torch.Tensor.cpu, torch.equal, torch.nonzero
+
+    def record_transfer(tensor: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+        transfers.append(tensor.numel())
+        return original_cpu(tensor, *args, **kwargs)
+
+    def host_equal(left: torch.Tensor, right: torch.Tensor) -> bool:
+        assert left.device.type == right.device.type == "cpu", "mask validation must use shared host metadata"
+        return original_equal(left, right)
+
+    def host_nonzero(tensor: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+        assert tensor.device.type == "cpu", "terminal selection must not compact CUDA rows"
+        return original_nonzero(tensor, *args, **kwargs)
+
+    episodes = []
+    with (
+        patch.object(torch.Tensor, "cpu", record_transfer), patch.object(torch, "equal", host_equal),
+        patch.object(torch, "nonzero", host_nonzero),
+    ):
+        metadata = collect_rollout_step_metadata(
+            infos=infos, dones=dones, terminations=torch.zeros_like(dones), truncations=dones,
+        )
+        append_episode_infos(episode_infos=episodes, infos=infos, dones=dones, step_metadata=metadata)
+        bootstrap = extract_bootstrap_obs(
+            env=SimpleNamespace(_obs_to_torch=lambda value: value), next_obs=observations,
+            infos=infos, dones=dones, step_metadata=metadata,
+        )
+    assert episodes == [{"r": 4.}, {"r": 7.}]
+    assert len(transfers) <= 2
+    expected = observations["local_obs"].clone()
+    expected[dones] += 100
+    torch.testing.assert_close(bootstrap["local_obs"], expected)
+    terminal["local_obs"].zero_()
+    observations["local_obs"].zero_()
+    torch.testing.assert_close(bootstrap["local_obs"], expected)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def single_thread() -> Iterator[None]:
     previous = torch.get_num_threads()
     torch.set_num_threads(1)
     yield
     torch.set_num_threads(previous)
+
+
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+@pytest.mark.parametrize("extract", [extract_bootstrap_obs, extract_terminal_obs])
+@pytest.mark.parametrize("terminal_shape", [(), (1, 3, 2), (2, 3, 2), (4, 3, 2), (3, 2), (3, 1, 2)])
+def test_terminal_observations_reject_broadcastable_or_incorrect_shapes(
+    device: str, extract: Any, terminal_shape: tuple[int, ...],
+) -> None:
+    dones = torch.tensor([True, False, True], device=device)
+    observations = {"local_obs": torch.zeros(3, 3, 2, device=device)}
+    infos = {"final_obs": {"local_obs": torch.ones(terminal_shape, device=device)}, "_final_obs": dones}
+    with pytest.raises(ValueError, match="final_obs.*local_obs.*shape"):
+        extract(env=SimpleNamespace(_obs_to_torch=lambda value: value), next_obs=observations, infos=infos, dones=dones)
 
 
 @pytest.mark.parametrize("device", ["cpu", CUDA])

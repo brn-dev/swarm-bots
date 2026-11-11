@@ -18,7 +18,9 @@ On Windows:
 .\.venv\Scripts\python.exe examples/train_policy.py SwarmBots-WallEasy-v0 --variant mappo__deepset_critic --run-dir runs/first-mappo
 ```
 
-The script trains for ten million environment transitions using 1,024 parallel CUDA worlds, evaluates deterministic actions at seed `1000`, then records two episodes at 640 × 480. Off-policy settings must yield a whole number of replay updates per collection cycle; for example, `--num-envs 64 --rollout-steps-per-env 2` is valid with the default batch and exposure. A short run demonstrates the workflow; it may not learn to solve the task.
+The script trains for ten million environment transitions using 1,024 parallel CUDA worlds, evaluates deterministic actions at seed `1000`, then records two episodes at 640 × 480. A short run demonstrates the workflow; it may not learn to solve the task.
+
+Training is designed for high CUDA parallelism; the default 1,024 worlds are the recommended starting configuration. Default off-policy settings produce eight replay updates per one-step collection cycle at this world count. If a reduced world count causes a fractional-update error, increase `--num-envs` to a compatible count, such as `--num-envs 1024` with the default batch and replay exposure.
 
 Inspect the saved outputs:
 
@@ -44,7 +46,7 @@ Change the task or choose another [learning preset](../docs/learning.md#select-a
 | Option | Effect |
 | --- | --- |
 | `--total-timesteps 10000000` | Sets the training budget across all worlds |
-| `--num-envs 64` | Reduces parallel training worlds and memory use |
+| `--num-envs 1024` | Sets the default of 1,024 parallel training worlds |
 | `--eval-envs 64` | Sets the number of development evaluation worlds |
 | `--video-episodes 1` | Sets the number of recorded episodes |
 | `--model-scale 2.5M` | Selects a smaller model; other choices are `5M-2L` (default), `5M-3L`, `10M-3L`, `10M-4L`, and `10M-5L` |
