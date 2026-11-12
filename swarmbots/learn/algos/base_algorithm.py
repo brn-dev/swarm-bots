@@ -99,7 +99,7 @@ class BaseAlgorithm(abc.ABC):
             policy: BasePolicy,
             env: BaseLearnEnvWrapper,
             learning_rate: LearningRate,
-    ):
+    ) -> None:
         self.policy = policy
         self.env = env
 
@@ -152,7 +152,7 @@ class BaseAlgorithm(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def _apply_learning_rate(self, lr: LearningRate):
+    def _apply_learning_rate(self, lr: LearningRate) -> None:
         raise NotImplementedError()
 
     @abc.abstractmethod

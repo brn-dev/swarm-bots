@@ -1,5 +1,8 @@
 from pathlib import Path
 from copy import deepcopy
+from functools import partial
+from dataclasses import dataclass
+import json
 from typing import Any
 
 import numpy as np
@@ -13,7 +16,8 @@ from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, AutomaticL
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
-from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager
+from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
+from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
 
 
 def test_checkpoint_restores_custom_scheduler_state_and_enabled_flag(tmp_path) -> None:
@@ -287,6 +291,112 @@ def _assert_optimizer_state_equal(algorithm: PPO, expected: dict[str, Any]) -> N
             torch.testing.assert_close(value, expected[key], rtol=0, atol=0)
         else:
             assert value == expected[key]
+
+
+def test_ppo_metadata_includes_automatic_lr_configuration() -> None:
+    algorithm, _ = _make_ppo(learning_rate=AutomaticLearningRate(
+        initial_lr=1e-4, updater=make_auto_lr_updater(max_kl_div=0.0031, early_stop_epoch_decay_limit=6),
+    ))
+
+    updater_metadata = algorithm.get_hyper_parameters()["automatic_learning_rate"]["updater"]
+
+    assert updater_metadata["config"] == {
+        "warm_scheduler_config": None, "early_stop_epoch_decay_limit": 6, "max_kl_div": 0.0031,
+    }
+
+
+@pytest.mark.parametrize("callback_kind", ["object", "method", "partial"])
+def test_checkpoints_preserve_differing_scheduler_configuration(tmp_path: Path, callback_kind: str) -> None:
+    saved = []
+    for duration in (10, 100):
+        algorithm, _ = _make_ppo()
+        scheduler = LinearScheduler(ScheduleUnit.ITERATIONS, duration, 0.01, 0.001)
+        callback = scheduler if callback_kind == "object" else scheduler.__call__
+        if callback_kind == "partial":
+            callback = partial(callback)
+        algorithm.scheduler_manager = SchedulerManager([ScheduledHyperParameter(
+            name="lr", scheduler=callback,
+            get_value=lambda: algorithm.learning_rate, apply=algorithm.set_learning_rate,
+        )])
+        path = tmp_path / f"scheduler-{duration}.pt"
+        algorithm.save(path, optimizer_state_dict=algorithm._get_optimizer_state_dict())
+        checkpoint = torch.load(path, weights_only=False)
+        metadata = checkpoint["hyper_parameters"]["schedulers"][0]["scheduler"]
+        if callback_kind == "partial":
+            metadata = metadata["function"]
+        assert metadata["config"]["duration"] == duration
+        assert metadata["config"]["unit"] == "ITERATIONS"
+        assert metadata["config"]["start_value"] == 0.01
+        assert metadata["config"]["final_value"] == 0.001
+        saved.append(metadata)
+    assert saved[0] != saved[1]
+
+
+@pytest.mark.parametrize("host_kind", ["trainer", "cyclic_dataclass", "callback_cycle"])
+@pytest.mark.parametrize("callback_kind", ["object", "method"])
+def test_partial_attribute_callbacks_save_and_resume_checkpoints(
+    tmp_path: Path, host_kind: str, callback_kind: str,
+) -> None:
+    @dataclass
+    class RuntimeState:
+        algorithm: PPO
+        owner: Any = None
+
+        @property
+        def gamma(self) -> float:
+            return self.algorithm.gamma
+
+        @gamma.setter
+        def gamma(self, value: float) -> None:
+            self.algorithm.gamma = value
+
+    def make_algorithm() -> PPO:
+        algorithm, _ = _make_ppo()
+        host: Any = algorithm
+        if host_kind != "trainer":
+            host = RuntimeState(algorithm)
+            host.owner = host if host_kind == "cyclic_dataclass" else partial(getattr, host, "gamma")
+        getter = partial(getattr, host, "gamma")
+        applier = partial(setattr, host, "gamma")
+        algorithm.scheduler_manager = SchedulerManager([ScheduledHyperParameter(
+            name="gamma", scheduler=LinearScheduler(ScheduleUnit.ITERATIONS, 10, 0.99, 0.9),
+            get_value=getter.__call__ if callback_kind == "method" else getter,
+            apply=applier.__call__ if callback_kind == "method" else applier,
+        )])
+        return algorithm
+
+    source = make_algorithm()
+    source.scheduler_manager.step(n_iterations=1, n_model_updates=0, n_timesteps=0, metrics={})
+    assert source.gamma == pytest.approx(0.981)
+    path = tmp_path / "partial-callbacks.pt"
+
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    checkpoint = torch.load(path, weights_only=False)
+    metadata = checkpoint["hyper_parameters"]
+    assert json.loads(json.dumps(metadata)) == metadata
+    expected_host = {"type": "swarmbots.learn.algos.ppo.ppo.PPO", "opaque": True}
+    for callback_name in ("get_value", "apply"):
+        record = metadata["schedulers"][0][callback_name]
+        if callback_kind == "method":
+            record = record["config"]
+        recorded_host = record["args"][0]
+        if host_kind == "trainer":
+            assert recorded_host == expected_host
+        else:
+            assert recorded_host["algorithm"] == expected_host
+            back_reference = recorded_host["owner"]
+            if host_kind == "callback_cycle":
+                back_reference = back_reference["args"][0]
+            assert back_reference == {
+                "type": f"{RuntimeState.__module__}.{RuntimeState.__qualname__}", "opaque": True,
+            }
+
+    restored = make_algorithm()
+    restored.load(path)
+    assert restored.gamma == source.gamma
+    for algorithm in (source, restored):
+        algorithm.scheduler_manager.step(n_iterations=5, n_model_updates=0, n_timesteps=0, metrics={})
+    assert restored.gamma == source.gamma == pytest.approx(0.945)
 
 
 @pytest.mark.parametrize("source_groups,target_groups", [

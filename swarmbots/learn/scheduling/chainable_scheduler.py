@@ -21,6 +21,9 @@ class ChainableScheduler(abc.ABC):
         self.name = name
         self.name_prefix = name + "-" if name else ""
 
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {"unit": self.unit.name, "duration": self.get_duration(), "name": self.name}
+
     def __call__(
             self,
             old_value: float,

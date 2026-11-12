@@ -28,7 +28,7 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         device: torch.device | str = "cpu",
         obs_dtype: torch.dtype = torch.float32,
         reward_dtype: torch.dtype = torch.float32,
-    ):
+    ) -> None:
         super().__init__(env)
         self.device = as_device(device)
         self.obs_dtype = obs_dtype
@@ -143,7 +143,7 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
     def action_space(self) -> VectorHybridActionSpace:
         return self._action_space
 
-    def reset(self, **kwargs) -> tuple[TorchObs, dict[str, Any]]:
+    def reset(self, **kwargs: Any) -> tuple[TorchObs, dict[str, Any]]:
         options = normalize_reset_mask_options(
             kwargs.get("options", None), num_envs=self._n_envs
         )

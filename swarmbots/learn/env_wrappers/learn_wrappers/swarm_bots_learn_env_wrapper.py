@@ -29,7 +29,7 @@ class VectorSwarmBotsActionSpace(VectorHybridActionSpace):
         *,
         continuous_connector_actions: bool = False,
         include_connectors: bool = True,
-    ):
+    ) -> None:
         action_spaces: dict[str, spaces.Space] = {
             "actuators": spaces.Box(
                 low=-1.0,
@@ -57,7 +57,7 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
         obs_dtype: torch.dtype = torch.float32,
         reward_dtype: torch.dtype = torch.float32,
         disable_connector_actions: bool = False,
-    ):
+    ) -> None:
         assert isinstance(env.action_space, spaces.Dict)
         assert "actuators" in env.action_space.keys()
         assert "connectors" in env.action_space.keys()

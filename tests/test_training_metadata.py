@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from functools import partial
 import subprocess
 from typing import Any
 from unittest.mock import patch
@@ -8,6 +9,10 @@ import pytest
 import torch
 
 from swarmbots.learn.run_metadata import collect_source_revision
+from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRate
+from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
+from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
+from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.training import make_training
 from tests.test_metrics_logger import _DummyAlgorithm, _DummyEnv, _DummyPolicy
 
@@ -94,3 +99,37 @@ def test_make_training_retains_original_construction_options() -> None:
     assert options["env_kwargs"] == {"first_episode_lengths": None}
     assert options["algorithm_kwargs"] == {"gamma": 0.98}
     assert options["num_envs"] == 1024 and options["rollout_steps_per_env"] == 4
+
+
+@pytest.mark.parametrize("callback_kind", ["object", "method", "partial"])
+def test_make_training_records_stable_automatic_lr_construction_settings(callback_kind: str) -> None:
+    from types import SimpleNamespace
+
+    def metadata(max_kl_div: float = 0.0031, duration: int = 10) -> dict[str, Any]:
+        updater = make_auto_lr_updater(
+            max_kl_div=max_kl_div, warm_scheduler_config=CosineSchedulerConfig(
+                unit=ScheduleUnit.ITERATIONS, duration=duration, start_value=1e-4, final_value=1e-3,
+            ),
+        )
+        if callback_kind != "object":
+            updater = updater.__call__
+        if callback_kind == "partial":
+            updater = partial(updater)
+        rate = AutomaticLearningRate(initial_lr=1e-4, updater=updater)
+        env = SimpleNamespace(unwrapped=SimpleNamespace(device=torch.device("cpu"), episode_length=500))
+        with patch("swarmbots.learn.training._make_policy_env", return_value=(env, SimpleNamespace())), patch(
+            "swarmbots.learn.training.PPO", return_value=SimpleNamespace(),
+        ):
+            algorithm = make_training("SwarmBots-WallEasy-v0", algorithm_kwargs={"learning_rate": rate})
+        return algorithm.training_metadata
+
+    first = metadata()
+    assert first == metadata()
+    assert json.loads(json.dumps(first)) == first
+    updater = first["training_configuration"]["algorithm_kwargs"]["learning_rate"]["updater"]
+    if callback_kind == "partial":
+        updater = updater["function"]
+    assert updater["config"]["max_kl_div"] == 0.0031
+    assert updater["config"]["warm_scheduler_config"]["duration"] == 10
+    assert first != metadata(max_kl_div=0.1)
+    assert first != metadata(duration=20)

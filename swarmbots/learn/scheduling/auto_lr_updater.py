@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
@@ -5,6 +6,7 @@ import numpy as np
 from swarmbots.learn.algos.ppo.ppo import AutomaticLearningRateUpdateResult, AutomaticLearningRateUpdater
 from swarmbots.learn.scheduling.scheduler_factory import SchedulerFactoryConfig, make_scheduler
 from swarmbots.learn.scheduling.schedulers import ScheduleUnit
+from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.summary_statistics import SummaryStatistics
 
 
@@ -14,21 +16,29 @@ EARLY_STOP_EPOCH_DECAY_FACTORS = {
 }
 
 
-def make_auto_lr_updater(
-        warm_scheduler_config: SchedulerFactoryConfig | None = None,
-        early_stop_epoch_decay_limit: int = 4,
-        max_kl_div: float = 0.0125,
-) -> AutomaticLearningRateUpdater:
-    if warm_scheduler_config is not None and warm_scheduler_config.unit != ScheduleUnit.ITERATIONS:
-        raise ValueError(
-            "make_auto_lr_updater only supports warm_scheduler_config.unit == "
-            f"{ScheduleUnit.ITERATIONS.name}, got {warm_scheduler_config.unit.name}"
-        )
+@dataclass(frozen=True)
+class AutoLRUpdaterConfig:
+    warm_scheduler_config: SchedulerFactoryConfig | None = None
+    early_stop_epoch_decay_limit: int = 4
+    max_kl_div: float = 0.0125
 
-    warmup_scheduler = None if warm_scheduler_config is None else make_scheduler(warm_scheduler_config)
-    warmup_duration = None if warm_scheduler_config is None else warm_scheduler_config.duration
 
-    def auto_lr_updater(
+class AutoLRUpdater:
+    def __init__(self, config: AutoLRUpdaterConfig) -> None:
+        self.config = config
+        warm_scheduler_config = config.warm_scheduler_config
+        if warm_scheduler_config is not None and warm_scheduler_config.unit != ScheduleUnit.ITERATIONS:
+            raise ValueError(
+                "make_auto_lr_updater only supports warm_scheduler_config.unit == "
+                f"{ScheduleUnit.ITERATIONS.name}, got {warm_scheduler_config.unit.name}"
+            )
+        self._warmup_scheduler = None if warm_scheduler_config is None else make_scheduler(warm_scheduler_config)
+
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return serialize_dataclass(self.config)
+
+    def __call__(
+            self,
             old_lr: float,
             state: dict[str, Any],
             n_iterations: int,
@@ -48,7 +58,7 @@ def make_auto_lr_updater(
                 'event': 'zero_epoch_hit'
             }
 
-        if early_stop_kl_div is not None and early_stop_kl_div > max_kl_div:
+        if early_stop_kl_div is not None and early_stop_kl_div > self.config.max_kl_div:
             state['counter'] = 0
             state['warmup'] = False
             decay_factor = np.clip(0.9 - early_stop_kl_div * 50, 0.4, 0.9)
@@ -70,7 +80,7 @@ def make_auto_lr_updater(
                 'event': 'max_clip_frac_hit'
             }
 
-        if early_stop_epoch is not None and early_stop_epoch < early_stop_epoch_decay_limit:
+        if early_stop_epoch is not None and early_stop_epoch < self.config.early_stop_epoch_decay_limit:
             state['counter'] = 0
             state['warmup'] = False
             decay_factor = EARLY_STOP_EPOCH_DECAY_FACTORS.get(early_stop_epoch, 0.9)
@@ -80,6 +90,9 @@ def make_auto_lr_updater(
                 'event': 'min_epoch_hit'
             }
 
+        warm_scheduler_config = self.config.warm_scheduler_config
+        warmup_scheduler = self._warmup_scheduler
+        warmup_duration = None if warm_scheduler_config is None else warm_scheduler_config.duration
         warmup_unit = None if warm_scheduler_config is None else warm_scheduler_config.unit
         warmup_step = None
         if warmup_unit is not None:
@@ -125,4 +138,14 @@ def make_auto_lr_updater(
         state['counter'] = counter
         return {'new_lr': None}
 
-    return auto_lr_updater
+
+def make_auto_lr_updater(
+        warm_scheduler_config: SchedulerFactoryConfig | None = None,
+        early_stop_epoch_decay_limit: int = 4,
+        max_kl_div: float = 0.0125,
+) -> AutomaticLearningRateUpdater:
+    return AutoLRUpdater(AutoLRUpdaterConfig(
+        warm_scheduler_config=warm_scheduler_config,
+        early_stop_epoch_decay_limit=early_stop_epoch_decay_limit,
+        max_kl_div=max_kl_div,
+    ))

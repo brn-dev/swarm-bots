@@ -31,6 +31,12 @@ class LinearScheduler(ChainableScheduler):
     def get_duration(self) -> int:
         return self.duration
 
+    def get_hyper_parameters(self) -> dict[str, Any]:
+        return {
+            **super().get_hyper_parameters(),
+            "start_value": self.start_value, "final_value": self.final_value,
+        }
+
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
