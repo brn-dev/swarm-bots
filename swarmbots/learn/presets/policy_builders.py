@@ -47,6 +47,7 @@ from swarmbots.learn.algos.td3.td3_policy import TD3Policy, TD3PolicyConfig
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
+from swarmbots.learn.presets.policy_variants import PolicyVariant, _is_ddpg_policy_variant, _is_recurrent_policy_variant
 from swarmbots.learn.presets.transformer import (
     MATInitGains,
     MATNormalizationConfig,
@@ -166,7 +167,7 @@ class OffPolicyOptions:
 def build_td3_policy(
     *,
     env: Any,
-    policy_variant: str,
+    policy_variant: PolicyVariant,
     context: PolicyBuildContext,
     encoders: PolicyEncoders,
     decoder: DecoderOptions,
@@ -205,7 +206,7 @@ def build_td3_policy(
             transformer_critic_config=critic_config,
             critic_kind="transformer" if policy_variant.startswith("tmatd3") else joint_critic_config.kind,
             joint_critic_config=joint_critic_config,
-            n_critics=1 if policy_variant.startswith("maddpg") else 2,
+            n_critics=1 if _is_ddpg_policy_variant(policy_variant) else 2,
             nop_config=options.nop_config,
             **context.module_options(),
         ),
@@ -215,7 +216,7 @@ def build_td3_policy(
 def build_sac_policy(
     *,
     env: Any,
-    policy_variant: str,
+    policy_variant: PolicyVariant,
     context: PolicyBuildContext,
     encoders: PolicyEncoders,
     decoder: DecoderOptions,
@@ -278,7 +279,7 @@ def build_sac_policy(
 def build_on_policy(
     *,
     env: Any,
-    policy_variant: str,
+    policy_variant: PolicyVariant,
     context: PolicyBuildContext,
     encoders: PolicyEncoders,
     decoder: DecoderOptions,
@@ -368,7 +369,7 @@ def build_on_policy(
         **context.module_options(),
         **context.distribution_options(),
     )
-    recurrent = policy_variant in {"mat_qcx__lstm", "mat_ind__lstm"}
+    recurrent = _is_recurrent_policy_variant(policy_variant)
     if policy_variant in {"mat_qcx", "mat_qcx__lstm"}:
         policy_class = RMATQCXPolicy if recurrent else MATQCXPolicy
         config_class = RMATQCXPolicyConfig if recurrent else MATQCXPolicyConfig

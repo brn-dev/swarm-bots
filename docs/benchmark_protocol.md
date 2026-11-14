@@ -19,7 +19,7 @@ The eight-task core suite is exposed as `swarmbots.CORE_BENCHMARK_IDS`:
 | `SwarmBots-PayloadStep-v0` | Payload transport over a step |
 | `SwarmBots-MultiPayloadGoal-v0` | Multiple payloads delivered to assigned goals |
 
-The full 15-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. The [scenario catalog](scenarios.md) lists all tasks and success conditions. Scores are reported per task. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
+The full 16-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. The [scenario catalog](scenarios.md) lists all tasks and success conditions. Scores are reported per task. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
 
 ## Evaluation
 

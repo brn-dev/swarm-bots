@@ -18,7 +18,12 @@ from swarmbots.scenario_presets.multi_payload_goal import (
     normalize_count_probs,
 )
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRecordingCameraConfig, MJWRuntimeBindings
-from swarmbots.mjw_env.scenarios.mjw_payload_goal_sampling import GOAL_SAMPLING_ATTEMPTS, make_payload_goal_layout
+from swarmbots.mjw_env.scenarios.mjw_payload_goal_sampling import (
+    GOAL_SAMPLING_ATTEMPTS,
+    PayloadGoalLayout,
+    make_payload_goal_layout,
+    payload_reset_footprint,
+)
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import PayloadShape
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
 from swarmbots.scenario_presets.scenario_obs_layouts import MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT
@@ -59,7 +64,7 @@ class MJWMultiPayloadGoalScenario:
     active_payload_count_probs: Mapping[int, float] | None
     payload_spawn_y: float
     payload_spawn_margin: float
-    goal_rect: tuple[float, float, float, float]
+    goal_rect: tuple[float, float, float, float] | None
     goal_radius: float
     success_reward: float
     visualize_goal: bool = True
@@ -102,12 +107,6 @@ class MJWMultiPayloadGoalScenario:
                 "payload_spawn_margin must be at least two payload radii, "
                 f"got {self.payload_spawn_margin} for radius {self.payload_radius}"
             )
-        self.goal_rect = tuple(float(value) for value in self.goal_rect)
-        if len(self.goal_rect) != 4:
-            raise ValueError("goal_rect must be (x_min, x_max, y_min, y_max)")
-        goal_x_min, goal_x_max, goal_y_min, goal_y_max = self.goal_rect
-        if goal_x_min >= goal_x_max or goal_y_min >= goal_y_max:
-            raise ValueError(f"Invalid goal_rect bounds: {self.goal_rect!r}")
         self.goal_radius = finite_positive(self.goal_radius, name="goal_radius", minimum=1e-6)
         self.success_reward = float(self.success_reward)
         self.forward_reward_weight = float(self.forward_reward_weight)
@@ -119,12 +118,7 @@ class MJWMultiPayloadGoalScenario:
         if not all(np.isfinite(value) for value in self.active_payload_count_probs.values()):
             raise ValueError("active_payload_count_probs must contain finite probabilities")
         max_active_payloads = max(count for count, probability in self.active_payload_count_probs.items() if probability > 0.0)
-        self._goal_sampling_layout = make_payload_goal_layout(
-            goal_rect=self.goal_rect,
-            payload_shape=self.payload_shape,
-            payload_radius=self.payload_radius,
-            max_active_payloads=max_active_payloads,
-        )
+        self._goal_sampling_layout = self._make_goal_sampling_layout(max_active_payloads)
         if self.physics_nconmax is not None and self.physics_nconmax <= 0:
             raise ValueError(f"Expected physics_nconmax > 0, got {self.physics_nconmax}")
         if self.physics_njmax is not None and self.physics_njmax <= 0:
@@ -132,9 +126,38 @@ class MJWMultiPayloadGoalScenario:
         self.inactive_area_location = (50.0, 0.0, 0.1)
 
     @property
+    def payload_footprint(self) -> tuple[float, float]:
+        return payload_reset_footprint(self.payload_shape, self.payload_radius)
+
+    @property
     def payload_spawn_spacing(self) -> float:
         """Minimum row spacing; resets enlarge clearance for the sampled coordinates."""
-        return max(self.payload_spawn_margin, self._goal_sampling_layout.footprint[0] + 1e-5)
+        return max(self.payload_spawn_margin, self.payload_footprint[0] + 1e-5)
+
+    def _make_goal_sampling_layout(self, max_active_payloads: int) -> PayloadGoalLayout | None:
+        if self.goal_rect is None:
+            raise ValueError("MultiPayloadGoal requires goal_rect")
+        self.goal_rect = tuple(float(value) for value in self.goal_rect)
+        if len(self.goal_rect) != 4:
+            raise ValueError("goal_rect must be (x_min, x_max, y_min, y_max)")
+        goal_x_min, goal_x_max, goal_y_min, goal_y_max = self.goal_rect
+        if goal_x_min >= goal_x_max or goal_y_min >= goal_y_max:
+            raise ValueError(f"Invalid goal_rect bounds: {self.goal_rect!r}")
+        return make_payload_goal_layout(
+            goal_rect=self.goal_rect,
+            payload_shape=self.payload_shape,
+            payload_radius=self.payload_radius,
+            max_active_payloads=max_active_payloads,
+        )
+
+    def _goal_sampling_settings(self) -> dict[str, Any]:
+        return {
+            "algorithm": "separated_v1",
+            "attempts": GOAL_SAMPLING_ATTEMPTS,
+            "clearance": self._goal_sampling_layout.clearance,
+            "reset_orientation_footprint": self._goal_sampling_layout.footprint,
+            "fallback_max_active_payloads": self._goal_sampling_layout.max_active_payloads,
+        }
 
     def get_settings(self) -> dict[str, Any]:
         return {
@@ -174,13 +197,7 @@ class MJWMultiPayloadGoalScenario:
             "payload_spawn_spacing": self.payload_spawn_spacing,
             "goal_rect": self.goal_rect,
             "goal_radius": self.goal_radius,
-            "goal_sampling": {
-                "algorithm": "separated_v1",
-                "attempts": GOAL_SAMPLING_ATTEMPTS,
-                "clearance": self._goal_sampling_layout.clearance,
-                "reset_orientation_footprint": self._goal_sampling_layout.footprint,
-                "fallback_max_active_payloads": self._goal_sampling_layout.max_active_payloads,
-            },
+            "goal_sampling": self._goal_sampling_settings(),
             "visualize_goal": self.visualize_goal,
             "success_reward": self.success_reward,
             "forward_reward_weight": self.forward_reward_weight,

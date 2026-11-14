@@ -232,6 +232,18 @@ MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS: dict[str, object] = {
     "success_reward": 5.0,
 }
 
+PAYLOAD_GOAL_SCENARIO_KWARGS: dict[str, object] = {
+    **MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS,
+    "max_payloads": 1,
+    "active_payload_count_probs": {1: 1.0},
+    "goal_rect": None,
+    "goal_arc_radius": 3.0,
+    "goal_arc_degrees": 120.0,
+    "goal_noise_std": 0.15,
+    "towards_payload_reward_weight": 1.0,
+    "towards_payload_goal_radius": 1.25,
+}
+
 MOVE_TO_GOAL_SCENARIO_KWARGS: dict[str, object] = {
     "plane_size": 100.0,
     "swarm_start_x": 0.0,

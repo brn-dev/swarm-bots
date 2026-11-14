@@ -30,12 +30,16 @@ from swarmbots.learn.nn_components.deep_set import DeepSetInteractionConfig
 from swarmbots.learn.obs_indices import ObsIndices
 from swarmbots.learn.presets.policy_factory import (
     ContinuousActionDistVariant,
-    _is_deterministic_policy_variant,
-    _is_off_policy_variant,
-    _is_sac_policy_variant,
     _make_base_policy,
     set_actuator_gsde_init_joint_stds,
     wrap_vec_env,
+)
+from swarmbots.learn.presets.policy_variants import (
+    _is_ddpg_policy_variant,
+    _is_deterministic_policy_variant,
+    _is_off_policy_variant,
+    _is_recurrent_policy_variant,
+    _is_sac_policy_variant,
 )
 from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE, normalize_model_scale, ppo_nop_at_scale
 from swarmbots.learn.presets.off_policy import make_off_policy_algorithm_options, make_recurrent_replay_options
@@ -53,6 +57,13 @@ from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 
 TrainingAlgorithm = TypeVar("TrainingAlgorithm", bound=BaseAlgorithm)
 DEFAULT_GAMMA = 0.995
+
+
+def _staggered_first_episode_lengths(*, num_envs: int, episode_length: int) -> list[int]:
+    return [
+        ((env_index + 1) * episode_length + num_envs - 1) // num_envs
+        for env_index in range(num_envs)
+    ]
 
 
 def list_variants(*, include_hidden: bool = False) -> tuple[str, ...]:
@@ -265,8 +276,11 @@ def make_training(
     policy_variant = policy_options["policy_variant"]
     is_sac = _is_sac_policy_variant(policy_variant)
     is_deterministic = _is_deterministic_policy_variant(policy_variant)
-    is_off_policy = is_sac or is_deterministic
-    is_recurrent_ppo = policy_variant in {"mat_ind__lstm", "mat_qcx__lstm"}
+    is_off_policy = _is_off_policy_variant(policy_variant)
+    is_recurrent = _is_recurrent_policy_variant(
+        policy_variant, td3_recurrent_actor=policy_options.get("td3_recurrent_actor", False),
+    )
+    is_recurrent_ppo = is_recurrent and not is_off_policy
     if (
         "use_popart" in policy_options
         and "use_popart" in algorithm_options
@@ -280,9 +294,7 @@ def make_training(
     if rollout_steps_per_env <= 0:
         raise ValueError("rollout_steps_per_env must be positive")
     episode_limit = get_benchmark_spec(benchmark_id).episode_length if episode_length is None else int(episode_length)
-    recurrent_off_policy = is_off_policy and (
-        policy_variant in {"tmasac__recurrent", "tmasac__segment"} or policy_options.get("td3_recurrent_actor", False)
-    )
+    recurrent_off_policy = is_off_policy and is_recurrent
     rollout_samples = num_envs * rollout_steps_per_env
     if is_off_policy:
         off_policy_options = make_off_policy_algorithm_options()
@@ -330,10 +342,9 @@ def make_training(
             raise ValueError(f"Expected episode_length > 0, got {episode_limit}")
         if num_envs <= 0:
             raise ValueError(f"Expected num_envs > 0, got {num_envs}")
-        stagger_rng = torch.Generator().manual_seed(seed)
-        env_kwargs["first_episode_lengths"] = torch.randint(
-            1, episode_limit + 1, (num_envs,), generator=stagger_rng,
-        ).tolist()
+        env_kwargs["first_episode_lengths"] = _staggered_first_episode_lengths(
+            num_envs=num_envs, episode_length=episode_limit,
+        )
     env, policy = _make_policy_env(
         benchmark_id,
         num_envs=num_envs,
@@ -363,7 +374,7 @@ def make_training(
             recurrent = policy.requires_recurrent_training()
             algorithm_class = RecurrentSAC if recurrent else SAC
             if is_deterministic:
-                algorithm_class = DDPG if policy_variant.startswith("maddpg") else RecurrentTD3 if recurrent else TD3
+                algorithm_class = DDPG if _is_ddpg_policy_variant(policy_variant) else RecurrentTD3 if recurrent else TD3
             algorithm_config = {
                 "buffer_capacity_per_env": vector_env.episode_length * 2,
                 "learning_starts": max(10_000, collection_steps * 4),

@@ -18,6 +18,7 @@ from swarmbots.learn.presets.policy_factory import _is_off_policy_variant, _make
 from swarmbots.learn.presets.transformer import MATInitGains, MATNormalizationConfig
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
 from swarmbots.learn.training import _add_ppo_nop, _variant_options, list_variants
+from swarmbots.scenario_presets.scenario_obs_layouts import MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -44,9 +45,10 @@ def _indices(**overrides: list[int]) -> ObsIndices:
 @pytest.mark.parametrize("benchmark_id", ALL_BENCHMARK_IDS)
 def test_registered_tasks_predict_their_public_global_fields(benchmark_id: str) -> None:
     scenario = make_scenario(benchmark_id, compile_reward_kernel=False)
+    scenario_settings = scenario.get_settings()
     observations = scenario.get_single_observation_space()
     indices = build_obs_indices(
-        env_settings={"scenario": scenario.get_settings()},
+        env_settings={"scenario": scenario_settings},
         local_obs_dim=observations["local_obs"].shape[-1],
         global_obs_dim=observations["global_obs"].shape[-1],
         hidden_local_vars_dim=observations["hidden_local_vars"].shape[-1],
@@ -54,7 +56,7 @@ def test_registered_tasks_predict_their_public_global_fields(benchmark_id: str) 
     )
     targets = make_next_obs_pred_config(indices)
     width = observations["global_obs"].shape[-1]
-    if "MultiPayloadGoal" in benchmark_id:
+    if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
         offsets = list(range(0, width, 12))
         assert targets.global_scalar_target_indices == [
             offset + feature for offset in offsets for feature in (1, 2, 3, 10, 11)

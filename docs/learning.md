@@ -72,7 +72,7 @@ The Python helper and the runnable example use different workload defaults:
 
 Training is designed for high CUDA parallelism, with 1,024 parallel worlds as the recommended starting configuration. Small CPU workloads serve execution checks and debugging.
 
-Tasks normally have a 500-control-step episode limit. Training spreads the first episode endings across worlds to avoid simultaneous resets; subsequent episodes use the full limit. Evaluation and recording start with full episodes.
+Tasks normally have a 500-control-step episode limit. Training evenly spaces the first episode endings across that limit, with either `floor(num_envs / episode_length)` or `ceil(num_envs / episode_length)` scheduled endings per step. For 1,024 worlds and 500 steps, this gives two or three endings per step. Subsequent episodes use the full limit; early success or failure can change their spacing. Evaluation and recording start with full episodes.
 
 CUDA environments compile tensor operations by default, independently of policy compilation. The [GPU setup guide](gpu_setup.md) covers the compiler prerequisites for ordinary CUDA runs.
 

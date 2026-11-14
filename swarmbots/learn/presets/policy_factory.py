@@ -39,6 +39,13 @@ from swarmbots.learn.presets.policy_builders import (
     build_sac_policy,
     build_td3_policy,
 )
+from swarmbots.learn.presets.policy_variants import (
+    PolicyVariant,
+    _is_ddpg_policy_variant,
+    _is_deterministic_policy_variant,
+    _is_off_policy_variant,
+    _is_sac_policy_variant,
+)
 from swarmbots.learn.presets.transformer import (
     MATInitGains,
     MATNormalizationConfig,
@@ -53,35 +60,6 @@ ContinuousActionDistVariant = Literal[
     "gsde",
     "squashed_diag_gaussian",
 ]
-
-PolicyVariant = Literal[
-    "maddpg__mlp_critic", "maddpg__deepset_critic", "matd3__mlp_critic", "matd3__deepset_critic",
-    "masac__mlp_critic", "masac__deepset_critic", "tmatd3", "tmatd3_dec",
-    "mat_qcx",
-    "mat_dec",
-    "mat_ind",
-    "mat_orig",
-    "mat_qcx__lstm",
-    "mat_ind__lstm",
-    "ppo",
-    "mappo__deepset_critic",
-    "tmasac",
-    "tmasac_dec",
-    "tmasac__recurrent",
-    "tmasac__segment",
-]
-
-
-def _is_sac_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant in {"masac__mlp_critic", "masac__deepset_critic", "tmasac", "tmasac_dec", "tmasac__recurrent", "tmasac__segment"}
-
-
-def _is_deterministic_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return policy_variant in {"maddpg__mlp_critic", "maddpg__deepset_critic", "matd3__mlp_critic", "matd3__deepset_critic", "tmatd3", "tmatd3_dec"}
-
-
-def _is_off_policy_variant(policy_variant: PolicyVariant) -> bool:
-    return _is_sac_policy_variant(policy_variant) or _is_deterministic_policy_variant(policy_variant)
 
 
 def wrap_vec_env(
@@ -347,7 +325,7 @@ def _make_base_policy(
     sac_policy_variant = _is_sac_policy_variant(policy_variant)
     deterministic_policy_variant = _is_deterministic_policy_variant(policy_variant)
     if td3_recurrent_actor or td3_recurrent_critic:
-        if not deterministic_policy_variant or policy_variant.startswith("maddpg"):
+        if not deterministic_policy_variant or _is_ddpg_policy_variant(policy_variant):
             raise ValueError("TD3 recurrence options require a TD3 preset")
         if td3_recurrent_critic and (not td3_recurrent_actor or not policy_variant.startswith("tmatd3")):
             raise ValueError("A recurrent TD3 critic requires a TMATD3 preset and td3_recurrent_actor=True")
@@ -483,7 +461,7 @@ def _make_base_policy(
         d_model=dec_d_model, nhead=dec_nhead, add_agent_embeddings=mat_add_agent_embeddings,
         assume_agent_mask_is_active_prefix=assume_agent_mask_is_active_prefix,
     )
-    if not (deterministic_policy_variant or sac_policy_variant):
+    if not _is_off_policy_variant(policy_variant):
         return build_on_policy(
             env=env, policy_variant=policy_variant, context=context, encoders=encoders,
             decoder=decoder, interaction_config=interaction_config,

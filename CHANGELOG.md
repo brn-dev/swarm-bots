@@ -6,6 +6,7 @@ These changes describe the current source checkout relative to the published `0.
 
 ### Benchmark tasks and evaluation
 
+- Add `SwarmBots-PayloadGoal-v0` for single-payload delivery to a sampled goal. The [scenario catalog](docs/scenarios.md) describes its observations, rewards, and success conditions.
 - Update connector placement, initial assembly grounding, and reset settling. Together with the reward and success-condition changes below, these changes require fresh evaluations before comparing scores with earlier revisions.
 - Remove the isolation penalty from all scenarios. Rewards measure task progress and outcomes; connection topology affects behavior through physics.
 - Require Bridge success above the destination platform and PayloadStep success over the finite step at the required height. Restrict PayloadStep climb shaping to the platform width.
@@ -17,6 +18,7 @@ These changes describe the current source checkout relative to the published `0.
 
 ### Baseline learning algorithms
 
+- Evenly stagger initial training episode endings to smooth reset workloads. This changes training trajectories for existing seeds; evaluation keeps full episodes.
 - Add cooperative MADDPG, MATD3, MASAC, and transformer TD3 baselines, including recurrent TD3 actors and optional recurrent critics.
 - Make `mappo__deepset_critic` the default training preset, with a local actor and centralized Deep Set critic. Standardize preset modifiers with double underscores; see the [current preset names](docs/learning.md#select-a-variant-and-task).
 - Add fixed model-size tiers: `2.5M`, `5M-2L`, `5M-3L`, `10M-3L`, `10M-4L`, and `10M-5L`, each with an auxiliary-prediction budget. The default is `5M-2L NOP1M`; `custom` selects explicit widths in CLI tools.
@@ -30,13 +32,14 @@ These changes describe the current source checkout relative to the published `0.
 ### Research workflows
 
 - Add standalone PyTorch PPO training independent of `swarmbots.learn`, plus train/evaluate/record examples for the included baselines and recurrent TD3. Preset training examples default to ten million transitions and 1,024 parallel worlds, with separate output directories for each run.
-- Record training seeds, construction options, resolved settings, and source provenance before updates. Include scheduler/controller configurations, dataclass callback fields, bound receivers, partial arguments, and standard operator-helper settings in run/checkpoint metadata, including bound `.__call__` methods and inherited classmethods. Preserve dictionary key types, callable data contents, and enum callback/argument identity; preserve metadata safety and isolation across parallel and nested collections. Describe opaque runtime arguments and cyclic back-references by type without retaining live objects in checkpoints. Add saved-checkpoint five-seed reporting and clearer checkpoint-continuation examples.
+- Expand run and checkpoint metadata with training settings, scheduler/controller configuration, and source provenance for reproducibility. Add saved-checkpoint five-seed reporting and clearer checkpoint-continuation examples.
 - Add compressed-log plotting, method comparisons across training seeds, and independent console/persistent logging profiles.
 - Add installed policy-inspection, architecture-diagram, and plotting commands. Publish an [online architecture viewer](https://brn-dev.github.io/swarm-bots/policy-diagrams/); local tools generate current parameter counts and model diagrams.
 - Focus documentation on research goals, benchmark capabilities, custom-learner integration, baseline training, and evaluation. Consolidate release notes around changes relevant to benchmark users.
 
 ### Reliability and compatibility
 
+- Require Pillow 13 or newer for its security fixes. Record videos directly through imageio-ffmpeg, removing MoviePy's conflicting Pillow version bound.
 - Improve numerical stability for bounded-action likelihoods, gradient clipping, recurrent memory, empty attention inputs, and inactive or padded observations. Correct auxiliary-loss masking and single/twin-critic loss scaling.
 - Improve compiled-policy action and recurrent-state handling, time-limit bootstrapping, and evaluation normalization. Reduce unnecessary SAC actor sampling on delayed updates and reuse QCX autoregressive projections with deterministic activations.
 - Restore learning rates, schedulers, optimizer parameter ownership, and SAC entropy temperature consistently when continuing checkpoints, including weights-only temperature restoration. Replay contents are not checkpointed.

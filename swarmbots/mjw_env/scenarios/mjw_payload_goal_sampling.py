@@ -11,6 +11,10 @@ GOAL_SAMPLING_ATTEMPTS = 16
 MAX_GOAL_COORDINATE = 100_000.0
 
 
+def payload_reset_footprint(payload_shape: str, payload_radius: float) -> tuple[float, float]:
+    return ((4.0 if payload_shape == "capsule" else 2.0) * payload_radius, 2.0 * payload_radius)
+
+
 def _float32_bound(value: float, *, up: bool) -> float:
     rounded = np.float32(value)
     if (up and float(rounded) < value) or (not up and float(rounded) > value):
@@ -58,7 +62,7 @@ def make_payload_goal_layout(
     # error when custom rectangles are far from the origin.
     coordinate_scale = max(1.0, payload_radius, *(abs(value) for value in goal_rect))
     clearance = max(1e-5, 8.0 * torch.finfo(torch.float32).eps * coordinate_scale)
-    footprint = ((4.0 if payload_shape == "capsule" else 2.0) * payload_radius, 2.0 * payload_radius)
+    footprint = payload_reset_footprint(payload_shape, payload_radius)
     spacing = (footprint[0] + clearance, footprint[1] + clearance)
     options: list[tuple[float, int, int]] = []
     for columns in range(1, max_active_payloads + 1):

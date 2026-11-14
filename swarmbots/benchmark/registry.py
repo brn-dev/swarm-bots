@@ -16,6 +16,7 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
     default_find_opening,
     default_move_to_goal,
     default_multi_payload_goal,
+    default_payload_goal,
     default_payload_plane,
     default_payload_step,
     default_vertical_reach,
@@ -110,6 +111,12 @@ _SPECS = (
         "transport",
         default_dual_payload_plane,
         supports_success_metric=False,
+    ),
+    BenchmarkSpec(
+        "SwarmBots-PayloadGoal-v0",
+        "Single-payload transport to a sampled goal with shaping toward the pushing side.",
+        "transport",
+        default_payload_goal,
     ),
     BenchmarkSpec(
         "SwarmBots-MultiPayloadGoal-v0",

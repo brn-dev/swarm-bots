@@ -31,12 +31,12 @@ classifiers = [
 ]
 dependencies = [
     "gymnasium>=1.1",
+    "imageio-ffmpeg>=0.6",
     "loguru>=0.7",
-    "moviepy>=2.1",
     "mujoco>=3.10",
     "mujoco-warp>=3.10.0.1",
     "numpy>=2.0",
-    "pillow>=11",
+    "pillow>=13",
     "torch>=2.6",
     "warp-lang>=1.14",
 ]

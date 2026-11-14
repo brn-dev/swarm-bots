@@ -32,7 +32,8 @@ from swarmbots.learn.algos.mat_orig.mat_orig_encoder import MATOrigSelfAttention
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import TemporalSequenceModel
 from swarmbots.learn.nn_components.feed_forward import GLU, MLP
 from swarmbots.learn.nn_components.popart import PopArtLinear
-from swarmbots.learn.presets.policy_factory import ContinuousActionDistVariant, _is_deterministic_policy_variant
+from swarmbots.learn.presets.policy_factory import ContinuousActionDistVariant
+from swarmbots.learn.presets.policy_variants import _is_deterministic_policy_variant
 from swarmbots.learn.serialization_utils import serialize_value
 from swarmbots.learn.training import _make_policy_env, _variant_options
 

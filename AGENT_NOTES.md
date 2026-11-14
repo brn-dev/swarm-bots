@@ -10,7 +10,7 @@ Keep scientific details that affect experimental interpretation public: observat
 
 Put repository navigation, implementation invariants, compiler workarounds, test hazards, release procedures, and instructions for future agents here or in the linked `.agent-notes/` references. Do not link these notes from public guides. Public docs should not instruct researchers to maintain graph builders, synchronize generated exports, or run release checks.
 
-`CHANGELOG.md` records concise user-visible changes and compatibility consequences. Group unreleased changes by topic and describe the final behavior. Do not append review transcripts, test inventories, internal refactors, or successive revisions of the same design. Preserve important maintenance findings in the relevant agent reference instead; Git retains implementation history.
+`CHANGELOG.md` records concise user-visible changes and compatibility consequences. Group unreleased changes by topic and describe the final behavior. Keep each item to one or two short sentences about the capability, workflow, or compatibility impact; link to a focused guide for task constants, formulas, configuration examples, or API details. Do not append review transcripts, test inventories, internal refactors, serialization edge-case inventories, or successive revisions of the same design. Preserve important maintenance findings in the relevant agent reference instead; Git retains implementation history.
 
 Prefer reader-neutral, subject-focused prose and active voice. Avoid unnecessary imperatives or framing every capability around what the reader can or should do; do not substitute passive voice mechanically. Reader-directed language fits tutorials and procedures. Keep exact dimensions/defaults in their focused references or source rather than duplicating them in overviews.
 
@@ -22,7 +22,7 @@ Learning paths below are relative to `swarmbots/learn`.
 | --- | --- |
 | Benchmark API, task registry, evaluation, recording, CLI | `swarmbots/benchmark/`; public exports in `swarmbots/__init__.py` |
 | Physics and task definitions | `swarmbots/mjw_env/`, `swarmbots/scenario_presets/`; shared spaces in `mjw_env/scenarios/scenario_spaces.py`, reward compilation in `reward_compilation.py` |
-| Learning API and construction | Lazy `swarmbots.learn` exports; `training.py`; `presets/variants.py`; `policy_factory.py` resolves options, `policy_builders.py` constructs families |
+| Learning API and construction | Lazy `swarmbots.learn` exports; `training.py`; `presets/variants.py` registers presets, `policy_variants.py` classifies resolved policies; `policy_factory.py` resolves options, `policy_builders.py` constructs families |
 | Policy layouts and off-policy defaults | `presets/model_scale.py`, `off_policy.py`, `sac.py`, `tmasac.py`; shared lifecycle in `algos/off_policy/` |
 | Shared critic interactions | `nn_components/deep_set.py`, `DeepSetInteractionConfig`, `algos/mat/deep_set_encoder.py` |
 | Tensor conversion | `swarmbots/utils/torch_utils.py`; learning-specific conversion and reset masks in `tensor_conversion.py` |

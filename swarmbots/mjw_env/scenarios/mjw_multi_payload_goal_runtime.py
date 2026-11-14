@@ -236,7 +236,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=torch.long,
         )
         self._cpu_settler = _MultiPayloadGoalCPUResetSettler(scenario=scenario, bindings=bindings)
-        self._goal_sampler = PayloadGoalSampler(
+        self._goal_sampler = None if scenario._goal_sampling_layout is None else PayloadGoalSampler(
             layout=scenario._goal_sampling_layout,
             max_payloads=scenario.max_payloads,
             payload_shape=scenario.payload_shape,
@@ -262,7 +262,9 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
     def sample_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> MultiPayloadGoalResetBatch:
         common = self._sample_common_reset_batch(n_reset=n_reset, rng=rng)
         active_payload_mask = self._sample_active_payload_mask(n_reset=n_reset, rng=rng)
-        goal_position = self._goal_sampler.sample(active_payload_mask=active_payload_mask, rng=rng)
+        goal_position = self._sample_goal_positions(
+            common_reset_batch=common, active_payload_mask=active_payload_mask, rng=rng,
+        )
         return MultiPayloadGoalResetBatch(
             common=common,
             payload_position=self._sample_payload_positions(
@@ -273,6 +275,11 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             active_payload_mask=active_payload_mask,
             goal_position=goal_position,
         )
+
+    def _sample_goal_positions(
+        self, *, common_reset_batch: MJWCommonResetBatch, active_payload_mask: torch.Tensor, rng: torch.Generator,
+    ) -> torch.Tensor:
+        return self._goal_sampler.sample(active_payload_mask=active_payload_mask, rng=rng)
 
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: MultiPayloadGoalResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
@@ -458,7 +465,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
         payload_position[:, :, 1] = (
             self.bindings.inactive_unit_positions[:, 1].amax()
             + self.scenario.swarm.max_unit_extent
-            + self._goal_sampler.layout.footprint[1] / 2.0
+            + self.scenario.payload_footprint[1] / 2.0
             + self.scenario.payload_spawn_margin
         )
         payload_position[:, :, 2] = float(self.scenario.payload_radius)
@@ -481,7 +488,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
         row_span = (self.scenario.max_payloads - 1) * self.scenario.payload_spawn_spacing
         coordinate_scale = (origin_x.abs() + row_span).clamp_min(1.0)
         clearance = (8.0 * torch.finfo(torch.float32).eps * coordinate_scale).clamp_min(1e-5)
-        return (self._goal_sampler.layout.footprint[0] + clearance).clamp_min(self.scenario.payload_spawn_margin)
+        return (self.scenario.payload_footprint[0] + clearance).clamp_min(self.scenario.payload_spawn_margin)
 
     def _apply_payload_position(self, *, world_idx: torch.Tensor, payload_position: torch.Tensor) -> None:
         identity_quat = torch.tensor(

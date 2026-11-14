@@ -6,7 +6,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
-import moviepy.video.io.ImageSequenceClip
+import imageio_ffmpeg
 import mujoco
 import numpy as np
 from loguru import logger
@@ -57,11 +57,19 @@ class _RenderContext:
 
 
 def _write_video_file(*, frames: list[np.ndarray], output_path: Path, fps: int) -> None:
-    clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(frames, fps=fps)
+    height, width = frames[0].shape[:2]
+    # 4:2:0 requires even dimensions; 4:4:4 preserves odd-sized recordings.
+    pixel_format = "yuv420p" if width % 2 == 0 and height % 2 == 0 else "yuv444p"
+    writer = imageio_ffmpeg.write_frames(
+        str(output_path), (width, height), fps=fps, codec="libx264", pix_fmt_out=pixel_format,
+        quality=None, macro_block_size=1, ffmpeg_log_level="error",
+    )
     try:
-        clip.write_videofile(output_path.as_posix(), logger=None)
+        next(writer)
+        for frame in frames:
+            writer.send(np.ascontiguousarray(frame, dtype=np.uint8))
     finally:
-        clip.close()
+        writer.close()
 
 
 class MJWLiveEpisodeRecorder:

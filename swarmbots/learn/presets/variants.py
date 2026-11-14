@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from swarmbots.learn.presets.policy_factory import PolicyVariant
+from swarmbots.learn.presets.policy_variants import PolicyVariant
 from swarmbots.learn.presets.tmasac import TMASACVariant
 
 

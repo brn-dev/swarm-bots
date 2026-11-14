@@ -1,6 +1,6 @@
 # Scenario catalog
 
-SwarmBots has 15 registered tasks covering coordinated locomotion, physical reconfiguration, partial observability, and payload transport. Eight tasks form the core evaluation suite. Every task uses the same articulated modular units and actuator/connector interface, so policies must control both the units' movement and their connections.
+SwarmBots has 16 registered tasks covering coordinated locomotion, physical reconfiguration, partial observability, and payload transport. Eight tasks form the core evaluation suite. Every task uses the same articulated modular units and actuator/connector interface, so policies must control both the units' movement and their connections.
 
 | Wall traversal | Finding an opening |
 | --- | --- |
@@ -46,6 +46,7 @@ Maturity and version identifiers serve different purposes:
 | `SwarmBots-PayloadPlane-v0` | single-payload transport | Alpha | no | no; report return |
 | `SwarmBots-PayloadStep-v0` | payload transport over a step | Alpha | yes | yes |
 | `SwarmBots-DualPayloadPlane-v0` | two-payload transport | Alpha | no | no; report return |
+| `SwarmBots-PayloadGoal-v0` | single-payload delivery to a sampled goal | Alpha | no | yes |
 | `SwarmBots-MultiPayloadGoal-v0` | variable payload-to-goal assignment | Alpha | yes | yes |
 | `SwarmBots-MoveToGoal-v0` | sampled-goal navigation | Alpha | no | no; report return |
 
@@ -102,7 +103,7 @@ Shared task features in `global_obs` are positions in world coordinates unless s
 | MoveToGoal | Goal position `(x, y)` |
 | PayloadPlane, PayloadStep | Payload position `(x, y, z)`, followed by its six-dimensional orientation |
 | DualPayloadPlane | Two consecutive payload position/orientation records |
-| MultiPayloadGoal | One 12-feature record per payload slot: active flag, position (3), orientation (6), goal `(x, y)` |
+| PayloadGoal, MultiPayloadGoal | One 12-feature record per payload slot: active flag, position (3), orientation (6), goal `(x, y)`; PayloadGoal has exactly one active slot |
 
 Inactive MultiPayloadGoal records have zero positions/goals and identity orientation. These payload masks are separate from `agent_mask`. `env.single_observation_space` and `env.single_action_space` describe the selected task; the corresponding spaces without `single_` include the world dimension.
 
@@ -118,13 +119,18 @@ Success is a team-level boolean. Padding never counts toward success. For succes
 | Climb | Every active unit's root lies within `goal_radius` of the 3D goal |
 | VerticalReach | At least one active unit's root lies inside the goal box |
 | PayloadStep | Payload centre reaches `payload_success_y` and the required height while remaining over the step's finite width and length |
+| PayloadGoal | The single payload centre lies within `goal_radius` of its 3D goal (goal height is the payload radius) |
 | MultiPayloadGoal | Every active payload centre lies within `goal_radius` of its assigned 3D goal (goal height is the payload radius) |
 
 PayloadPlane, DualPayloadPlane, and MoveToGoal have no success metric; their scores are episode returns. Episodes truncate at 500 control steps by default. Success terminates an episode for the success-enabled tasks; bridge falls and nonfinite simulator state can also terminate unsuccessfully. The default control period is `0.003 * 10 = 0.03` seconds. Reward terms are exposed in `info["reward_terms"]`; weights and thresholds are in `env.get_settings()` and exported evaluation metadata.
 
 Rewards measure task progress and task-specific outcomes. Connection topology contributes no direct reward or penalty; connections affect the swarm's physical behavior. Historical reward and physics changes are recorded in the [changelog](../CHANGELOG.md) and can make scores from different revisions incomparable.
 
-MultiPayloadGoal samples assignments that allow all active payloads to occupy their goals without overlap in their reset orientation. The goal rectangle bounds payload centres, not their full shapes. Custom rectangles must accommodate the maximum possible active count; invalid configurations fail during construction.
+PayloadGoal uses one box payload and samples a new goal each episode on a noisy arc centred on the payload's spawn position before physics settling. The default `goal_arc_radius` is 3 m and `goal_arc_degrees` is 120°: a uniform angle from −60° to +60° around world +Y, the swarm-to-payload spawn direction. Independent zero-mean Gaussian offsets with `goal_noise_std=0.15` m are added to X and Y. For angle `theta`, the sampled goal is `payload_spawn_xy + 3 * (sin(theta), cos(theta)) + noise_xy`. The noise is unbounded and can put goals slightly beyond the nominal arc; no clipping or rejection changes its distribution. The goal stays fixed until the next reset. Settling can shift the payload relative to the sampled arc. The payload starts one metre ahead of the swarm; their shared starting translation varies by ±0.25 m in X and Y. Success uses a 0.35 m goal radius. Configure `goal_arc_radius`, `goal_arc_degrees` and `goal_noise_std` through scenario overrides; `goal_rect` applies to MultiPayloadGoal.
+
+PayloadGoal adds an approach reward to payload-to-goal progress and success. In the horizontal plane, its pushing-zone centre is `payload_xy - payload_radius * unit(goal_xy - payload_xy)`: one payload radius behind the payload relative to its current goal. When the centres coincide, the zone is centred on the payload. The approach potential is the negative mean distance of active agent roots outside this zone, with a default zone radius of 1.25 m to accommodate a five-unit group. Its reward is `progress_reward_weight * towards_payload_reward_weight * (gamma * potential_next - potential_previous)`, using `potential_reward_discount_factor` as gamma and default approach weight 1.0. The zone moves with the payload and rotates with the goal direction. Reset initializes the potential from the actual settled state; remaining inside the zone produces no occupancy bonus. The broad circle also includes some positions on the goal side, so this term encourages proximity with a rearward bias rather than enforcing a strict pushing direction. Set `towards_payload_reward_weight=0.0` for an approach-shaping ablation. MultiPayloadGoal retains its existing rewards without this approach term.
+
+MultiPayloadGoal samples assignments that allow all active payloads to occupy their goals without overlap in their reset orientation. Its `goal_rect` bounds payload centres, rather than their full shapes. Custom rectangles must accommodate the maximum possible active count; invalid configurations fail during construction.
 
 Payload reset spacing accounts for shape and radius. `payload_spawn_margin` is the requested minimum centre spacing; the resolved `payload_spawn_spacing` may be larger to avoid overlap. Both values are recorded in settings.
 
@@ -157,4 +163,4 @@ env.close()
 
 A result with overrides describes a custom variant of the base task. Reporting includes every override and distinguishes it from the canonical registered configuration.
 
-Custom geometry and reset settings are validated during construction. Climb and MultiPayloadGoal require finite `goal_radius >= 1e-6` metres; reset settling requires finite `reset_settle_timestep_scale > 0`. Invalid sampling distributions or goal regions raise errors rather than producing a valid canonical task.
+Custom geometry and reset settings are validated during construction. Climb, PayloadGoal and MultiPayloadGoal require finite `goal_radius >= 1e-6` metres; reset settling requires finite `reset_settle_timestep_scale > 0`. Invalid sampling distributions or goal regions raise errors rather than producing a valid canonical task.
