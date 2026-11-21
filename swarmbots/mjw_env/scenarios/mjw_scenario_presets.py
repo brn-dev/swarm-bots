@@ -21,6 +21,7 @@ from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import MJWFindOpening
 from swarmbots.mjw_env.scenarios.mjw_move_to_goal_scenario import MJWMoveToGoalScenario
 from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import MJWMultiPayloadGoalScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_goal_scenario import MJWPayloadGoalScenario
+from swarmbots.mjw_env.scenarios.mjw_payload_goal_sequence_scenario import MJWPayloadGoalSequenceScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
 from swarmbots.mjw_env.scenarios.mjw_vertical_reach_scenario import MJWVerticalReachScenario
@@ -55,6 +56,7 @@ PAYLOAD_STEP_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_STEP_S
 DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.DUAL_PAYLOAD_PLANE_SCENARIO_KWARGS)
 MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MULTI_PAYLOAD_GOAL_SCENARIO_KWARGS)
 PAYLOAD_GOAL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_GOAL_SCENARIO_KWARGS)
+PAYLOAD_GOAL_SEQUENCE_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.PAYLOAD_GOAL_SEQUENCE_SCENARIO_KWARGS)
 MOVE_TO_GOAL_SCENARIO_KWARGS = make_scenario_kwargs(shared_kwargs.MOVE_TO_GOAL_SCENARIO_KWARGS)
 
 _JOINT_CONFIGS: dict[JointPreset, dict[str, object]] = {
@@ -376,6 +378,19 @@ def default_payload_goal(
         unit_start_locations=unit_start_locations,
         quantize_connection_twist=quantize_connection_twist,
         joints=joints,
+    )
+
+
+def default_payload_goal_sequence(
+    *, seed: int | None = None, swarm: MJWHomogeneousSwarm | None = None,
+    unit_start_locations: MJWPreConnectedUnitLocationsConfig | None = None,
+    quantize_connection_twist: int = 8, joints: JointPreset = "zx", **kwargs: object,
+) -> MJWPayloadGoalSequenceScenario:
+    return _make_scenario(
+        MJWPayloadGoalSequenceScenario,
+        scenario_kwargs=_preset_kwargs(PAYLOAD_GOAL_SEQUENCE_SCENARIO_KWARGS, overrides=kwargs),
+        seed=seed, swarm=swarm, unit_start_locations=unit_start_locations,
+        quantize_connection_twist=quantize_connection_twist, joints=joints,
     )
 
 

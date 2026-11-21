@@ -96,7 +96,9 @@ def wrap_vec_env(
             preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
         )
     env = TorchRecordEpisodeStatisticsWrapper(env)
-    env = TorchTaskEpisodeStatsWrapper(env)
+    env = TorchTaskEpisodeStatsWrapper(
+        env, terminal_info_keys=tuple(vector_env.get_settings().get("scenario", {}).get("terminal_info_keys", ())),
+    )
     env = TorchFeatureWiseObsNormWrapper(
         env,
         obs_key="local_obs",

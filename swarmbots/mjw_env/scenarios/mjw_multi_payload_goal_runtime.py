@@ -134,15 +134,20 @@ class _MultiPayloadGoalCPUResetSettler(BaseMJWCPUResetSettler):
         return [self._settle_one(spec=spec) for spec in specs]
 
     def _settle_one(self, *, spec: MultiPayloadGoalResetSpec) -> MultiPayloadGoalSettledSnapshot:
+        self._prepare_reset_state(spec=spec)
+        mujoco.mj_forward(self.model, self.data)
+        self._settle_physics()
+        return self._build_settled_snapshot(spec=spec)
+
+    def _prepare_reset_state(self, *, spec: MultiPayloadGoalResetSpec) -> None:
         self._apply_common_reset(common_reset_spec=spec.common)
         self._apply_payload_position(payload_position=spec.payload_position)
         self._apply_goal_markers(
             goal_position=spec.goal_position,
             active_payload_mask=spec.active_payload_mask,
         )
-        mujoco.mj_forward(self.model, self.data)
-        self._settle_physics()
 
+    def _build_settled_snapshot(self, *, spec: MultiPayloadGoalResetSpec) -> MultiPayloadGoalSettledSnapshot:
         payload_position = np.asarray(
             self.data.qpos[self._payload_qpos_indices[:, :3]],
             dtype=np.float64,
@@ -235,7 +240,7 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
             device=bindings.device,
             dtype=torch.long,
         )
-        self._cpu_settler = _MultiPayloadGoalCPUResetSettler(scenario=scenario, bindings=bindings)
+        self._cpu_settler = self._make_cpu_reset_settler(bindings=bindings)
         self._goal_sampler = None if scenario._goal_sampling_layout is None else PayloadGoalSampler(
             layout=scenario._goal_sampling_layout,
             max_payloads=scenario.max_payloads,
@@ -246,6 +251,9 @@ class MultiPayloadGoalMJWScenarioRuntime(BaseMJWScenarioRuntime):
         self._reward_kernel = compile_reward_kernel(
             self._reward_kernel, enabled=scenario.compile_reward_kernel, mode=scenario.reward_kernel_compile_mode,
         )
+
+    def _make_cpu_reset_settler(self, *, bindings: MJWRuntimeBindings) -> _MultiPayloadGoalCPUResetSettler:
+        return _MultiPayloadGoalCPUResetSettler(scenario=self.scenario, bindings=bindings)
 
     @property
     def global_obs(self) -> torch.Tensor:

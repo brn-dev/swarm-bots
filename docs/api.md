@@ -15,7 +15,7 @@ spec = get_benchmark_spec("SwarmBots-Climb-v0")
 print(spec.maturity, spec.episode_length, spec.supports_success_metric)
 ```
 
-`CORE_BENCHMARK_IDS` contains the eight core tasks; `ALL_BENCHMARK_IDS` contains all 16 registered tasks. Benchmark IDs belong to SwarmBots' own registry; `swarmbots.make_env` constructs their environments.
+`CORE_BENCHMARK_IDS` contains the eight core tasks; `ALL_BENCHMARK_IDS` contains all 17 registered tasks. Benchmark IDs belong to SwarmBots' own registry; `swarmbots.make_env` constructs their environments.
 
 `BenchmarkSpec.maturity` and `spec.to_dict()["maturity"]` expose each task's alpha or beta status. The benchmark as a whole remains alpha; core-suite membership does not imply a validated task. [Scenario maturity and versioning](scenarios.md#scenario-maturity-and-versioning) defines the testing criteria and version identifiers.
 

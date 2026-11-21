@@ -40,6 +40,7 @@ from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_fn
 from swarmbots.learn.scheduling.schedulers import SchedulerManager
 from swarmbots.learn.summary_statistics import compute_summary_statistics, compute_tensor_summary_statistics
+from swarmbots.learn.task_episode_metrics import summarize_task_episode_metrics
 from swarmbots.learn.torch_device import as_device
 
 TARGET_KL_MARGIN = 1.5
@@ -542,6 +543,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             'ep_time': ep_time,
             'ep_progress_rew': ep_progress_rew,
             **connection_metrics,
+            **summarize_task_episode_metrics(episode_infos),
         }
         return metrics, total_steps_in_rollout
 

@@ -18,11 +18,13 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
         progress_key: str = "progress_reward",
         success_key: str = "success",
         stats_key: str = "episode",
+        terminal_info_keys: tuple[str, ...] = (),
     ) -> None:
         super().__init__(env)
         self.progress_key = progress_key
         self.success_key = success_key
         self._stats_key = stats_key
+        self.terminal_info_keys = terminal_info_keys
         self.episode_progress_rewards = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
         self.prev_dones = torch.zeros((self._n_envs,), device=self.device, dtype=torch.bool)
         self._previous_step_had_dones = False
@@ -224,6 +226,11 @@ class TorchTaskEpisodeStatsWrapper(TorchEnvWrapper):
         if success_values is not None:
             new_stats[self.success_key] = torch.where(dones, success_values, 0.0).detach().clone()
             new_stats[f"_{self.success_key}"] = (dones & success_mask).detach().clone()
+        for key in self.terminal_info_keys:
+            values, present = self._extract_step_values_with_mask(infos, key)
+            if values is not None:
+                new_stats[f"task/{key}"] = torch.where(dones, values, 0.).detach().clone()
+                new_stats[f"_task/{key}"] = (dones & present).detach().clone()
         if any(key in stats for key in new_stats):
             raise ValueError(
                 f"infos['{self._stats_key}'] already contains one of {list(new_stats)}"

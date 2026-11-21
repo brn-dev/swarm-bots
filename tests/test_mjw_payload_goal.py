@@ -167,12 +167,13 @@ def test_approach_rewards_average_progress_over_active_units(discount: float, ex
     torch.testing.assert_close(reward, torch.tensor([expected_reward]))
 
 
-def test_coincident_goal_empty_swarm_and_unstable_world_are_finite() -> None:
+@pytest.mark.parametrize("potential", ["zone", "pseudo_huber"])
+def test_coincident_goal_empty_swarm_and_unstable_world_are_finite(potential: str) -> None:
     positions = torch.tensor([[[0., 0.]], [[10., 10.]], [[float("nan"), 0.]]])
     payloads = torch.tensor([[0., 0., .3], [0., 0., .3], [float("nan"), 0., .3]])
     progress, reward = _compute_payload_goal_approach_reward_kernel(
         positions, payloads, torch.zeros((3, 2)), torch.tensor([True, True, False]),
-        torch.tensor([[True], [False], [True]]), torch.zeros(3), .3, .2, 1., 1., .995,
+        torch.tensor([[True], [False], [True]]), torch.zeros(3), .3, .2, 1., 1., .995, potential,
     )
     assert torch.isfinite(progress).all()
     torch.testing.assert_close(reward, torch.zeros(3))

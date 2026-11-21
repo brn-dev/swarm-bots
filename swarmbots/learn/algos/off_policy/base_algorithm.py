@@ -50,6 +50,7 @@ from swarmbots.learn.metrics_logger import SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.task_episode_metrics import summarize_task_episode_metrics
 from swarmbots.learn.torch_device import as_device
 
 
@@ -702,6 +703,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             make_histograms: bool,
         ) -> None:
             metric_prefix = "" if not prefix else f"{prefix}/"
+            metrics.update(summarize_task_episode_metrics(group_infos, prefix=metric_prefix))
             ranged_info_keys = {
                 "r",
                 "l",

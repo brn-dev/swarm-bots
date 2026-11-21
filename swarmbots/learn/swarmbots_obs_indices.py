@@ -6,6 +6,7 @@ from swarmbots.mjw_env.swarm.unit_config import LimbType
 from swarmbots.scenario_presets.scenario_obs_layouts import (
     CLIMB_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
     MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT,
+    PAYLOAD_GOAL_SEQUENCE_GLOBAL_OBS_LAYOUT,
     VERTICAL_REACH_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
 )
 
@@ -13,6 +14,17 @@ from swarmbots.scenario_presets.scenario_obs_layouts import (
 def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: int) -> list[int]:
     if global_obs_dim == 0:
         return []
+
+    if scenario_settings.get("global_obs_layout") == PAYLOAD_GOAL_SEQUENCE_GLOBAL_OBS_LAYOUT:
+        num_goals = int(scenario_settings["num_goals"])
+        base_dim = 13 + 3 * num_goals
+        extra_vectors = (bool(scenario_settings.get("include_goal_delta_obs", False))
+                         + bool(scenario_settings.get("include_payload_velocity_obs", False)))
+        continuous_end = base_dim + 2 * extra_vectors
+        expected_dim = continuous_end + bool(scenario_settings.get("include_goal_inside_obs", False))
+        if global_obs_dim != expected_dim:
+            raise ValueError(f"Unexpected payload goal sequence global_obs_dim: {global_obs_dim}")
+        return [1, 2, 3, 10, 11, *range(12, 12 + 2 * num_goals), base_dim - 1, *range(base_dim, continuous_end)]
 
     if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
         num_payloads = int(scenario_settings["num_payloads"])
@@ -54,6 +66,8 @@ def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: in
 def _global_rot6d_indices(scenario_settings: dict[str, Any], global_obs_dim: int) -> list[int]:
     if global_obs_dim == 0:
         return []
+    if scenario_settings.get("global_obs_layout") == PAYLOAD_GOAL_SEQUENCE_GLOBAL_OBS_LAYOUT:
+        return [4]
     if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
         num_payloads = int(scenario_settings["num_payloads"])
         expected_global_obs_dim = num_payloads * 12
@@ -150,6 +164,9 @@ def build_obs_indices(
     global_quaternion_indices = []
     global_scalar_active_mask_indices = []
     global_rot6d_active_mask_indices = []
+    if scenario_settings.get("global_obs_layout") == PAYLOAD_GOAL_SEQUENCE_GLOBAL_OBS_LAYOUT:
+        global_scalar_active_mask_indices = [0] * len(global_scalar_indices)
+        global_rot6d_active_mask_indices = [0]
     if scenario_settings.get("global_obs_layout") == MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT:
         global_scalar_active_mask_indices = [index // 12 * 12 for index in global_scalar_indices]
         global_rot6d_active_mask_indices = [index // 12 * 12 for index in global_rot6d_indices]

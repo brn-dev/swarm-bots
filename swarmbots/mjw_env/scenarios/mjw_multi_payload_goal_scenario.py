@@ -241,18 +241,7 @@ class MJWMultiPayloadGoalScenario:
             payload_body.add_freejoint(name=f"{payload_name}_freejoint")
             self._add_payload_geom(payload_body, rgba=self._payload_color(payload_idx))
 
-            goal_body = worldbody.add_body(name=self._goal_body_name(payload_idx), mocap=True, pos=[0, 0, 0])
-            if self.visualize_goal:
-                goal_rgba = list(self._payload_color(payload_idx))
-                goal_rgba[3] = 0.18
-                goal_body.add_geom(
-                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                    size=[self.goal_radius, 0.0, 0.0],
-                    pos=[0.0, 0.0, self.payload_radius],
-                    rgba=goal_rgba,
-                    contype=0,
-                    conaffinity=0,
-                )
+            self._add_goal_markers(worldbody=worldbody, payload_idx=payload_idx)
 
         model = spec.compile()
         model.opt.timestep = float(self.timestep)
@@ -263,6 +252,20 @@ class MJWMultiPayloadGoalScenario:
                 friction = np.asarray(tuple(float(v) for v in self.friction), dtype=float)
             model.geom_friction[:] = friction
         return model
+
+    def _add_goal_markers(self, *, worldbody: mujoco.MjsBody, payload_idx: int) -> None:
+        goal_body = worldbody.add_body(name=self._goal_body_name(payload_idx), mocap=True, pos=[0, 0, 0])
+        if self.visualize_goal:
+            goal_rgba = list(self._payload_color(payload_idx))
+            goal_rgba[3] = 0.18
+            goal_body.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[self.goal_radius, 0.0, 0.0],
+                pos=[0.0, 0.0, self.payload_radius],
+                rgba=goal_rgba,
+                contype=0,
+                conaffinity=0,
+            )
 
     def _add_payload_geom(
         self,

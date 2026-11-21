@@ -26,7 +26,7 @@ Actors may be centralized or decentralized; their access to other agents' public
 
 ## Task suite
 
-There are **16 registered tasks**, with eight forming the core evaluation suite. Names below expand to `SwarmBots-<name>-v0`.
+There are **17 registered tasks**, with eight forming the core evaluation suite. Names below expand to `SwarmBots-<name>-v0`.
 
 | Task family | Names | Challenge |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ There are **16 registered tasks**, with eight forming the core evaluation suite.
 | Exploration | `FindOpening` | Hidden-passage discovery and traversal |
 | Bridge traversal | `Bridge` | Crossing a narrow movable bridge |
 | Climbing and navigation | `Climb`, `VerticalReach`, `MoveToGoal` | Reaching platform, elevated, or planar goals |
-| Payload transport | `PayloadPlane`, `PayloadStep`, `DualPayloadPlane`, `PayloadGoal`, `MultiPayloadGoal` | Cooperative object transport and delivery |
+| Payload transport | `PayloadPlane`, `PayloadStep`, `DualPayloadPlane`, `PayloadGoal`, `PayloadGoalSequence`, `MultiPayloadGoal` | Cooperative object transport and delivery |
 
 The [scenario catalog](https://github.com/brn-dev/swarm-bots/blob/main/docs/scenarios.md) lists exact IDs, observations, and success criteria. `swarmbots describe <benchmark-id>` prints a task summary. The [benchmark protocol](https://github.com/brn-dev/swarm-bots/blob/main/docs/benchmark_protocol.md) defines the core suite and reporting procedure.
 

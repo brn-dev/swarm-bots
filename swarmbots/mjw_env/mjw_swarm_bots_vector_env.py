@@ -285,6 +285,7 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self.device = _resolve_torch_device(device)
         self._wp_device = wp.device_from_torch(self.device)
         self.scenario = scenario
+        self._terminal_info_keys = frozenset(scenario.get_settings().get("terminal_info_keys", ()))
         self.num_envs = int(num_envs)
         self.episode_length = int(episode_length)
         self.first_episode_length = first_episode_length
@@ -873,8 +874,10 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         if reset_only_mask is not None:
             rewards = rewards.masked_fill(reset_only_mask, 0.0)
         ignored_info_mask = unstable_mask if reset_only_mask is None else unstable_mask | reset_only_mask
-        for value in infos.values():
-            _mask_info_values(value, ignored_info_mask)
+        for key, value in infos.items():
+            info_mask = reset_only_mask if key in self._terminal_info_keys else ignored_info_mask
+            if info_mask is not None:
+                _mask_info_values(value, info_mask)
         if "reward_terms" in infos:
             infos["reward_terms"]["simulation_instability"] = rewards.masked_fill(~unstable_mask, 0.0)
 

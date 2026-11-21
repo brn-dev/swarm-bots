@@ -244,6 +244,13 @@ PAYLOAD_GOAL_SCENARIO_KWARGS: dict[str, object] = {
     "towards_payload_goal_radius": 1.25,
 }
 
+PAYLOAD_GOAL_SEQUENCE_SCENARIO_KWARGS: dict[str, object] = {
+    **{key: value for key, value in PAYLOAD_GOAL_SCENARIO_KWARGS.items()
+       if key not in ("goal_arc_radius", "goal_arc_degrees", "goal_noise_std")},
+    "goal_radius": 0.15,
+    "randomize_initial_swarm_z_rotation": True,
+}
+
 MOVE_TO_GOAL_SCENARIO_KWARGS: dict[str, object] = {
     "plane_size": 100.0,
     "swarm_start_x": 0.0,

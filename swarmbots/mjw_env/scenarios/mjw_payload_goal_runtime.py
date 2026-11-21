@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_
+from swarmbots.mjw_env.mjw_torch_utils import copy_masked_rows_, masked_mean
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWCommonResetBatch, MJWRuntimeBindings, MJWStepResult
 from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_runtime import (
     MultiPayloadGoalMJWScenarioRuntime,
@@ -42,12 +42,19 @@ def _compute_payload_goal_approach_progress(
     units_active_mask: torch.Tensor,
     payload_radius: float,
     towards_payload_goal_radius: float,
+    approach_potential: str = "zone",
+    approach_softness: float = 0.5,
 ) -> torch.Tensor:
     payload_xy = payload_position[..., :2]
     goal_delta = goal_position - payload_xy
     goal_distance = torch.hypot(goal_delta[..., 0], goal_delta[..., 1]).unsqueeze(-1)
     # Coincident payload/goal centres have no preferred pushing direction.
     pushing_zone_center = payload_xy - float(payload_radius) * goal_delta / goal_distance.clamp_min(1e-6)
+    if approach_potential == "pseudo_huber":
+        squared_distance = (unit_xy - pushing_zone_center[:, None]).square().sum(dim=-1)
+        # Rationalizing sqrt(d^2 + l^2) - l preserves small distances in float32.
+        cost = squared_distance / (torch.sqrt(squared_distance + approach_softness**2) + approach_softness)
+        return -masked_mean(cost, units_active_mask, dim=1)
     return _compute_towards_payload_progress_baseline_torch(
         unit_xy=unit_xy,
         virtual_goal_position=pushing_zone_center,
@@ -68,6 +75,8 @@ def _compute_payload_goal_approach_reward_kernel(
     towards_payload_reward_weight: float,
     progress_reward_weight: float,
     potential_reward_discount_factor: float,
+    approach_potential: str = "zone",
+    approach_softness: float = 0.5,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     new_progress = _compute_payload_goal_approach_progress(
         torch.where(stable_mask[:, None, None], unit_xy, 0.0),
@@ -76,6 +85,8 @@ def _compute_payload_goal_approach_reward_kernel(
         units_active_mask,
         payload_radius,
         towards_payload_goal_radius,
+        approach_potential,
+        approach_softness,
     )
     reward = (
         (float(potential_reward_discount_factor) * new_progress - towards_payload_progress)
@@ -134,6 +145,8 @@ class PayloadGoalMJWScenarioRuntime(MultiPayloadGoalMJWScenarioRuntime):
             self.bindings.units_active_mask[world_idx],
             self.scenario.payload_radius,
             self.scenario.towards_payload_goal_radius,
+            self.scenario.towards_payload_potential,
+            self.scenario.towards_payload_softness,
         )
 
     def compute_step_rewards(self, *, stable_mask: torch.Tensor) -> MJWStepResult:
@@ -150,6 +163,8 @@ class PayloadGoalMJWScenarioRuntime(MultiPayloadGoalMJWScenarioRuntime):
             self.scenario.towards_payload_reward_weight,
             self.scenario.progress_reward_weight,
             self.scenario.potential_reward_discount_factor,
+            self.scenario.towards_payload_potential,
+            self.scenario.towards_payload_softness,
         )
         copy_masked_rows_(self.towards_payload_progress, new_progress, stable_mask)
         result.reward = result.reward + towards_payload_reward

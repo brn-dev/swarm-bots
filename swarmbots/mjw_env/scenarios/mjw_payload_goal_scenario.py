@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import Any
+from typing import Any, Literal
 
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import MJWRecordingCameraConfig, MJWRuntimeBindings
 from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import MJWMultiPayloadGoalScenario
@@ -18,6 +18,8 @@ class MJWPayloadGoalScenario(MJWMultiPayloadGoalScenario):
     goal_noise_std: float = 0.15
     towards_payload_reward_weight: float = 1.0
     towards_payload_goal_radius: float = 1.25
+    towards_payload_potential: Literal["zone", "pseudo_huber"] = "zone"
+    towards_payload_softness: float = 0.5
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -27,6 +29,9 @@ class MJWPayloadGoalScenario(MJWMultiPayloadGoalScenario):
         self.towards_payload_goal_radius = float(self.towards_payload_goal_radius)
         if not math.isfinite(self.towards_payload_goal_radius) or self.towards_payload_goal_radius < 0.0:
             raise ValueError("towards_payload_goal_radius must be finite and non-negative")
+        if self.towards_payload_potential not in ("zone", "pseudo_huber"):
+            raise ValueError("towards_payload_potential must be 'zone' or 'pseudo_huber'")
+        self.towards_payload_softness = finite_positive(self.towards_payload_softness, name="towards_payload_softness")
 
     def _make_goal_sampling_layout(self, max_active_payloads: int) -> PayloadGoalLayout | None:
         if self.goal_rect is not None:
@@ -56,6 +61,8 @@ class MJWPayloadGoalScenario(MJWMultiPayloadGoalScenario):
             scenario_type="payload_goal",
             towards_payload_reward_weight=self.towards_payload_reward_weight,
             towards_payload_goal_radius=self.towards_payload_goal_radius,
+            towards_payload_potential=self.towards_payload_potential,
+            towards_payload_softness=self.towards_payload_softness,
         )
         return settings
 

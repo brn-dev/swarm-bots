@@ -19,13 +19,13 @@ The eight-task core suite is exposed as `swarmbots.CORE_BENCHMARK_IDS`:
 | `SwarmBots-PayloadStep-v0` | Payload transport over a step |
 | `SwarmBots-MultiPayloadGoal-v0` | Multiple payloads delivered to assigned goals |
 
-The full 16-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. The [scenario catalog](scenarios.md) lists all tasks and success conditions. Scores are reported per task. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
+The full 17-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. The [scenario catalog](scenarios.md) lists all tasks and success conditions. Scores are reported per task. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
 
 ## Evaluation
 
 For each task and checkpoint:
 
-1. Use the unmodified registered scenario and its 500-step episode limit.
+1. Use the unmodified registered scenario and its registered episode limit: 500 control steps, or 1,000 for PayloadGoalSequence. `get_benchmark_spec(id).episode_length` exposes the limit.
 2. Evaluate seeds `1000`, `1001`, `1002`, `1003`, and `1004`.
 3. Run 256 parallel worlds and accept exactly the first episode from each world for every seed.
 4. Use deterministic policy actions unless the experiment specifically studies stochastic evaluation.
@@ -34,7 +34,7 @@ For each task and checkpoint:
 
 This yields 1,280 evaluation episodes per task. Keeping one episode per lane avoids changing the sampled evaluation population when faster-terminating policies autoreset earlier.
 
-All episodes start after the scenario's default physics settling, including the first episode following an explicit reset. Settling does not consume the 500 control steps or contribute to episode return. This corrects the pre-release behavior where explicit resets started unsettled while autoresets settled; results from that earlier behavior must be rerun for protocol 0.1.
+All episodes start after the scenario's default physics settling, including the first episode following an explicit reset. Settling does not consume the episode's control-step budget or contribute to episode return. This corrects the pre-release behavior where explicit resets started unsettled while autoresets settled; results from that earlier behavior must be rerun for protocol 0.1.
 
 The evaluator's defaults implement one 256-world seed at a time:
 

@@ -6,7 +6,8 @@ These changes describe the current source checkout relative to the published `0.
 
 ### Benchmark tasks and evaluation
 
-- Add `SwarmBots-PayloadGoal-v0` for single-payload delivery to a sampled goal. The [scenario catalog](docs/scenarios.md) describes its observations, rewards, and success conditions.
+- Add `SwarmBots-PayloadGoal-v0` for single-payload delivery to a sampled goal. PayloadGoal and PayloadGoalSequence support optional smooth pseudo-Huber approach shaping over all active agents; the [scenario catalog](docs/scenarios.md) describes their observations, rewards, and success conditions.
+- Add `SwarmBots-PayloadGoalSequence-v0` for ordered delivery with an easy first leg, randomized arrangement heading, and precise held goals. Optional payload-to-target displacement, payload XY velocity, an inside-goal flag, and bounded hold-progress rewards support learning; episode metrics report partial completion. See the [scenario catalog](docs/scenarios.md) for observation and reward options.
 - Update connector placement, initial assembly grounding, and reset settling. Together with the reward and success-condition changes below, these changes require fresh evaluations before comparing scores with earlier revisions.
 - Remove the isolation penalty from all scenarios. Rewards measure task progress and outcomes; connection topology affects behavior through physics.
 - Require Bridge success above the destination platform and PayloadStep success over the finite step at the required height. Restrict PayloadStep climb shaping to the platform width.

@@ -5,6 +5,7 @@ from swarmbots.mjw_env.scenarios.mjw_find_opening_scenario import MJWFindOpening
 from swarmbots.mjw_env.scenarios.mjw_move_to_goal_scenario import MJWMoveToGoalScenario
 from swarmbots.mjw_env.scenarios.mjw_multi_payload_goal_scenario import MJWMultiPayloadGoalScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_goal_scenario import MJWPayloadGoalScenario
+from swarmbots.mjw_env.scenarios.mjw_payload_goal_sequence_scenario import MJWPayloadGoalSequenceScenario
 from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_plane_scenario import MJWPayloadPlaneScenario
 from swarmbots.mjw_env.scenarios.mjw_payload_step_scenario import MJWPayloadStepScenario
@@ -18,6 +19,7 @@ __all__ = [
     "MJWMoveToGoalScenario",
     "MJWMultiPayloadGoalScenario",
     "MJWPayloadGoalScenario",
+    "MJWPayloadGoalSequenceScenario",
     "MJWWallScenario",
     "MJWPayloadPlaneScenario",
     "MJWPayloadStepScenario",
