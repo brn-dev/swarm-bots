@@ -25,7 +25,7 @@ from swarmbots.learn.algos.off_policy import collect_off_policy_steps
 from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayEpisodeSegmentBatch,
 )
-from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig
+from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderConfig, RMATEncoderState
 from swarmbots.learn.algos.r_mat.temporal_sequence_model import (
     LSTMTemporalSequenceModel,
     LSTMTemporalSequenceModelConfig,
@@ -4292,10 +4292,12 @@ class RecurrentTMASACTests(unittest.TestCase):
                 replay_storage_device="cpu",
                 train_device="cpu",
             )
-            padded_indices, valid_mask = algorithm._padded_truncation_indices(torch.tensor([
-                [False, True, False],
-                [False, False, False],
-            ]))
+            batch = replace(
+                _make_recurrent_critic_batch(env),
+                terminations=torch.tensor([[True, False, False], [False, False, True]]),
+                truncations=torch.tensor([[True, True, False], [False, False, True]]),
+            )
+            padded_indices, valid_mask = algorithm._padded_truncation_indices(batch)
 
             self.assertEqual(padded_indices.tolist(), [[0, 1], [1, 0]])
             self.assertEqual(valid_mask.tolist(), [True, False])
@@ -4482,6 +4484,72 @@ class RecurrentTMASACTests(unittest.TestCase):
         self.assertIn("shared_encoder_nop_loss", metrics)
         self.assertEqual(parameter_updates, {"actor": True, "critic": True})
         self.assertEqual(nop_parameter_updates, {"critic": True})
+
+    def test_recurrent_sac_trains_shared_encoder_with_legacy_sampler_on_delayed_update(self) -> None:
+        class LegacySharedPolicy(RecurrentTMASACPolicy):
+            def action_log_prob_sequence_with_selected_states_and_shared_latents(
+                    self,
+                    *,
+                    local_obs: torch.Tensor,
+                    global_obs: torch.Tensor,
+                    agent_mask: torch.Tensor | None,
+                    scenario_ids: torch.Tensor | None = None,
+                    previous_actions: torch.Tensor | None,
+                    deterministic: bool,
+                    use_rsample: bool,
+                    initial_state: RMATEncoderState | None,
+                    state_output_indices: torch.Tensor,
+                    time_mask: torch.Tensor | None = None,
+                    reset_mask: torch.Tensor | None = None,
+                    num_action_samples: int = 1,
+            ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, RMATEncoderState, RMATEncoderState, torch.Tensor]:
+                return super().action_log_prob_sequence_with_selected_states_and_shared_latents(
+                    local_obs=local_obs,
+                    global_obs=global_obs,
+                    agent_mask=agent_mask,
+                    scenario_ids=scenario_ids,
+                    previous_actions=previous_actions,
+                    deterministic=deterministic,
+                    use_rsample=use_rsample,
+                    initial_state=initial_state,
+                    state_output_indices=state_output_indices,
+                    time_mask=time_mask,
+                    reset_mask=reset_mask,
+                    num_action_samples=num_action_samples,
+                )
+
+        torch.manual_seed(549)
+        env = _make_env()
+        try:
+            policy = LegacySharedPolicy(env=env, config=_shared_recurrent_policy_config(nop_config=SACNOPConfig()))
+            trainer = RecurrentSAC(
+                policy=policy, env=env, policy_delay=2, burn_in_steps=0, learning_steps=3,
+                temporal_state_store_interval=1, buffer_capacity_per_env=4, learning_starts=0,
+                rollout_steps_per_iteration=6, batch_size=2, replay_storage_device="cpu", train_device="cpu",
+            )
+            batch = _make_segment_batch(
+                batch_size=2, sequence_length=3, n_agents=env.n_agents, local_obs_dim=env.local_obs_dim,
+                global_obs_dim=env.global_obs_dim, hidden_local_vars_dim=env.hidden_local_vars_dim,
+                hidden_global_vars_dim=env.hidden_global_vars_dim, action_dim=env.action_space.total_agent_action_dim,
+            )
+            shared_before = [
+                parameter.detach().clone() for parameter in policy._shared_recurrent_encoder(target=False).parameters()
+            ]
+            actor_before = [parameter.detach().clone() for parameter in policy.actor_parameters()]
+
+            metrics, _actor_grad_norm, _critic_grad_norm = trainer._train_step(batch, global_update_idx=0)
+
+            self.assertEqual(metrics["actor_updated"], 0.0)
+            self.assertTrue(any(
+                not torch.equal(before, parameter)
+                for before, parameter in zip(
+                    shared_before, policy._shared_recurrent_encoder(target=False).parameters(), strict=True,
+                )
+            ))
+            for before, parameter in zip(actor_before, policy.actor_parameters(), strict=True):
+                torch.testing.assert_close(parameter, before, atol=0, rtol=0)
+        finally:
+            env.close()
 
     def test_compiled_recurrent_shared_encoder_sac_update_smoke(self) -> None:
         torch._dynamo.reset()

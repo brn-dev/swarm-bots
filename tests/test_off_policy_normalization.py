@@ -536,6 +536,34 @@ def test_rollout_replay_and_both_evaluators_agree_on_missing_and_populated_trans
         runner.close()
 
 
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_ppo_benchmark_lane_counts_leave_compiled_replay_normalization_available() -> None:
+    env = _make_normalization_env(device="cuda", compile_normalization=None)
+    try:
+        policy = make_policy(env, "mat_ind", model_scale=None, use_nop=False).to("cuda")
+        raw = {
+            key: torch.as_tensor(value, device="cuda").unsqueeze(0)
+            for key, value in env.unwrapped.envs[0]._obs().items()
+        }
+        torch.compiler.reset()
+        with torch._dynamo.config.patch(recompile_limit=1):
+            for lanes in (1, 4):
+                observations = {key: value.expand(lanes, *value.shape[1:]) for key, value in raw.items()}
+                actions = BenchmarkPolicy(policy, env)(observations, torch.ones(lanes, device="cuda", dtype=torch.bool))
+                assert np.isfinite(actions["actuators"]).all()
+            replay = ReplayNormalization(env)
+            for layout in replay.observation_layouts:
+                layout.wrapper.obs_rms.mean.fill_(2.)
+            result = replay.snapshot(device=torch.device("cuda")).normalize_observations(raw)
+            expected = raw["local_obs"].clone()
+            expected[..., 0] = (expected[..., 0] - 2.) / (1.0 + 1e-6) ** 0.5
+            torch.testing.assert_close(result["local_obs"], expected)
+    finally:
+        torch.compiler.reset()
+        env.close()
+
+
 def test_whole_policy_compilation_preserves_on_policy_normalization_behavior() -> None:
     env = _make_normalization_env(transition_observations=True)
     try:

@@ -4,15 +4,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum, auto
 import gzip
+from hashlib import sha256
+from io import StringIO
 import json
+import os
+from os import SEEK_END, fstat
 from pathlib import Path
 from queue import Queue
 import shutil
 from threading import Lock, Thread
-from typing import Any
+from typing import Any, BinaryIO, TextIO
 import numpy as np
 from loguru import logger
 
+from swarmbots.utils.atomic_file import publish_staged_output, staged_output
 from swarmbots.learn.logging_levels import (
     ConsoleMetricFormat,
     ConsoleSelection,
@@ -39,6 +44,34 @@ from swarmbots.learn.summary_statistics import (
 NEWLINE_KEY = '<newline>'
 SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS = "_suppress_missing_console_key_warnings"
 _MAX_PENDING_BATCHES = 2
+_CSV_FIELD_LIMIT_LOCK = Lock()
+
+
+def _windows_reader_blocks_replace(error: PermissionError, path: Path) -> bool:
+    if os.name != "nt" or getattr(error, "winerror", None) not in (5, 32):
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_file = kernel32.CreateFileW
+    open_file.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    open_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    # MoveFileExW can report Access Denied for a reader that did not share delete access.
+    delete_access, share_all, open_existing = 0x10000, 0x7, 3
+    handle = open_file(str(path), delete_access, share_all, None, open_existing, 0, None)
+    if handle == ctypes.c_void_p(-1).value:
+        return ctypes.get_last_error() == 32  # ERROR_SHARING_VIOLATION
+    close_handle(handle)
+    return False
 
 
 class _StopWorker:
@@ -78,6 +111,17 @@ def rate(numerator: int | float, denominator: int | float) -> BufferedMetric:
     return BufferedMetric(value=(numerator, denominator), reduction=MetricReduction.RATE)
 
 
+@dataclass(slots=True)
+class RetryableMetricWrite:
+    metrics: dict[str, Any]
+    aggregated: dict[str, Any] | None = None
+    queued: bool = False
+    console_written: bool = False
+    csv_written: bool = False
+    wandb_written: bool = False
+    partial_csv_append: tuple[int, bytes] | None = None
+
+
 class MetricsLogger:
     def __init__(
             self,
@@ -107,6 +151,10 @@ class MetricsLogger:
 
         self.log_dir = Path(log_dir) if log_dir else None
         self.file_path = self.log_dir / filename if self.log_dir else None
+        self._csv_schema_backup = None
+        if os.name == "nt" and self.file_path is not None:
+            path_id = sha256(os.path.normcase(self.file_path.name).encode()).hexdigest()
+            self._csv_schema_backup = self.file_path.with_name(f".swarmbots-csv-{path_id}.backup")
         
         if self.log_dir:
             self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -203,8 +251,16 @@ class MetricsLogger:
         metrics = self._aggregate_buffered_metrics(metrics_batch)
 
         self._log_to_console(metrics)
+        persistence_metrics = self._persistence_metrics(metrics)
 
-        persistence_metrics = {
+        if self.file_path and persistence_metrics:
+            self._log_to_csv(persistence_metrics)
+
+        if self._wandb_run is not None and persistence_metrics:
+            self._log_to_wandb(persistence_metrics)
+
+    def _persistence_metrics(self, metrics: dict[str, Any]) -> dict[str, Any]:
+        return {
             k: v for k, v in metrics.items()
             if k != SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS
             and (
@@ -215,11 +271,27 @@ class MetricsLogger:
             and (not self._ignore_keys_for_persistence or k not in self._ignore_keys_for_persistence)
         }
 
-        if self.file_path and persistence_metrics:
-            self._log_to_csv(persistence_metrics)
-
-        if self._wandb_run is not None and persistence_metrics:
+    def publish_retryable(self, write: RetryableMetricWrite) -> None:
+        """Acknowledge each finished sink so callers can resume a failed publication."""
+        if self._closed:
+            raise RuntimeError("Cannot log metrics after MetricsLogger.close().")
+        self._worker_queue.join()
+        self._raise_worker_error()
+        if write.aggregated is None:
+            write.metrics.setdefault("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            # Both a full buffer and a final flush would have included this row in the current window.
+            write.aggregated = self._aggregate_buffered_metrics([*self._metrics_buffer, write.metrics])
+            self._metrics_buffer = []
+        metrics = write.aggregated
+        persistence_metrics = self._persistence_metrics(metrics)
+        if not write.console_written:
+            self._log_to_console(metrics)
+            write.console_written = True
+        if self.file_path and persistence_metrics and not write.csv_written:
+            self._publish_retryable_csv(persistence_metrics, write)
+        if self._wandb_run is not None and persistence_metrics and not write.wandb_written:
             self._log_to_wandb(persistence_metrics)
+            write.wandb_written = True
 
     def _get_worker_error(self) -> BaseException | None:
         with self._worker_error_lock:
@@ -301,7 +373,7 @@ class MetricsLogger:
 
         logger.opt(colors=True).info(" | ".join(parts))
 
-    def _log_to_csv(self, metrics: dict[str, Any]) -> None:
+    def _csv_row(self, metrics: dict[str, Any]) -> dict[str, Any]:
         csv_metrics: dict[str, Any] = {}
 
         for k, v in metrics.items():
@@ -329,7 +401,10 @@ class MetricsLogger:
                 csv_metrics[k + '__n'] = v.n
             else:
                 csv_metrics[k] = v
+        return csv_metrics
 
+    def _log_to_csv(self, metrics: dict[str, Any]) -> None:
+        csv_metrics = self._csv_row(metrics)
         self._ensure_csv_writer(csv_metrics)
         assert self._csv_fieldnames is not None
 
@@ -341,9 +416,139 @@ class MetricsLogger:
         self.writer.writerow(csv_metrics)
         self.file.flush()
 
+    def _publish_retryable_csv(self, metrics: dict[str, Any], write: RetryableMetricWrite) -> None:
+        assert self.file_path is not None
+        self._recover_csv_schema()
+        csv_metrics = self._csv_row(metrics)
+        compressed = self.file_path.with_suffix(f"{self.file_path.suffix}.gz")
+        if write.partial_csv_append is None and not self.file_path.exists() and compressed.exists():
+            self._ensure_csv_writer(csv_metrics)
+        existing = self._read_csv_header_fieldnames() or []
+        new_fieldnames = [key for key in csv_metrics if key not in existing]
+        if existing and not new_fieldnames:
+            self._append_retryable_csv(csv_metrics, existing, write)
+            return
+        if write.partial_csv_append is not None:
+            raise OSError("Evaluation CSV schema changed while recovering an interrupted write.")
+        with staged_output(self.file_path) as staging:
+            self._publish_csv_schema(staging, [*existing, *new_fieldnames], copy_rows=bool(existing), row=csv_metrics)
+            write.csv_written = True
+
+    def _append_retryable_csv(
+            self, metrics: dict[str, Any], fieldnames: list[str], write: RetryableMetricWrite,
+    ) -> None:
+        assert self.file_path is not None
+        row_text = StringIO(newline="")
+        self._csv_writer(row_text, fieldnames).writerow(metrics)
+        row = row_text.getvalue().encode("utf-8")
+        # Replacing the file would block when a Windows reader has it open.
+        with self.file_path.open("r+b", buffering=0) as destination:
+            if write.partial_csv_append is not None:
+                self._rollback_csv_append(destination, write)
+            offset = destination.seek(0, SEEK_END)
+            if offset:
+                destination.seek(offset - 1)
+                if destination.read(1) not in (b"\r", b"\n"):
+                    row = b"\r\n" + row
+            write.partial_csv_append = offset, row
+            try:
+                if destination.write(row) != len(row):
+                    raise OSError("Incomplete evaluation CSV write.")
+            except BaseException:
+                self._rollback_csv_append(destination, write)
+                raise
+            write.csv_written = True
+            write.partial_csv_append = None
+
+    @staticmethod
+    def _rollback_csv_append(destination: BinaryIO, write: RetryableMetricWrite) -> None:
+        assert write.partial_csv_append is not None
+        offset, row = write.partial_csv_append
+        if destination.seek(0, SEEK_END) < offset:
+            raise OSError("Evaluation CSV was truncated while recovering an interrupted write.")
+        destination.seek(offset)
+        if not row.startswith(destination.read(len(row) + 1)):
+            raise OSError("Evaluation CSV changed while recovering an interrupted write.")
+        destination.truncate(offset)
+        write.partial_csv_append = None
+
+    @staticmethod
+    def _csv_writer(destination: TextIO, fieldnames: list[str]) -> csv.DictWriter:
+        return csv.DictWriter(destination, fieldnames=fieldnames, delimiter=";", extrasaction="ignore")
+
+    def _publish_csv_schema(
+            self, staging: Path, fieldnames: list[str], *, copy_rows: bool, row: dict[str, Any] | None = None,
+    ) -> None:
+        assert self.file_path is not None
+        if self.file is not None:
+            file = self.file
+            self.file = self.writer = None
+            file.close()
+        self._write_csv_schema(staging, fieldnames, copy_rows=copy_rows, row=row)
+        try:
+            publish_staged_output(staging, self.file_path)
+        except PermissionError as error:
+            if not _windows_reader_blocks_replace(error, self.file_path):
+                raise
+            self._publish_csv_schema_in_place(staging)
+
+    def _publish_csv_schema_in_place(self, staging: Path) -> None:
+        assert self.file_path is not None and self._csv_schema_backup is not None
+        backup = self._csv_schema_backup
+        # Keep a complete backup even if an interruption also prevents rollback.
+        with staged_output(backup) as staged_backup:
+            shutil.copyfile(self.file_path, staged_backup)
+            publish_staged_output(staged_backup, backup)
+        try:
+            self._overwrite_csv(staging)
+        except BaseException:
+            self._recover_csv_schema()
+            raise
+        backup.unlink()
+
+    def _recover_csv_schema(self) -> None:
+        backup = self._csv_schema_backup
+        if backup is None or not backup.exists():
+            return
+        assert self.file_path is not None
+        try:
+            if not self.file_path.exists():
+                publish_staged_output(backup, self.file_path)
+                return
+            self._overwrite_csv(backup)
+        except OSError as error:
+            raise OSError(f"Could not restore CSV schema from backup {backup}") from error
+        backup.unlink()
+
+    def _overwrite_csv(self, source: Path) -> None:
+        assert self.file_path is not None
+        with source.open("rb") as staged, self.file_path.open("r+b") as destination:
+            shutil.copyfileobj(staged, destination)
+            destination.truncate()
+
+    def _write_csv_schema(
+            self, staging: Path, fieldnames: list[str], *, copy_rows: bool, row: dict[str, Any] | None = None,
+    ) -> None:
+        assert self.file_path is not None
+        with staging.open(mode="w", newline="", encoding="utf-8") as destination:
+            writer = self._csv_writer(destination, fieldnames)
+            writer.writeheader()
+            if copy_rows:
+                with self.file_path.open(newline="", encoding="utf-8") as source, _CSV_FIELD_LIMIT_LOCK:
+                    # CSV accepts long fields when writing. No field can exceed the input file's byte size.
+                    limit = csv.field_size_limit()
+                    csv.field_size_limit(max(limit, fstat(source.fileno()).st_size))
+                    try:
+                        writer.writerows(csv.DictReader(source, delimiter=";"))
+                    finally:
+                        csv.field_size_limit(limit)
+            if row is not None:
+                writer.writerow(row)
+
     def _ensure_csv_writer(self, csv_metrics: dict[str, Any]) -> None:
         if self.file is not None:
             return
+        self._recover_csv_schema()
 
         if not self.file_path.exists():
             gz_path = self.file_path.with_suffix(f"{self.file_path.suffix}.gz")
@@ -362,12 +567,7 @@ class MetricsLogger:
             existing_fieldnames if existing_fieldnames is not None else list(csv_metrics.keys())
         )
         self.file = open(self.file_path, mode='a', newline='', encoding="utf-8")
-        self.writer = csv.DictWriter(
-            self.file,
-            fieldnames=self._csv_fieldnames,
-            delimiter=';',
-            extrasaction="ignore",
-        )
+        self.writer = self._csv_writer(self.file, self._csv_fieldnames)
 
         if not file_exists or self.file_path.stat().st_size == 0:
             self.writer.writeheader()
@@ -377,35 +577,9 @@ class MetricsLogger:
         assert self.file_path is not None
         assert self._csv_fieldnames is not None
 
-        existing_rows: list[dict[str, Any]] = []
-        if self.file_path.exists() and self.file_path.stat().st_size > 0:
-            with open(self.file_path, mode='r', newline='', encoding='utf-8') as existing_file:
-                reader = csv.DictReader(existing_file, delimiter=';')
-                existing_rows = list(reader)
-
-        updated_fieldnames = [*self._csv_fieldnames, *new_fieldnames]
-        with open(self.file_path, mode='w', newline='', encoding='utf-8') as rewritten_file:
-            rewrite_writer = csv.DictWriter(
-                rewritten_file,
-                fieldnames=updated_fieldnames,
-                delimiter=';',
-                extrasaction="ignore",
-            )
-            rewrite_writer.writeheader()
-            if existing_rows:
-                rewrite_writer.writerows(existing_rows)
-
-        if self.file is not None:
-            self.file.close()
-
-        self._csv_fieldnames = updated_fieldnames
-        self.file = open(self.file_path, mode='a', newline='', encoding='utf-8')
-        self.writer = csv.DictWriter(
-            self.file,
-            fieldnames=self._csv_fieldnames,
-            delimiter=';',
-            extrasaction="ignore",
-        )
+        with staged_output(self.file_path) as staging:
+            self._publish_csv_schema(staging, [*self._csv_fieldnames, *new_fieldnames], copy_rows=True)
+        self._ensure_csv_writer({})
         logger.warning(f"MetricsLogger: extended CSV schema with keys: {new_fieldnames}")
 
     def _read_csv_header_fieldnames(self) -> list[str] | None:
@@ -537,13 +711,16 @@ class MetricsLogger:
         self._raise_worker_error()
 
     def compress_persisted_log(self) -> Path | None:
-        if self.file_path is None or not self.file_path.exists():
+        if self.file_path is None:
             return None
 
         gz_path = self.file_path.with_suffix(f"{self.file_path.suffix}.gz")
         tmp_gz_path = gz_path.with_suffix(f"{gz_path.suffix}.tmp")
 
         try:
+            self._recover_csv_schema()
+            if not self.file_path.exists():
+                return None
             with self.file_path.open("rb") as src, gzip.open(tmp_gz_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
             tmp_gz_path.replace(gz_path)

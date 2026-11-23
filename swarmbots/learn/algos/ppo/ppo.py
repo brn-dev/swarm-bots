@@ -33,13 +33,15 @@ from swarmbots.learn.gsde_reset import (
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.masking import masked_mean
-from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys
+from swarmbots.learn.checkpointing import align_torch_compile_state_dict_keys, checkpoint_lazy_parameter_shapes
 from swarmbots.learn.metrics_list import MetricsLists, materialize_scalar_metrics
-from swarmbots.learn.optimizers import clip_grad_norm_, make_adam, move_adam_state_to_device
+from swarmbots.learn.optimizers import clip_grad_norm_, make_adam, move_adam_state_to_device, validate_adam_state
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_fn
 from swarmbots.learn.scheduling.schedulers import SchedulerManager
-from swarmbots.learn.summary_statistics import compute_summary_statistics, compute_tensor_summary_statistics
+from swarmbots.learn.summary_statistics import (
+    SummaryStatistics, TensorSummaryStatistics, compute_summary_statistics, compute_tensor_summary_statistics,
+)
 from swarmbots.learn.task_episode_metrics import summarize_task_episode_metrics
 from swarmbots.learn.torch_device import as_device
 
@@ -78,6 +80,57 @@ class AutomaticLearningRateUpdater(Protocol):
 def _validate_automatic_learning_rate(value: float, *, name: str = "learning_rate") -> None:
     if not math.isfinite(value) or value <= 0.0:
         raise ValueError(f"Automatic learning rate {name} must be finite and > 0, got {value}")
+
+
+def _backward_fp16_loss(
+        loss: torch.Tensor, parameters: Iterable[nn.Parameter], optimizer: torch.optim.Optimizer,
+) -> None:
+    if not torch.isfinite(loss):
+        raise RuntimeError("The PPO loss is non-finite under FP16 autocast.")
+    parameters = tuple(parameters)
+    # A wide Gaussian head can send a finite gradient that overflows an FP16 trunk activation.
+    # Keep unit scaling when it works and unscale the leaf gradients before measuring or clipping them.
+    for exponent in range(0, 25, 3):
+        scale = 2.0 ** -exponent
+        can_retry = exponent < 24
+        if exponent:
+            optimizer.zero_grad()
+        scaled_loss = loss * scale if exponent else loss
+        scaled_loss.backward(retain_graph=can_retry)
+        if exponent:
+            with torch.no_grad():
+                for parameter in parameters:
+                    if parameter.grad is not None:
+                        parameter.grad.div_(scale)
+        if not can_retry or math.isfinite(clip_grad_norm_(parameters, None)):
+            return
+
+
+def _materialize_ppo_loss_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    metrics = metrics.copy()
+    metrics.pop('_clip_count', None)
+    if isinstance(metrics.get('approx_kl'), TensorSummaryStatistics):
+        metrics['approx_kl'] = metrics['approx_kl'].moments[0]
+    return materialize_scalar_metrics(metrics)
+
+
+def _summarize_ppo_loss_metrics(loss_metrics: MetricsLists) -> dict[str, Any]:
+    metrics = loss_metrics.compute_summary_statistics()
+    batch_counts = metrics.pop('_clip_count', None)
+    if batch_counts is None:
+        return metrics
+    n = metrics['ratio'].n
+    if n:
+        # Counts were packed with the other metrics. Pool their integer numerators before division.
+        clipped = round(batch_counts.mean * batch_counts.n)
+        fraction = clipped / n
+        metrics['clip_frac'] = SummaryStatistics(
+            n=n, mean=fraction, std=math.sqrt(fraction * (1 - fraction)),
+            min_value=float(clipped == n), max_value=float(clipped > 0),
+        )
+    else:
+        metrics['clip_frac'] = compute_summary_statistics([], find_min=True, find_max=True)
+    return metrics
 
 
 @dataclass(slots=True)
@@ -140,6 +193,10 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             parameter_lr_multipliers: Mapping[str, float] | None = None,
             rollout_warmup_steps_per_env: int = 0,
     ):
+        if type(n_epochs) is not int or n_epochs < 1:
+            raise ValueError("n_epochs must be a positive integer")
+        if not math.isfinite(max_grad_norm) or max_grad_norm <= 0:
+            raise ValueError("max_grad_norm must be finite and positive")
         policy.validate_ppo_dropout()
         self.automatic_lr: AutomaticLearningRate | None = None
         self._auto_lr_enabled = False
@@ -158,24 +215,16 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 raise TypeError(f"{learning_rate=} must be a float (or AutomaticLearningRate for auto LR).")
             initial_lr = learning_rate
 
-        super().__init__(policy, env, initial_lr)
+        super().__init__(policy, env, initial_lr, rollout_warmup_steps_per_env=rollout_warmup_steps_per_env)
 
         self.learning_rate = initial_lr
         self.rollout_mode = rollout_mode
         self._rollout_state: PPORolloutState | None = None
-        self.rollout_warmup_steps_per_env = int(rollout_warmup_steps_per_env)
-        if self.rollout_warmup_steps_per_env < 0:
-            raise ValueError(
-                f"rollout_warmup_steps_per_env must be >= 0, got {self.rollout_warmup_steps_per_env}"
-            )
-        self._rollout_warmup_done = self.rollout_warmup_steps_per_env == 0
         self.max_episode_length = max_episode_length
         if sampler_config is None:
             sampler_config = cast(PPOSamplerConfigType, PPOSamplerConfig(batch_size=64))
         self.sampler_config = sampler_config
         self.n_epochs = n_epochs
-        self.gamma = gamma
-        self.gae_lambda = gae_lambda
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
         self.normalize_advantage = normalize_advantage
@@ -200,7 +249,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         )
         if agent_logprob_reduction not in (None, "sum", "mean"):
             raise ValueError(f"{agent_logprob_reduction=} must be 'sum', 'mean', or None")
-        if agent_logprob_reduction is not None and not isinstance(policy, PPOPolicy):
+        if agent_logprob_reduction is not None and not isinstance(getattr(policy, "policy", policy), PPOPolicy):
             logger.warning('agent_logprob_reduction is only intended for single agent PPO')
         self.agent_logprob_reduction: Optional[Literal["sum", "mean"]] = agent_logprob_reduction
 
@@ -228,9 +277,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             gamma=gamma,
             gae_lambda=gae_lambda,
             rollout_device=self.rollout_device,
-            rollout_dtype=torch.float32,
             train_device=self.train_device,
-            train_dtype=torch.float32,
         )
 
         self._policy_num_params = self.policy.num_parameters(learnable_only=False)
@@ -300,14 +347,36 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             normalize_advantage: bool = True,
             materialize_metrics: bool = True,
     ) -> tuple[torch.Tensor, float | torch.Tensor, dict[str, Any]]:
-        log_prob, old_log_prob = self.reduce_agents(batch, log_probs)
-        valid_mask = self._build_batch_valid_mask(batch, log_prob)
+        uses_builtin_reduction = type(self).reduce_agents is PPO.reduce_agents and "reduce_agents" not in vars(self)
+        agent_valid_mask = self._build_batch_valid_mask(batch, log_probs)
+        # The rollout policy is fixed. Subtract before summing so small per-agent changes survive.
+        agent_log_ratio = log_probs - batch.log_probs.detach()
+        valid_log_probs = log_probs
+        if agent_valid_mask is not None:
+            padding = ~agent_valid_mask
+            agent_log_ratio = agent_log_ratio.masked_fill(padding, 0.)
+            valid_log_probs = log_probs.masked_fill(padding, 0.)
+        if uses_builtin_reduction:
+            log_prob, log_ratio, joint_log_ratio = self._reduce_valid_agent_terms(
+                valid_log_probs, agent_log_ratio, agent_valid_mask,
+            )
+            valid_mask = agent_valid_mask
+            if agent_valid_mask is not None and self.agent_logprob_reduction is not None:
+                valid_mask = agent_valid_mask.any(dim=-1)
+        else:
+            log_prob, old_log_prob = self.reduce_agents(batch, log_probs)
+            valid_mask = self._build_batch_valid_mask(batch, log_prob)
+            if valid_mask is not None:
+                padding = ~valid_mask
+                log_prob = log_prob.masked_fill(padding, 0.)
+                old_log_prob = old_log_prob.masked_fill(padding, 0.)
+            log_ratio = log_prob - old_log_prob
 
         advantages = batch.advantages
-        if normalize_advantage and self.normalize_advantage and advantages.numel() > 1:
+        if normalize_advantage and self.normalize_advantage:
             advantages = self._normalize_advantages(batch, advantages)
 
-        ratio = torch.exp(log_prob - old_log_prob)
+        ratio = torch.exp(log_ratio)
 
         while ratio.ndim > advantages.ndim:
             advantages = advantages.unsqueeze(-1)
@@ -342,18 +411,20 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         if self.mc_ent_coef == 0:
             mc_entropy_loss = masked_mean(log_prob, valid_mask)
+        elif not uses_builtin_reduction:
+            # Custom surrogate reductions do not change the joint entropy estimator.
+            entropy_weights = agent_log_ratio.sum(dim=-1, keepdim=True).exp()
+            mc_entropy_loss = self._reduce_extra_loss_value(batch, entropy_weights * valid_log_probs)
         else:
             # Use the joint likelihood ratio even when averaging agent entropies:
             # autoregressive actors condition later actions on earlier samples.
-            entropy_valid_mask = self._build_batch_valid_mask(batch, log_probs)
-            entropy_log_probs = log_probs
-            entropy_old_log_probs = batch.log_probs.detach()
-            if entropy_valid_mask is not None:
-                entropy_log_probs = entropy_log_probs.masked_fill(~entropy_valid_mask, 0.)
-                entropy_old_log_probs = entropy_old_log_probs.masked_fill(~entropy_valid_mask, 0.)
-            joint_log_ratio = (entropy_log_probs - entropy_old_log_probs).sum(dim=-1, keepdim=True)
-            entropy_weights = torch.exp(joint_log_ratio)
-            mc_entropy_loss = self._reduce_extra_loss_value(batch, entropy_weights * entropy_log_probs)
+            if self.agent_logprob_reduction == "sum":
+                entropy_weights = ratio
+            elif joint_log_ratio is None:
+                entropy_weights = agent_log_ratio.sum(dim=-1, keepdim=True).exp()
+            else:
+                entropy_weights = joint_log_ratio.exp()
+            mc_entropy_loss = masked_mean(entropy_weights * log_prob, valid_mask)
 
         value_loss_scaled = self.vf_coef * value_loss
         mc_entropy_loss_scaled = self.mc_ent_coef * mc_entropy_loss
@@ -361,21 +432,31 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         loss = policy_loss + mc_entropy_loss_scaled + value_loss_scaled
 
         with torch.no_grad():
-            log_ratio = log_prob - old_log_prob
-            approx_kl_div = masked_mean((torch.exp(log_ratio) - 1) - log_ratio, valid_mask)
-            clip_fraction = masked_mean((torch.abs(ratio - 1) > self.clip_range).float(), valid_mask)
+            # Float32 loses small KL changes and overflows for attainable joint log ratios.
+            log_change = (log_ratio if valid_mask is None else log_ratio[valid_mask]).double()
+            kl_stats = compute_tensor_summary_statistics(log_change.expm1() - log_change)
+            ratio_stats = compute_tensor_summary_statistics(log_change.exp())
+            # Compare the same rounded ratios and bounds used by the surrogate.
+            outside_clip_range = (ratio < 1 - self.clip_range) | (ratio > 1 + self.clip_range)
+            if valid_mask is not None:
+                outside_clip_range &= valid_mask
+            # Counts up to 2**24 pack exactly alongside float32 loss metrics.
+            count_dtype = torch.float32 if ratio_stats.n <= 2**24 else torch.float64
+            clip_count = outside_clip_range.sum(dtype=count_dtype)
+            approx_kl_div = kl_stats.moments[0]
         metrics = {
             'act_loss': policy_loss.detach(),
             'mc_ent_loss': mc_entropy_loss.detach(),
             'mc_ent_loss_scaled': mc_entropy_loss_scaled.detach(),
             'val_loss': value_loss.detach(),
             'val_loss_scaled': value_loss_scaled.detach(),
-            'approx_kl': approx_kl_div,
-            'clip_frac': clip_fraction,
-            'ratio': compute_tensor_summary_statistics(ratio, valid_mask),
+            'approx_kl': kl_stats,
+            'clip_frac': clip_count / max(ratio_stats.n, 1),
+            '_clip_count': clip_count,
+            'ratio': ratio_stats,
         }
         if materialize_metrics:
-            metrics = materialize_scalar_metrics(metrics)
+            metrics = _materialize_ppo_loss_metrics(metrics)
             approx_kl_div = metrics['approx_kl']
         return loss, approx_kl_div, metrics
 
@@ -413,7 +494,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         return values[valid_mask]
 
     def _before_learn_loop(self) -> None:
-        if self._rollout_warmup_done:
+        if self.rollout_warmup_steps_per_env == 0 or self._rollout_warmup_done:
             return
         if self.n_total_timesteps > 0 or self.n_total_iterations > 0 or self.n_total_updates > 0:
             self._rollout_warmup_done = True
@@ -465,7 +546,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             metrics.update({f"{name}_loss_scaled": value.detach() for name, value in reduced_extra_losses.items()})
         metrics.update(extra_loss_metrics)
         if materialize_metrics:
-            metrics = materialize_scalar_metrics(metrics)
+            metrics = _materialize_ppo_loss_metrics(metrics)
             approx_kl_div = metrics['approx_kl']
         return loss, approx_kl_div, metrics
 
@@ -569,16 +650,14 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         if self.use_popart and valid_returns.numel() > 0:
             self.policy.update_value_normalizer(valid_returns)
 
-        y_pred = self._select_valid_value_items(sampler, sampler.values)
-        y_true = valid_returns
-        if y_true.numel() > 1:
-            var_y = torch.var(y_true)
+        if valid_returns.numel() > 1:
+            y_true = valid_returns.double()
+            y_pred = self._select_valid_value_items(sampler, sampler.values).double()
+            target_variance = y_true.var(correction=0)
+            residual_variance = (y_true - y_pred).var(correction=0)
+            explained_var = torch.where(target_variance > 0, 1 - residual_variance / target_variance, 0.)
         else:
-            var_y = y_true.new_tensor(float("nan"))
-        if not torch.isnan(var_y) and var_y > 1e-8:
-            explained_var = (1 - torch.var(y_true - y_pred) / var_y).item()
-        else:
-            explained_var = 0.0
+            explained_var = valid_returns.new_zeros((), dtype=torch.float64)
 
         loss_metrics = MetricsLists[float | torch.Tensor]()
 
@@ -618,19 +697,28 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
                 if self.target_kl is not None:
                     approx_kl_div = float(approx_kl_div)
-                if self.target_kl is not None and approx_kl_div > TARGET_KL_MARGIN * self.target_kl:
-                    continue_training = False
-                    early_stop_epoch = epoch
-                    early_stop_kl_div = approx_kl_div
-                    msg = f"Early stopping at epoch {epoch}, batch {i} due to reaching max kl: {approx_kl_div:.3f}"
-                    if epoch == 0:
-                        logger.warning(msg)
-                    else:
-                        logger.debug(msg)
-                    break
+                    if not math.isfinite(approx_kl_div) or approx_kl_div > TARGET_KL_MARGIN * self.target_kl:
+                        continue_training = False
+                        early_stop_epoch = epoch
+                        early_stop_kl_div = approx_kl_div
+                        msg = f"Early stopping at epoch {epoch}, batch {i} due to KL: {approx_kl_div:.3f}"
+                        if epoch == 0:
+                            logger.warning(msg)
+                        else:
+                            logger.debug(msg)
+                        break
 
                 self.optimizer.zero_grad()
-                loss.backward()
+                device_type = loss.device.type
+                if torch.is_autocast_enabled(device_type):
+                    # An enclosing autocast must not cast the FP32 heads' backward GEMMs to half.
+                    with torch.autocast(device_type, enabled=False):
+                        if torch.get_autocast_dtype(device_type) == torch.float16:
+                            _backward_fp16_loss(loss, self.policy.parameters(), self.optimizer)
+                        else:
+                            loss.backward()
+                else:
+                    loss.backward()
 
                 should_compute_grad_norms = (
                     compute_detailed_grad_norms_this_iteration
@@ -649,6 +737,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 grad_norms.append(total_grad_norm.detach().clone())
 
                 self.optimizer.step()
+                self.n_total_updates += 1
                 self._after_optimizer_step()
 
                 n_updates += 1
@@ -661,8 +750,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         train_timer.stop()
 
-        self.n_total_updates += n_updates
-
         detailed_grad_norm_metrics = detailed_grad_norms.compute_summary_statistics(prefix='grad_norm_',)
         if detailed_grad_norm_metrics:
             self._detailed_grad_norm_metric_keys = tuple(k.removeprefix('grad_norm_') for k in detailed_grad_norm_metrics)
@@ -674,17 +761,15 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         metrics_timer = PerformanceTimer().start()
         with torch.no_grad():
-            if grad_norms:
-                grad_norm_values = torch.stack(grad_norms).cpu().double().numpy()
-                grad_clip_fraction = float((grad_norm_values > self.max_grad_norm).mean())
-            else:
-                grad_norm_values = []
-                grad_clip_fraction = 0.0
+            # Transfer rollout and optimizer diagnostics together after the last update.
+            diagnostics = torch.stack([explained_var, *grad_norms]).cpu().numpy()
+            grad_norm_values = diagnostics[1:]
+            grad_clip_fraction = float((grad_norm_values > self.max_grad_norm).mean()) if grad_norms else 0.0
             metrics: dict[str, Any] = {
-                **loss_metrics.compute_summary_statistics(),
+                **_summarize_ppo_loss_metrics(loss_metrics),
                 'updates': n_updates,
                 'total_updates': self.n_total_updates,
-                'expl_var': explained_var,
+                'expl_var': float(diagnostics[0]),
                 'grad_norm': compute_summary_statistics(grad_norm_values, find_max=True, find_min=True),
                 'grad_clip_frac': grad_clip_fraction,
                 **detailed_grad_norm_metrics,
@@ -815,6 +900,22 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         self.policy.after_optimizer_step()
 
     @property
+    def gamma(self) -> float:
+        return self.rollout_buffer.gamma
+
+    @gamma.setter
+    def gamma(self, value: float) -> None:
+        self.rollout_buffer.gamma = value
+
+    @property
+    def gae_lambda(self) -> float:
+        return self.rollout_buffer.gae_lambda
+
+    @gae_lambda.setter
+    def gae_lambda(self, value: float) -> None:
+        self.rollout_buffer.gae_lambda = value
+
+    @property
     def batch_size(self) -> int:
         return self.sampler_config.batch_size
 
@@ -838,30 +939,27 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                     f"Expected agent_mask shape {tuple(log_probs.shape)}, got {tuple(agent_mask.shape)}"
                 )
 
-        agent_dim = log_probs.ndim - 1
+        previous = batch.log_probs
+        if agent_mask is not None and self.agent_logprob_reduction is not None:
+            log_probs = log_probs.masked_fill(~agent_mask, 0.)
+            previous = previous.masked_fill(~agent_mask, 0.)
+        current, previous, _ = self._reduce_valid_agent_terms(log_probs, previous, agent_mask)
+        return current, previous
+
+    def _reduce_valid_agent_terms(
+            self, log_probs: torch.Tensor, other: torch.Tensor, valid_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Reduce both terms and retain the second one's sum for joint entropy weighting."""
         if self.agent_logprob_reduction is None:
-            log_prob = log_probs
-            old_log_prob = batch.log_probs
-        elif self.agent_logprob_reduction == "sum":
-            if agent_mask is None:
-                log_prob = log_probs.sum(dim=agent_dim)
-                old_log_prob = batch.log_probs.sum(dim=agent_dim)
-            else:
-                mask_f = agent_mask.to(dtype=log_probs.dtype)
-                log_prob = (log_probs * mask_f).sum(dim=agent_dim)
-                old_log_prob = (batch.log_probs * mask_f).sum(dim=agent_dim)
-        elif self.agent_logprob_reduction == "mean":
-            if agent_mask is None:
-                log_prob = log_probs.mean(dim=agent_dim)
-                old_log_prob = batch.log_probs.mean(dim=agent_dim)
-            else:
-                mask_f = agent_mask.to(dtype=log_probs.dtype)
-                denom = mask_f.sum(dim=agent_dim).clamp_min(1.0)
-                log_prob = (log_probs * mask_f).sum(dim=agent_dim) / denom
-                old_log_prob = (batch.log_probs * mask_f).sum(dim=agent_dim) / denom
-        else:
-            raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
-        return log_prob, old_log_prob
+            return log_probs, other, None
+        joint_log_prob = log_probs.sum(dim=-1)
+        joint_other = other.sum(dim=-1)
+        if self.agent_logprob_reduction == "sum":
+            return joint_log_prob, joint_other, joint_other
+        if self.agent_logprob_reduction == "mean":
+            count = log_probs.shape[-1] if valid_mask is None else valid_mask.sum(dim=-1).clamp_min(1)
+            return joint_log_prob / count, joint_other / count, joint_other
+        raise ValueError(f"Unhandled {self.agent_logprob_reduction=}")
 
     def _reduce_extra_losses(
             self,
@@ -994,17 +1092,23 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             advantages: torch.Tensor,
     ) -> torch.Tensor:
         step_valid_mask = self._build_time_valid_mask(self._get_time_mask(batch), advantages)
+        # A rounded float32 mean can turn identical advantages into a nonzero policy gradient.
+        values = advantages.double()
         if step_valid_mask is None:
-            return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            if advantages.numel() < 2:
+                return advantages
+            std, mean = torch.std_mean(values)
+            return ((values - mean) / (std + 1e-8)).to(advantages.dtype)
 
-        valid_f = step_valid_mask.to(dtype=advantages.dtype)
-        num_valid = valid_f.sum()
-        denominator = num_valid.clamp_min(1)
-        mean = (advantages * valid_f).sum() / denominator
-        variance = ((advantages - mean) ** 2 * valid_f).sum() / denominator
-        normalized = (advantages - mean) / torch.sqrt(variance + 1e-8)
-        normalized = torch.where(step_valid_mask, normalized, torch.zeros_like(normalized))
-        return torch.where(num_valid > 1, normalized, advantages)
+        padding = ~step_valid_mask
+        valid_advantages = values.masked_fill(padding, 0)
+        num_valid = step_valid_mask.sum()
+        mean = valid_advantages.sum() / num_valid.clamp_min(1)
+        centered = (valid_advantages - mean).masked_fill(padding, 0)
+        degrees_of_freedom = (num_valid - 1).clamp_min(1).to(dtype=values.dtype)
+        std = torch.linalg.vector_norm(centered) / degrees_of_freedom.sqrt()
+        normalized = torch.where(num_valid > 1, centered / (std + 1e-8), valid_advantages)
+        return normalized.to(advantages.dtype)
 
     @staticmethod
     def _get_time_mask(batch: PPOSamples) -> torch.Tensor | None:
@@ -1056,7 +1160,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
         # Live history is not checkpointed, and cached observations may use the old normalization.
         self._rollout_state = None
         self.rollout_buffer.reset()
-        self._rollout_warmup_done = True
 
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         state_dict = self.optimizer.state_dict()
@@ -1067,7 +1170,18 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 "state": deepcopy(self._auto_lr_state),
             }
         )
+        state_dict["schedule_configuration"] = self._checkpoint_schedule_configuration()
         return state_dict
+
+    def _checkpoint_schedule_configuration(self) -> dict[str, Any]:
+        automatic_lr = self.automatic_lr
+        return {
+            "schedulers": None if self.scheduler_manager is None else self.scheduler_manager.checkpoint_configuration(),
+            "automatic_lr": None if automatic_lr is None else {
+                "max_lr": automatic_lr.max_lr,
+                "updater": serialize_fn(automatic_lr.updater, for_checkpoint_match=True),
+            },
+        }
 
     @staticmethod
     def _optimizer_base_learning_rate(state_dict: dict[str, Any]) -> float:
@@ -1088,12 +1202,24 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             raise ValueError("Checkpoint schedulers do not match the trainer; configure the matching SchedulerManager")
         if scheduler_state is not None:
             self.scheduler_manager.validate_state_dict(scheduler_state)
+
+        saved_schedule_configuration = optimizer_state_dict["schedule_configuration"]
+        configured_schedules = self._checkpoint_schedule_configuration()
+        if saved_schedule_configuration["schedulers"] != configured_schedules["schedulers"]:
+            raise ValueError("Checkpoint scheduler configuration does not match the trainer")
+        if saved_schedule_configuration["automatic_lr"] != configured_schedules["automatic_lr"]:
+            raise ValueError("Checkpoint automatic learning rate configuration does not match the trainer")
+
         if self.automatic_lr is not None:
+            if type(automatic_lr_state["enabled"]) is not bool or not isinstance(automatic_lr_state["state"], dict):
+                raise ValueError("Invalid automatic learning rate controller state")
             _validate_automatic_learning_rate(learning_rate)
             for group in optimizer_state_dict["param_groups"]:
                 _validate_automatic_learning_rate(float(group["lr"]))
                 _validate_automatic_learning_rate(float(group.get("lr_multiplier", 1.0)), name="lr_multiplier")
             _validate_automatic_learning_rate(self._optimizer_base_learning_rate(optimizer_state_dict))
+        else:
+            validate_scalar_learning_rate(learning_rate)
 
         parameters_by_name = dict(self.policy.named_parameters(remove_duplicate=False))
         source_names = align_torch_compile_state_dict_keys(
@@ -1132,6 +1258,13 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 "parameter_lr_multipliers or set restore_optimizer_state=False."
             )
 
+        lazy_shapes = checkpoint_lazy_parameter_shapes(parameters_by_name.items(), checkpoint["policy_state_dict"])
+        validate_adam_state(optimizer_state_dict, self.optimizer.param_groups, lazy_shapes=lazy_shapes)
+
+    def _restore_checkpoint_schedulers(self, optimizer_state: dict[str, Any]) -> None:
+        if self.scheduler_manager is not None:
+            self.scheduler_manager.load_state_dict(optimizer_state["schedulers"])
+
     def _apply_optimizer_state_dict(
             self,
             state_dict: dict[str, Any],
@@ -1147,12 +1280,11 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
 
         state_dict = state_dict.copy()
         automatic_lr_state = state_dict.pop("automatic_lr")
-        scheduler_state = state_dict.pop("schedulers")
+        state_dict.pop("schedulers")
+        state_dict.pop("schedule_configuration")
         lr = self._optimizer_base_learning_rate(state_dict)
         if self.automatic_lr is not None:
             _validate_automatic_learning_rate(lr)
-        if scheduler_state is not None:
-            self.scheduler_manager.load_state_dict(scheduler_state)
         self.optimizer.load_state_dict(state_dict)
         if self.automatic_lr is not None and automatic_lr_state is not None:
             self._auto_lr_enabled = automatic_lr_state["enabled"]
@@ -1184,8 +1316,6 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                 raise ValueError("Parameter LR multiplier prefixes must not be empty.")
             if not math.isfinite(multiplier) or multiplier <= 0:
                 raise ValueError(f"Parameter LR multiplier for {prefix!r} must be finite and > 0, got {multiplier}.")
-            if multiplier == 1.0:
-                continue
             normalized[prefix] = multiplier
         return normalized
 

@@ -1346,7 +1346,7 @@ class SACTests(unittest.TestCase):
         finally:
             env.close()
 
-    def test_load_requires_fresh_replay_fill_before_training_resumes(self) -> None:
+    def test_checkpoint_refill_uses_random_actions_only_before_the_first_update(self) -> None:
         source_env = _make_env()
         restored_env = _make_env()
         try:
@@ -1386,13 +1386,23 @@ class SACTests(unittest.TestCase):
                 self.assertEqual(len(restored.replay_buffer), 2)
                 self.assertEqual(first_metrics["updates"], 0)
 
-                second_metrics, _ = restored.perform_iteration(
-                    ExponentialMovingAverage(alpha=0.1),
-                    ExponentialMovingAverage(alpha=0.1),
-                    update_ema=False,
-                )
+                with patch.object(restored.env.action_space, "sample", wraps=restored.env.action_space.sample) as sample:
+                    second_metrics, _ = restored.perform_iteration(
+                        ExponentialMovingAverage(alpha=0.1),
+                        ExponentialMovingAverage(alpha=0.1),
+                        update_ema=False,
+                    )
+                    self.assertEqual(sample.call_count, 2)
                 self.assertEqual(len(restored.replay_buffer), 4)
                 self.assertEqual(second_metrics["updates"], 1)
+
+                restored.save(checkpoint_path)
+                restored.load(checkpoint_path)
+                with patch.object(restored.env.action_space, "sample", wraps=restored.env.action_space.sample) as sample:
+                    restored.learn(additional_timesteps=2, log_interval=None, enable_command_prompt=False)
+                    sample.assert_not_called()
+                self.assertEqual(len(restored.replay_buffer), 2)
+                self.assertEqual(restored.n_total_updates, 1)
         finally:
             source_env.close()
             restored_env.close()

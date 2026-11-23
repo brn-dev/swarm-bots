@@ -1241,6 +1241,7 @@ class SameStepPipelineTests(unittest.TestCase):
             self.assertTrue(bool(episode_infos[1]["success"]))
             self.assertIn("t", episode_infos[1])
             self.assertEqual(_metrics["ep_success_rate"], 50.0)
+            self.assertEqual(_metrics["ep_success_rate__n"], 2)
             self.assertTrue(torch.equal(_to_cpu(rollout_state.episode_start_mask), torch.tensor([True, True])))
             self.assertEqual(_first_obs_value(rollout_state.obs["local_obs"][0]), 1200.0)
             self.assertEqual(_first_obs_value(rollout_state.obs["local_obs"][1]), 2200.0)
@@ -1324,6 +1325,22 @@ class SameStepPipelineTests(unittest.TestCase):
                     buffer=buffer,
                     n_steps=2,
                 )
+        finally:
+            proxy.close()
+
+    def test_collect_steps_rejects_a_terminal_row_that_broadcasts_across_agents(self) -> None:
+        env = _make_scripted_env((1, (1,), "truncate"), (2, (), "truncate"))
+
+        def drop_second_agent(infos: dict[str, Any]) -> dict[str, Any]:
+            terminal = infos["final_obs"][0]
+            terminal["local_obs"] = terminal["local_obs"][:1]
+            return infos
+
+        proxy = _EnvProxy(env, mutate_step_infos=drop_second_agent)
+        try:
+            policy = _ConstantValuePolicy(action_dim=env.action_space.total_agent_action_dim)
+            with self.assertRaisesRegex(ValueError, "final_obs.*local_obs.*shape"):
+                collect_steps(env=proxy, policy=policy, buffer=_make_buffer(proxy), n_steps=2)
         finally:
             proxy.close()
 
@@ -1481,11 +1498,7 @@ class SameStepPipelineTests(unittest.TestCase):
             )
 
             self.assertEqual(len(action_dist.step_resets), 2)
-            for reset_mask, batch_shape in action_dist.step_resets:
-                self.assertIsNone(batch_shape)
-                self.assertIsNotNone(reset_mask)
-                self.assertEqual(tuple(reset_mask.shape), (1, 2))
-                self.assertTrue(bool(reset_mask.all().item()))
+            self.assertEqual(action_dist.step_resets, [(None, (1, 2))] * 2)
         finally:
             env.close()
 
@@ -1505,18 +1518,18 @@ class SameStepPipelineTests(unittest.TestCase):
                 env=env,
                 policy=policy,
                 buffer=buffer,
-                n_steps=6,
+                n_steps=8,
                 gsde_reset_mode=GSDEProbabilityResetMode(probability=0.5),
             )
 
-            self.assertEqual(len(action_dist.step_resets), 3)
-            for reset_mask, batch_shape in action_dist.step_resets:
+            self.assertEqual(len(action_dist.step_resets), 4)
+            self.assertEqual(action_dist.step_resets[0], (None, (2, 2)))
+            for reset_mask, batch_shape in action_dist.step_resets[1:]:
                 self.assertIsNone(batch_shape)
-                self.assertIsNotNone(reset_mask)
                 self.assertEqual(reset_mask.dtype, torch.bool)
                 self.assertEqual(tuple(reset_mask.shape), (2, 2))
-            self.assertTrue(all(tuple(mask.shape) == (2,) for mask in action_dist.episode_resets))
-            self.assertTrue(any(bool(mask.any().item()) for mask in action_dist.episode_resets[1:]))
+            self.assertTrue(action_dist.step_resets[3][0][0].all())
+            self.assertEqual(action_dist.episode_resets, [])
         finally:
             env.close()
 
@@ -1545,10 +1558,7 @@ class SameStepPipelineTests(unittest.TestCase):
             )
 
             self.assertEqual(len(action_dist.step_resets), 3)
-            for reset_mask, batch_shape in action_dist.step_resets:
-                self.assertIsNone(batch_shape)
-                self.assertIsNotNone(reset_mask)
-                self.assertEqual(tuple(reset_mask.shape), (1, 2))
+            self.assertEqual(action_dist.step_resets, [(None, (1, 2))] * 3)
         finally:
             env.close()
 

@@ -51,7 +51,7 @@ def test_result_identifies_protocol_deviations(
     monkeypatch.setattr(evaluation, "make_env", lambda *args, **kwargs: env)
     kwargs = {"action_mode": "deterministic", **overrides}
     result = evaluate_policy(
-        lambda obs, starts: {}, "SwarmBots-WallEasy-v0",
+        lambda obs, starts: {}, "SwarmBots-WallEasy-v0", device="cpu",
         policy_metadata={"name": "test-policy", "checkpoint_sha256": "example"},
         source_revision="example-commit", **kwargs,
     )

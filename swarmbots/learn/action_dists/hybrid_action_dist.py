@@ -17,6 +17,7 @@ from swarmbots.learn.action_dists.action_dist import (
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliActionDist
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
 from swarmbots.learn.action_dists.beta_action_dist import BetaActionDist, BetaConfig
+from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
 from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist, GSDEConfig
 from swarmbots.learn.action_dists.gumbel_softmax_sign_magnitude_action_dist import (
     GumbelSoftmaxSignMagnitudeBetaActionDist,
@@ -308,6 +309,8 @@ class HybridActionDistribution(ActionDist):
             deterministic: bool = False,
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
+            *,
+            storage_dtype: torch.dtype | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return self._get_actions_with_log_probs_impl(
             latent_pi=latent_pi,
@@ -316,6 +319,7 @@ class HybridActionDistribution(ActionDist):
             previous_actions=previous_actions,
             use_rsample=False,
             on_policy=True,
+            storage_dtype=storage_dtype,
         )
 
     def _get_actions_with_log_probs_impl(
@@ -327,6 +331,7 @@ class HybridActionDistribution(ActionDist):
             previous_actions: torch.Tensor | None,
             use_rsample: bool,
             on_policy: bool,
+            storage_dtype: torch.dtype | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         actions_parts: list[torch.Tensor] = []
         log_prob_parts: list[torch.Tensor] = []
@@ -339,11 +344,12 @@ class HybridActionDistribution(ActionDist):
         for idx, dist in enumerate(self.distributions):
             previous_action = split_previous_actions[idx]
             if on_policy:
-                action_part, log_prob_part = dist.get_on_policy_actions_with_log_probs(
+                action_part, log_prob_part = dist._get_on_policy_actions_for_storage(
                     latent_pi=latent_pi,
                     deterministic=deterministic,
                     agent=agent if dist.sampling_depends_on_agent else None,
                     previous_actions=previous_action,
+                    storage_dtype=storage_dtype,
                 )
             elif dist.sampling_depends_on_agent:
                 action_part, log_prob_part = dist.get_actions_with_log_probs(
@@ -363,6 +369,22 @@ class HybridActionDistribution(ActionDist):
             actions_parts.append(action_part)
             log_prob_parts.append(log_prob_part)
 
+        if on_policy and any(part.dtype != actions_parts[0].dtype for part in actions_parts):
+            # Determine the emitted precision before scoring the rounded cell of each narrower head.
+            dtype = actions_parts[0].dtype
+            for part in actions_parts[1:]:
+                dtype = torch.promote_types(dtype, part.dtype)
+            for i, (dist, part) in enumerate(zip(self.distributions, actions_parts, strict=True)):
+                if part.dtype == dtype:
+                    continue
+                sampler = type(dist).get_on_policy_actions_with_log_probs
+                # Custom joint samplers own their scores even when they accept a storage dtype.
+                if "get_on_policy_actions_with_log_probs" not in vars(dist) and (
+                    sampler is ActionDist.get_on_policy_actions_with_log_probs
+                    or sampler is ContinuousActionDist.get_on_policy_actions_with_log_probs
+                ):
+                    actions_parts[i] = dist.sampled_action_in_dtype(part, dtype)
+                    log_prob_parts[i] = dist.log_prob(actions_parts[i], previous_actions=split_previous_actions[i])
         actions = torch.cat(actions_parts, dim=AGENT_ACTIONS_DIM)
         log_probs = torch.stack(log_prob_parts, dim=-1).sum(dim=-1)
         return actions, log_probs

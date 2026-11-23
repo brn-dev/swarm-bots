@@ -1,4 +1,5 @@
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Optional, Self, Any
 
@@ -7,10 +8,9 @@ import torch.distributions as torchdist
 from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
-from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
+from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist, gaussian_scale
 from swarmbots.learn.action_dists.gsde_noise import reset_noise_masked_
 from swarmbots.learn.action_dists.temporally_correlated_action_dist import TemporallyCorrelatedActionDist
-from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -61,6 +61,8 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         self.normalize_latent_sde_by_dim = normalize_latent_sde_by_dim
         self.full_std = full_std
         self.sde_learn_features = sde_learn_features
+        if not math.isfinite(epsilon) or epsilon <= 0:
+            raise ValueError(f"epsilon must be finite and positive, got {epsilon}")
         self.epsilon = epsilon
         self.log_std_clamp_range = log_std_clamp_range
 
@@ -80,7 +82,6 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         self.distribution: Optional[torchdist.Normal] = None
 
         self._latent_sde: Optional[torch.Tensor] = None
-        self._last_gaussian_actions: Optional[torch.Tensor] = None
 
         self.register_buffer("_exploration_noise", None, persistent=False)
         self._exploration_batch_shape: Optional[tuple[int, ...]] = None
@@ -104,7 +105,7 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
     def reset_noise(self, batch_shape: tuple[int, ...]) -> None:
         with torch.no_grad():
             self._exploration_noise = torch.randn(
-                (*batch_shape, self.latent_sde_dim, self.action_dim),
+                (*batch_shape, self.latent_sde_dim + 1, self.action_dim),
                 device=self.log_stds.device,
                 dtype=self.log_stds.dtype,
             )
@@ -144,14 +145,13 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
             self.reset_noise(batch_shape)
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
-        action_means = self.action_net(latent_pi)
         latent_sde = self.latent_sde_net(latent_pi)
         if not self.sde_learn_features:
             latent_sde = latent_sde.detach()
         if self.normalize_latent_sde_by_dim:
             latent_sde = latent_sde / math.sqrt(self.latent_sde_dim)
         self._latent_sde = latent_sde
-        return self.update_distribution_params(action_means, self.log_stds)
+        return self._update_gaussian_from_latent(latent_pi, self.log_stds)
 
     def update_distribution_params(self, means: torch.Tensor, log_stds: torch.Tensor) -> Self:
         if self._latent_sde is None:
@@ -159,76 +159,19 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
 
         std_matrix = self._get_std_matrix(log_stds)
 
-        latent_sde_sq = self._latent_sde ** 2
-        variance = torch.matmul(latent_sde_sq, std_matrix ** 2)
+        precision = (torch.autocast(means.device.type, enabled=False)
+                     if means.dtype in (torch.float16, torch.bfloat16) else nullcontext())
+        with precision:
+            # Autocast matmul would round small variances and their gradients back to half.
+            latent_sde_sq = self._latent_sde.to(std_matrix.dtype).square()
+            variance = torch.matmul(latent_sde_sq, std_matrix.square())
         action_std = torch.sqrt(variance + self.epsilon)
 
-        self.distribution = torchdist.Normal(loc=means, scale=action_std, validate_args=False)
-        return self
+        return self._bind_gaussian(means, action_std)
 
-    def sample(
-            self,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        with torch.no_grad():
-            return self._sample(agent)
-
-    def rsample(
-            self,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        return self._sample(agent)
-
-    def _sample(self, agent: int | None) -> torch.Tensor:
-        if self.squash_output:
-            self._last_gaussian_actions = self._sample_gaussian_actions(agent)
-            return TanhBijector.forward(self._last_gaussian_actions)
-
-        return self._sample_gaussian_actions(agent)
-
-    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
-        gaussian_actions = self.distribution.mean
-        if self.squash_output:
-            self._last_gaussian_actions = gaussian_actions
-            return TanhBijector.forward(gaussian_actions)
-        return gaussian_actions
-
-    def log_prob(
-            self,
-            actions: torch.Tensor,
-            previous_actions: torch.Tensor | None = None,
-            gaussian_actions: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if not self.squash_output:
-            return super().log_prob(actions)
-
-        if gaussian_actions is None:
-            gaussian_actions = TanhBijector.inverse(actions)
-
-        log_prob = super().log_prob(gaussian_actions)
-        log_prob -= self.sum_action_dim(TanhBijector.log_abs_det_jacobian(gaussian_actions))
-        return log_prob
-
-    def get_actions_with_log_probs(
-            self,
-            latent_pi: torch.Tensor,
-            deterministic: bool = False,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-            use_rsample: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        actions = self.update_latent_features(latent_pi).get_actions(
-            deterministic=deterministic,
-            agent=agent,
-            previous_actions=previous_actions,
-            use_rsample=use_rsample,
-        )
-        log_probs = self.log_prob(actions, gaussian_actions=self._last_gaussian_actions)
-        return actions, log_probs
-
-    def _sample_gaussian_actions(self, agent: int | None) -> torch.Tensor:
+    def _sample_gaussian_noise(
+            self, agent: int | None, scale: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self._latent_sde is None or self.distribution is None:
             raise RuntimeError("update_latent_features() must be called before sampling actions.")
 
@@ -244,19 +187,24 @@ class GSDEActionDist(ContinuousActionDist, TemporallyCorrelatedActionDist):
         if std_matrix.requires_grad:
             # Std gradients need immutable noise across later resets and state swaps.
             exploration_noise = exploration_noise.clone()
-        exploration_matrices = exploration_noise * std_matrix
-        noise = torch.einsum("...d,...da->...a", self._latent_sde, exploration_matrices)
-        return self.distribution.mean + noise
+        # The final independent row supplies the variance floor used by the likelihood.
+        exploration_matrices = exploration_noise[..., :-1, :] * std_matrix
+        means = self.distribution.loc
+        mean_dtype = torch.float16 if self.distribution is self._fp16_mean_binding else means.dtype
+        precision = (torch.autocast(means.device.type, enabled=False)
+                     if mean_dtype in (torch.float16, torch.bfloat16) else nullcontext())
+        with precision:
+            noise = torch.einsum("...d,...da->...a", self._latent_sde.to(std_matrix.dtype), exploration_matrices)
+        floor_noise = exploration_noise[..., -1, :].to(noise.dtype) * math.sqrt(self.epsilon)
+        return noise + floor_noise, None
 
     def _std_values_for_metrics(self, agent_mask: torch.Tensor | None) -> torch.Tensor:
         return self._get_std_matrix(self.log_stds)
 
     def _get_std_matrix(self, log_stds: torch.Tensor) -> torch.Tensor:
         log_stds = torch.clamp(log_stds, *self.log_std_clamp_range)
-        if self.full_std:
-            return torch.exp(log_stds)
-        else:
-            return torch.exp(log_stds).expand(self.latent_sde_dim, self.action_dim)
+        std = gaussian_scale(log_stds)
+        return std if self.full_std else std.expand(self.latent_sde_dim, self.action_dim)
 
     def _expand_reset_mask(self, mask: torch.Tensor) -> torch.Tensor:
         if self._exploration_batch_shape is None:

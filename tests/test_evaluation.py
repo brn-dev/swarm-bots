@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-import torch
-import pytest
+from collections.abc import Mapping
 import json
+
+import pytest
+import torch
+from gymnasium.vector import AutoresetMode
 
 import swarmbots.benchmark.evaluation as evaluation
 from swarmbots.benchmark.evaluation import EvaluationResult, policy_observation
+from swarmbots.benchmark.registry import make_scenario
+from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
 
 
 def test_policy_observation_removes_privileged_state() -> None:
@@ -42,6 +47,7 @@ def test_evaluate_policy_accumulates_first_episode_per_lane(monkeypatch) -> None
     class FakeEnv:
         num_envs = 2
         device = torch.device("cpu")
+        autoreset_mode = AutoresetMode.SAME_STEP
 
         def __init__(self) -> None:
             self.step_count = 0
@@ -119,6 +125,7 @@ def test_evaluation_never_replaces_a_slow_lane_with_repeated_fast_episodes(
     class StaggeredEnv:
         num_envs = 2
         device = torch.device("cpu")
+        autoreset_mode = AutoresetMode.SAME_STEP
 
         def __init__(self) -> None:
             self.steps = 0
@@ -171,6 +178,42 @@ def test_evaluation_never_replaces_a_slow_lane_with_repeated_fast_episodes(
     json.dumps(result.to_dict(), allow_nan=False)
 
 
+@pytest.mark.integration
+def test_next_step_evaluation_presents_reset_observations_at_episode_starts() -> None:
+    benchmark_id = "SwarmBots-MoveToGoal-v0"
+    scenario_kwargs = {
+        "unit_start_locations": MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=[42000]),
+        "reset_settle_time": 0.0,
+        "compile_reward_kernel": False,
+    }
+    action_space = make_scenario(benchmark_id, **scenario_kwargs).get_batched_action_space(num_envs=2)
+    actions = {key: torch.zeros(space.shape) for key, space in action_space.items()}
+
+    def rollout(mode: AutoresetMode) -> tuple[EvaluationResult, list[dict[str, torch.Tensor]]]:
+        history: list[dict[str, torch.Tensor]] = []
+
+        def policy(observations: Mapping[str, torch.Tensor], starts: torch.Tensor) -> dict[str, torch.Tensor]:
+            snapshot = {key: value.clone() for key, value in observations.items()}
+            history.append({**snapshot, "episode_starts": starts.clone()})
+            return actions
+
+        result = evaluation.evaluate_policy(
+            policy, benchmark_id, num_envs=2, num_episodes=2, device="cpu", seed=1000, episode_length=3,
+            scenario_kwargs=scenario_kwargs,
+            env_kwargs={"autoreset_mode": mode, "first_episode_lengths": [1, 3], "compile_tensor_operations": False},
+        )
+        return result, history
+
+    same_step, expected_history = rollout(AutoresetMode.SAME_STEP)
+    next_step, actual_history = rollout(AutoresetMode.NEXT_STEP)
+    starts = [step["episode_starts"].tolist() for step in actual_history]
+    assert starts == [[True, True], [True, False], [False, False]]
+    torch.testing.assert_close(actual_history, expected_history)
+    assert next_step.episode_lengths == same_step.episode_lengths == (1, 3)
+    assert next_step.episode_returns == pytest.approx(same_step.episode_returns)
+    assert next_step.metadata["environment_overrides"]["autoreset_mode"] == "NextStep"
+
+
 def test_evaluation_rejects_reusing_lanes() -> None:
     with pytest.raises(ValueError, match="first episode per lane"):
         evaluation.evaluate_policy(lambda obs, starts: {}, "SwarmBots-WallEasy-v0", num_envs=2, num_episodes=3)
@@ -188,5 +231,5 @@ def test_evaluation_closes_environment_when_policy_raises(monkeypatch: pytest.Mo
         raise RuntimeError("policy failed")
 
     with pytest.raises(RuntimeError, match="policy failed"):
-        evaluation.evaluate_policy(broken_policy, "SwarmBots-WallEasy-v0", num_envs=1, num_episodes=1)
+        evaluation.evaluate_policy(broken_policy, "SwarmBots-WallEasy-v0", num_envs=1, num_episodes=1, device="cpu")
     env.close.assert_called_once()

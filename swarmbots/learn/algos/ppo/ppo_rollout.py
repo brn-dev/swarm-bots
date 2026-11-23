@@ -6,11 +6,12 @@ import torch
 
 from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy
 from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch, PPORolloutBatchBuilder
+from swarmbots.learn.algos.ppo.ppo_scalar_frames import FrameHistory, RolloutScalarFrameRecorder
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment, PPORolloutBuffer
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
-    build_gsde_step_reset_mask,
+    reset_gsde_noise,
     resolve_gsde_reset_mode,
 )
 from swarmbots.learn.performance_timer import PerformanceTimer
@@ -23,6 +24,7 @@ from swarmbots.learn.rollout_utils import (
     snapshot_obs,
 )
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.task_episode_metrics import episode_success_metrics
 from swarmbots.learn.temporal_state import move_temporal_state
 from swarmbots.learn.torch_device import as_device
 
@@ -34,6 +36,7 @@ class PPORolloutState:
     previous_actions: torch.Tensor | None
     temporal_state: Any
     rollout_step_idx: int
+    scalar_frame_history: FrameHistory | None = None
 
 
 class _TransitionData(TypedDict):
@@ -84,18 +87,6 @@ def _init_rollout_timers() -> _RolloutTimers:
         env_step_timer=PerformanceTimer(),
         buffer_add_timer=PerformanceTimer(),
     )
-
-
-def _reset_temporal_correlations(
-        *,
-        policy: BasePPOPolicy[Any, Any],
-        episode_start_mask: torch.Tensor | None = None,
-        step_reset_mask: torch.Tensor | None = None,
-) -> None:
-    if episode_start_mask is not None:
-        policy.action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
-    if step_reset_mask is not None:
-        policy.action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask)
 
 
 def _evaluate_values(
@@ -174,6 +165,7 @@ def _prepare_rollout_device(
         ),
         temporal_state=move_temporal_state(rollout_state.temporal_state, device=device),
         rollout_step_idx=rollout_state.rollout_step_idx,
+        scalar_frame_history=rollout_state.scalar_frame_history,
     )
 
 
@@ -218,20 +210,11 @@ def _collect_rollout_step(
 ) -> _RolloutTransition:
     obs_snapshot = snapshot_obs(state.obs)
     local_obs = obs_snapshot["local_obs"]
-    batch_shape = tuple(local_obs.shape[:-1])
-    step_reset_mask = build_gsde_step_reset_mask(
-        gsde_reset_mode=gsde_reset_mode,
-        rollout_step_idx=state.rollout_step_idx,
-        batch_shape=batch_shape,
-        rollout_device=local_obs.device,
-        initialize=state.rollout_step_idx == 0,
-    )
-
     with timers.reset_noise_timer:
-        _reset_temporal_correlations(
-            policy=policy,
-            episode_start_mask=state.episode_start_mask,
-            step_reset_mask=step_reset_mask,
+        reset_gsde_noise(
+            action_dist=policy.action_dist, local_obs=local_obs, episode_start_mask=state.episode_start_mask,
+            rollout_step_idx=state.rollout_step_idx, gsde_reset_mode=gsde_reset_mode,
+            initialize=state.rollout_step_idx == 0,
         )
     timers.reset_noise_timings.append(timers.reset_noise_timer.get_duration())
 
@@ -265,8 +248,6 @@ def _collect_rollout_step(
         previous_actions=bootstrap_previous_actions, temporal_state=next_temporal_state,
         values=values, timers=timers, final_step=final_step,
     )
-
-    _reset_temporal_correlations(policy=policy, episode_start_mask=dones)
 
     next_previous_actions: torch.Tensor | None = None
     if state.previous_actions is not None:
@@ -304,19 +285,9 @@ def _warmup_rollout_step(
         gsde_reset_mode: GSDEResetMode | None,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor | None, Any, int]:
     local_obs = obs["local_obs"]
-    batch_shape = tuple(local_obs.shape[:-1])
-    step_reset_mask = build_gsde_step_reset_mask(
-        gsde_reset_mode=gsde_reset_mode,
-        rollout_step_idx=rollout_step_idx,
-        batch_shape=batch_shape,
-        rollout_device=local_obs.device,
-        initialize=rollout_step_idx == 0,
-    )
-
-    _reset_temporal_correlations(
-        policy=policy,
-        episode_start_mask=episode_start_mask,
-        step_reset_mask=step_reset_mask,
+    reset_gsde_noise(
+        action_dist=policy.action_dist, local_obs=local_obs, episode_start_mask=episode_start_mask,
+        rollout_step_idx=rollout_step_idx, gsde_reset_mode=gsde_reset_mode, initialize=rollout_step_idx == 0,
     )
 
     actions, _log_probs, _values, next_temporal_state = policy.forward_with_temporal_state(
@@ -333,8 +304,6 @@ def _warmup_rollout_step(
     next_obs, _rewards, terminations, truncations, _infos = env.step(actions)
     dones = torch.logical_or(terminations, truncations)
 
-    _reset_temporal_correlations(policy=policy, episode_start_mask=dones)
-
     next_previous_actions: torch.Tensor | None = None
     if previous_actions is not None:
         next_previous_actions = actions.detach().masked_fill(dones.unsqueeze(-1).unsqueeze(-1), 0.0)
@@ -350,7 +319,7 @@ def _build_rollout_metrics(
         rollout_finalize_time: float,
         episode_infos: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    metrics = {
+    return {
         "env_reset_time": env_reset_time,
         "to_rollout_device_time": to_rollout_device_time,
         "reset_noise_time": compute_summary_statistics(timers.reset_noise_timings),
@@ -362,11 +331,8 @@ def _build_rollout_metrics(
         "buffer_add_time": compute_summary_statistics(timers.buffer_add_timings),
         "total_buffer_add_time": sum(timers.buffer_add_timings),
         "rollout_finalize_time": rollout_finalize_time,
+        **episode_success_metrics(episode_infos),
     }
-    success_values = [float(ep_info["success"]) for ep_info in episode_infos if "success" in ep_info]
-    if success_values:
-        metrics["ep_success_rate"] = 100.0 * (sum(success_values) / len(success_values))
-    return metrics
 
 
 @torch.no_grad()
@@ -405,9 +371,13 @@ def warmup_rollout_steps(
     temporal_state = rollout_state.temporal_state
     rollout_step_idx = rollout_state.rollout_step_idx
 
-    transitions_collected = 0
-    while transitions_collected < n_steps:
-        transitions_collected += obs["local_obs"].shape[0]
+    vector_steps = math.ceil(n_steps / obs["local_obs"].shape[0])
+    frame_recorder = (
+        RolloutScalarFrameRecorder(
+            env, n_steps=vector_steps, history=rollout_state.scalar_frame_history, history_only=True,
+        ) if getattr(policy, "uses_world_model_targets", False) else None
+    )
+    for step in range(vector_steps):
         obs, episode_start_mask, previous_actions, temporal_state, rollout_step_idx = _warmup_rollout_step(
             env=env,
             policy=policy,
@@ -418,6 +388,8 @@ def warmup_rollout_steps(
             rollout_step_idx=rollout_step_idx,
             gsde_reset_mode=gsde_reset_mode,
         )
+        if frame_recorder is not None:
+            frame_recorder.record(step + 1, episode_start_mask)
 
     return PPORolloutState(
         obs=obs,
@@ -425,6 +397,7 @@ def warmup_rollout_steps(
         previous_actions=previous_actions,
         temporal_state=temporal_state,
         rollout_step_idx=rollout_step_idx,
+        scalar_frame_history=frame_recorder.history() if frame_recorder is not None else None,
     )
 
 
@@ -459,6 +432,10 @@ def collect_step_rollout_batch(
             )
         env_reset_time = env_reset_timer.get_duration()
     vector_steps = math.ceil(n_steps / buffer.n_envs)
+    frame_recorder = (
+        RolloutScalarFrameRecorder(env, n_steps=vector_steps, history=rollout_state.scalar_frame_history)
+        if getattr(policy, "uses_world_model_targets", False) else None
+    )
     with PerformanceTimer() as batch_builder_init_timer:
         batch_builder = PPORolloutBatchBuilder(
             n_envs=buffer.n_envs,
@@ -487,6 +464,8 @@ def collect_step_rollout_batch(
             final_step=batch_step_idx == vector_steps - 1,
         )
         with timers.buffer_add_timer:
+            if frame_recorder is not None:
+                frame_recorder.record(batch_step_idx + 1, transition.data["dones"])
             batch_builder.add(
                 step_idx=batch_step_idx,
                 terminations=transition.terminations,
@@ -498,6 +477,9 @@ def collect_step_rollout_batch(
 
     with PerformanceTimer() as batch_finalize_timer:
         rollout_batch = batch_builder.build().to(device=buffer.train_device, dtype=buffer.train_dtype)
+        if frame_recorder is not None:
+            rollout_batch.scalar_frames = frame_recorder.finish(buffer.train_device)
+            rollout_state.scalar_frame_history = frame_recorder.history()
 
     metrics = _build_rollout_metrics(
         env_reset_time=env_reset_time,
@@ -545,15 +527,21 @@ def collect_steps(
     if n_steps <= 0:
         raise ValueError(f"n_steps must be > 0, got {n_steps}")
 
-    transitions_collected = 0
-    while transitions_collected < n_steps:
-        transitions_collected += buffer.n_envs
+    vector_steps = math.ceil(n_steps / buffer.n_envs)
+    frame_recorder = (
+        RolloutScalarFrameRecorder(env, n_steps=vector_steps, history=rollout_state.scalar_frame_history)
+        if getattr(policy, "uses_world_model_targets", False) else None
+    )
+    start_step = rollout_state.rollout_step_idx
+    for step in range(vector_steps):
         transition = _collect_rollout_step(
             env=env, policy=policy, state=rollout_state, timers=timers,
             episode_infos=episode_infos, gsde_reset_mode=gsde_reset_mode,
-            final_step=transitions_collected >= n_steps,
+            final_step=step == vector_steps - 1,
         )
         with timers.buffer_add_timer:
+            if frame_recorder is not None:
+                frame_recorder.record(step + 1, transition.data["dones"])
             buffer.add(
                 temporal_state=rollout_state.temporal_state,
                 rollout_step_idx=rollout_state.rollout_step_idx,
@@ -575,6 +563,15 @@ def collect_steps(
     rollout_finalize_time += buffer_dump_partial_episodes_timer.get_duration()
 
     episodes = completed_episodes + partial_episodes
+    if frame_recorder is not None:
+        frames = frame_recorder.finish(buffer.train_device)
+        rollout_state.scalar_frame_history = frame_recorder.history()
+        for episode in episodes:
+            offset = episode.rollout_start_step - start_step
+            episode.scalar_frames = {
+                key: history.segment(offset, episode.local_obs.shape[0], episode.rollout_env_idx)
+                for key, history in frames.items()
+            }
 
     metrics = _build_rollout_metrics(
         env_reset_time=env_reset_time,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 import mujoco
 import numpy as np
@@ -9,8 +9,7 @@ import torch
 
 from swarmbots.mjw_env.scenarios.reward_compilation import compile_reward_kernel
 
-if TYPE_CHECKING:
-    from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario
+from swarmbots.mjw_env.scenarios.mjw_wall_scenario import MJWWallScenario, WALL_HALF_THICKNESS
 
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import (
     BaseMJWCPUResetSettler,
@@ -30,6 +29,7 @@ class WallResetBatch:
     common: MJWCommonResetBatch
     hidden_global_vars: torch.Tensor
     wall_pass_thresholds: torch.Tensor
+    wall_height: torch.Tensor | None
 
 
 @dataclass(slots=True)
@@ -37,6 +37,7 @@ class WallResetSpec:
     common: MJWCommonResetSpec
     hidden_global_vars: np.ndarray
     wall_pass_thresholds: np.ndarray
+    wall_height: float | None
 
 
 @dataclass(slots=True)
@@ -44,6 +45,7 @@ class WallSettledSnapshot:
     common: MJWCommonSettledSnapshot
     hidden_global_vars: np.ndarray
     wall_pass_thresholds: np.ndarray
+    wall_height: float | None
     progress: float
     forward_progress_unit_y: np.ndarray
     wall_climb_potential: np.ndarray
@@ -71,7 +73,7 @@ def _compute_wall_climb_potential_torch(
     stable_mask: torch.Tensor,
     units_active_mask: torch.Tensor,
     wall_y: torch.Tensor,
-    wall_height: float,
+    wall_height: float | torch.Tensor,
     wall_climb_reward_distance: float,
     unit_ground_z: float,
 ) -> torch.Tensor:
@@ -85,7 +87,11 @@ def _compute_wall_climb_potential_torch(
         torch.zeros_like(approach),
     )
     approach = torch.sqrt(approach)
-    target_lift = max(float(wall_height) - float(unit_ground_z), 1e-6)
+    target_lift = wall_height - unit_ground_z
+    if torch.is_tensor(target_lift):
+        target_lift = target_lift.clamp_min(1e-6).unsqueeze(1)
+    else:
+        target_lift = max(target_lift, 1e-6)
     height = torch.clamp(
         (safe_unit_z - float(unit_ground_z)) / target_lift,
         min=0.0,
@@ -95,39 +101,33 @@ def _compute_wall_climb_potential_torch(
     return approach * height * active_mask
 
 
-def _compute_forward_reward_wall_boost_mask_torch(
-    *,
-    unit_y: torch.Tensor,
-    unit_z: torch.Tensor,
-    stable_mask: torch.Tensor,
-    wall_y: torch.Tensor,
-    wall_height: float,
-    boost_distance: float,
-    height_margin: float,
-    wall_half_thickness: float,
-) -> torch.Tensor:
-    safe_unit_y = torch.where(stable_mask.unsqueeze(1), unit_y, torch.zeros_like(unit_y))
-    safe_unit_z = torch.where(stable_mask.unsqueeze(1), unit_z, torch.zeros_like(unit_z))
-    distance_to_wall = wall_y.unsqueeze(1) - safe_unit_y
-    near_wall = (distance_to_wall >= -float(wall_half_thickness)) & (distance_to_wall <= float(boost_distance))
-    high_enough = safe_unit_z >= (float(wall_height) + float(height_margin))
-    return near_wall & high_enough
+def _forward_boost_geometry(scenario: MJWWallScenario, climb_distance: float, body_radius: float) -> tuple[float, float]:
+    distance = scenario.forward_reward_wall_boost_distance
+    margin = scenario.forward_reward_wall_boost_height_margin
+    return (climb_distance if distance is None else float(distance),
+            body_radius if margin is None else float(margin))
 
 
-def _compute_forward_reward_wall_boost_mask_np(
+def _wall_forward_potential(
+    capped_y: torch.Tensor | np.ndarray,
+    unit_y: torch.Tensor | np.ndarray,
+    unit_z: torch.Tensor | np.ndarray,
     *,
-    unit_y: np.ndarray,
-    unit_z: np.ndarray,
-    wall_y: np.ndarray,
-    wall_height: float,
+    wall_y: torch.Tensor | float,
+    wall_height: torch.Tensor | float,
+    factor: float,
     boost_distance: float,
     height_margin: float,
-    wall_half_thickness: float,
-) -> np.ndarray:
-    distance_to_wall = wall_y - unit_y
-    near_wall = (distance_to_wall >= -float(wall_half_thickness)) & (distance_to_wall <= float(boost_distance))
-    high_enough = unit_z >= (float(wall_height) + float(height_margin))
-    return near_wall & high_enough
+    body_radius: float,
+) -> torch.Tensor | np.ndarray:
+    if factor == 1.0:
+        return capped_y
+    distance_in_zone = (capped_y - wall_y + boost_distance).clip(0.0, boost_distance + WALL_HALF_THICKNESS)
+    clearance = (1.0 + (unit_z - wall_height - height_margin) / body_radius).clip(0.0, 1.0)
+    # Beyond the wall the entire bonus is earned, including after the unit descends.
+    exit_fraction = ((unit_y - wall_y) / WALL_HALF_THICKNESS).clip(0.0, 1.0)
+    earned_fraction = clearance + (1.0 - clearance) * exit_fraction
+    return capped_y + (factor - 1.0) * distance_in_zone * earned_fraction
 
 
 def _compute_wall_climb_done_mask_torch(
@@ -163,7 +163,7 @@ def _compute_wall_reward_kernel(
     units_active_mask: torch.Tensor,
     wall_pass_absolute_thresholds: torch.Tensor,
     wall_y: torch.Tensor,
-    wall_height: float,
+    wall_height: float | torch.Tensor,
     next_threshold_for_unit: torch.Tensor,
     wall_climb_potential: torch.Tensor,
     wall_climb_done_mask: torch.Tensor,
@@ -193,20 +193,12 @@ def _compute_wall_reward_kernel(
         new_progress = masked_mean(forward_progress_unit_potential, units_active_mask, dim=1)
         progress_delta = (new_progress * float(potential_reward_discount_factor)) - progress
     else:
-        boost_mask = _compute_forward_reward_wall_boost_mask_torch(
-            unit_y=unit_y,
-            unit_z=unit_z,
-            stable_mask=stable_mask,
-            wall_y=wall_y,
-            wall_height=wall_height,
-            boost_distance=forward_reward_wall_boost_distance,
-            height_margin=forward_reward_wall_boost_height_margin,
-            wall_half_thickness=0.1,
-        )
-        forward_progress_unit_potential = torch.where(
-            boost_mask,
-            capped_unit_y * float(forward_reward_wall_boost_factor),
-            capped_unit_y,
+        forward_progress_unit_potential = _wall_forward_potential(
+            capped_unit_y, safe_unit_y, torch.where(stable_mask.unsqueeze(1), unit_z, 0.0),
+            wall_y=wall_y.unsqueeze(1),
+            wall_height=wall_height.unsqueeze(1) if torch.is_tensor(wall_height) else wall_height,
+            factor=forward_reward_wall_boost_factor, boost_distance=forward_reward_wall_boost_distance,
+            height_margin=forward_reward_wall_boost_height_margin, body_radius=unit_ground_z,
         )
         unit_forward_delta = (
             forward_progress_unit_potential * float(potential_reward_discount_factor)
@@ -335,7 +327,9 @@ class _WallCPUResetSettler(BaseMJWCPUResetSettler):
 
     def _settle_one(self, *, spec: WallResetSpec) -> WallSettledSnapshot:
         self._apply_common_reset(common_reset_spec=spec.common)
-        self._apply_wall_configuration(hidden_global_vars=spec.hidden_global_vars)
+        wall_y = float(spec.hidden_global_vars[0])
+        wall_height = self.scenario.wall_height if spec.wall_height is None else spec.wall_height
+        self._apply_wall_configuration(wall_y=wall_y, wall_height=wall_height)
         mujoco.mj_forward(self.model, self.data)
         self._settle_physics()
 
@@ -349,30 +343,20 @@ class _WallCPUResetSettler(BaseMJWCPUResetSettler):
             total_passed = np.zeros((active_mask.shape[0],), dtype=np.int64)
             passed_thresholds_mask = np.zeros((active_mask.shape[0], 0), dtype=bool)
 
-        wall_y = float(spec.hidden_global_vars[0])
         forward_progress_unit_y = _compute_forward_progress_unit_y_np(
             unit_y=unit_y,
             forward_reward_cap_y=wall_y + float(self.scenario.wall_success_threshold),
         )
-        boost_distance = (
-            float(self.scenario.forward_reward_wall_boost_distance)
-            if self.scenario.forward_reward_wall_boost_distance is not None
-            else float(self.scenario.wall_climb_reward_distance)
+        boost_distance, height_margin = _forward_boost_geometry(
+            self.scenario, self.scenario.wall_climb_reward_distance, self.scenario.swarm.body_radius,
         )
-        height_margin = (
-            float(self.scenario.forward_reward_wall_boost_height_margin)
-            if self.scenario.forward_reward_wall_boost_height_margin is not None
-            else float(self.scenario.swarm.body_radius)
-        )
-        forward_progress_unit_y = _apply_forward_reward_wall_boost_to_potential_np(
-            unit_y=unit_y,
-            unit_z=unit_z,
-            forward_progress_unit_y=forward_progress_unit_y,
+        forward_progress_unit_y = _wall_forward_potential(
+            forward_progress_unit_y, unit_y, unit_z,
             wall_y=wall_y,
-            wall_height=float(self.scenario.wall_height),
-            forward_reward_wall_boost_factor=float(self.scenario.forward_reward_wall_boost_factor),
-            boost_distance=boost_distance,
-            height_margin=height_margin,
+            wall_height=wall_height,
+            factor=float(self.scenario.forward_reward_wall_boost_factor),
+            boost_distance=boost_distance, height_margin=height_margin,
+            body_radius=float(self.scenario.swarm.body_radius),
         )
         progress = _mean_active_forward_progress_np(
             forward_progress_unit_y=forward_progress_unit_y,
@@ -388,7 +372,7 @@ class _WallCPUResetSettler(BaseMJWCPUResetSettler):
                 unit_z=unit_z,
                 active_mask=active_mask,
                 wall_y=wall_y,
-                wall_height=float(self.scenario.wall_height),
+                wall_height=wall_height,
                 wall_climb_reward_distance=self.scenario.wall_climb_reward_distance,
                 unit_ground_z=float(self.scenario.swarm.body_radius),
             )
@@ -396,6 +380,7 @@ class _WallCPUResetSettler(BaseMJWCPUResetSettler):
             common=self._build_common_snapshot(common_reset_spec=spec.common),
             hidden_global_vars=spec.hidden_global_vars.copy(),
             wall_pass_thresholds=spec.wall_pass_thresholds.copy(),
+            wall_height=spec.wall_height,
             progress=progress,
             forward_progress_unit_y=forward_progress_unit_y,
             wall_climb_potential=wall_climb_potential,
@@ -404,10 +389,8 @@ class _WallCPUResetSettler(BaseMJWCPUResetSettler):
             passed_thresholds_mask=passed_thresholds_mask.copy(),
         )
 
-    def _apply_wall_configuration(self, *, hidden_global_vars: np.ndarray) -> None:
-        if self.data.mocap_pos.size == 0:
-            return
-        self.data.mocap_pos[int(self.wall_mocap_id)] = [0.0, float(hidden_global_vars[0]), 0.0]
+    def _apply_wall_configuration(self, *, wall_y: float, wall_height: float) -> None:
+        self.data.mocap_pos[self.wall_mocap_id] = [0.0, wall_y, wall_height - self.scenario.wall_geom_half_height]
 
     def _build_wall_mocap_id(self) -> int:
         body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Wall")
@@ -425,9 +408,14 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
         super().__init__(scenario=scenario, bindings=bindings, runtime_metadata=runtime_metadata)
         hidden_global_dim = int(scenario.get_single_observation_space()["hidden_global_vars"].shape[0])
         total_thresholds = scenario.total_thresholds
-        self._global_obs = torch.empty((bindings.num_envs, 0), device=bindings.device, dtype=torch.float32)
         self.hidden_global_vars = torch.zeros((bindings.num_envs, hidden_global_dim), device=bindings.device, dtype=torch.float32)
         self.wall_y = torch.zeros((bindings.num_envs,), device=bindings.device, dtype=torch.float32)
+        height_options = scenario.wall_height_options
+        self._wall_height_options = (
+            None if height_options is None else self.wall_y.new_tensor(height_options)
+        )
+        self._wall_height = None if self._wall_height_options is None else torch.empty_like(self.wall_y)
+        self._global_obs = self.wall_y.new_empty((bindings.num_envs, int(scenario.wall_height_observable)))
         self.wall_pass_absolute_thresholds = torch.zeros((bindings.num_envs, total_thresholds), device=bindings.device, dtype=torch.float32)
         self.wall_climb_potential = torch.zeros(
             (bindings.num_envs, scenario.swarm.num_units),
@@ -482,6 +470,12 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     @property
     def global_obs(self) -> torch.Tensor:
+        if self.scenario.wall_height_observable:
+            # Policies and instability masking can both modify the returned observation.
+            if self._wall_height is None:
+                self._global_obs.fill_(self.scenario.wall_height)
+            else:
+                self._global_obs[:, 0].copy_(self._wall_height)
         return self._global_obs
 
     @property
@@ -494,15 +488,31 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
 
     def sample_reset_batch(self, *, n_reset: int, rng: torch.Generator) -> WallResetBatch:
         hidden_global_vars, wall_pass_thresholds = self._sample_wall_configuration_values(n_reset=n_reset, rng=rng)
+        common = self._sample_common_reset_batch(n_reset=n_reset, rng=rng)
+        wall_height = None
+        options = self._wall_height_options
+        if options is not None:
+            if options.numel() == 1:
+                wall_height = options.expand(n_reset)
+            else:
+                indices = torch.randint(options.numel(), (n_reset,), generator=rng, device=options.device)
+                wall_height = options[indices]
         return WallResetBatch(
-            common=self._sample_common_reset_batch(n_reset=n_reset, rng=rng),
+            common=common,
             hidden_global_vars=hidden_global_vars,
             wall_pass_thresholds=wall_pass_thresholds,
+            wall_height=wall_height,
         )
 
     def apply_reset_batch(self, *, world_idx: torch.Tensor, reset_batch: WallResetBatch) -> None:
         self._apply_common_reset_batch(world_idx=world_idx, common_reset_batch=reset_batch.common)
-        self._apply_wall_configuration(world_idx=world_idx, hidden_global_vars=reset_batch.hidden_global_vars)
+        wall_height = self.scenario.wall_height if reset_batch.wall_height is None else reset_batch.wall_height
+        if self._wall_height is not None:
+            assert reset_batch.wall_height is not None
+            self._wall_height[world_idx] = reset_batch.wall_height
+        self._apply_wall_configuration(
+            world_idx=world_idx, wall_y=reset_batch.hidden_global_vars[:, 0], wall_height=wall_height,
+        )
         mjw_forward(self.bindings)
 
         self.hidden_global_vars[world_idx] = reset_batch.hidden_global_vars
@@ -516,24 +526,16 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             unit_y=unit_y,
             forward_reward_cap_y=self.wall_y[world_idx] + float(self.scenario.wall_success_threshold),
         )
-        forward_progress_unit_y = _apply_forward_reward_wall_boost_to_potential_torch(
-            unit_y=unit_y,
-            unit_z=unit_z,
-            stable_mask=torch.ones((unit_y.shape[0],), device=unit_y.device, dtype=torch.bool),
-            forward_progress_unit_y=forward_progress_unit_y,
-            wall_y=self.wall_y[world_idx],
-            wall_height=float(self.scenario.wall_height),
-            forward_reward_wall_boost_factor=float(self.scenario.forward_reward_wall_boost_factor),
-            boost_distance=(
-                float(self.scenario.forward_reward_wall_boost_distance)
-                if self.scenario.forward_reward_wall_boost_distance is not None
-                else float(self.scenario.wall_climb_reward_distance)
-            ),
-            height_margin=(
-                float(self.scenario.forward_reward_wall_boost_height_margin)
-                if self.scenario.forward_reward_wall_boost_height_margin is not None
-                else float(self.scenario.swarm.body_radius)
-            ),
+        boost_distance, height_margin = _forward_boost_geometry(
+            self.scenario, self.scenario.wall_climb_reward_distance, self.scenario.swarm.body_radius,
+        )
+        forward_progress_unit_y = _wall_forward_potential(
+            forward_progress_unit_y, unit_y, unit_z,
+            wall_y=self.wall_y[world_idx, None],
+            wall_height=wall_height.unsqueeze(1) if torch.is_tensor(wall_height) else wall_height,
+            factor=float(self.scenario.forward_reward_wall_boost_factor),
+            body_radius=float(self.scenario.swarm.body_radius),
+            boost_distance=boost_distance, height_margin=height_margin,
         )
         self.progress[world_idx] = masked_mean(
             forward_progress_unit_y,
@@ -555,7 +557,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
                 stable_mask=torch.ones((unit_y.shape[0],), device=unit_y.device, dtype=torch.bool),
                 units_active_mask=self.bindings.units_active_mask[world_idx],
                 wall_y=self.wall_y[world_idx],
-                wall_height=float(self.scenario.wall_height),
+                wall_height=wall_height,
                 wall_climb_reward_distance=float(self.scenario.wall_climb_reward_distance),
                 unit_ground_z=float(self.scenario.swarm.body_radius),
             )
@@ -567,11 +569,13 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
         common_specs = self._build_common_reset_specs(common_reset_batch=reset_batch.common)
         hidden_global_vars = reset_batch.hidden_global_vars.detach().cpu().numpy()
         wall_pass_thresholds = reset_batch.wall_pass_thresholds.detach().cpu().numpy()
+        wall_heights = None if reset_batch.wall_height is None else reset_batch.wall_height.cpu().tolist()
         return [
             WallResetSpec(
                 common=common_specs[i],
                 hidden_global_vars=hidden_global_vars[i].copy(),
                 wall_pass_thresholds=wall_pass_thresholds[i].copy(),
+                wall_height=None if wall_heights is None else wall_heights[i],
             )
             for i in range(len(common_specs))
         ]
@@ -587,6 +591,12 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             dtype=self.hidden_global_vars.dtype,
         )
         self.wall_y[world_idx] = self.hidden_global_vars[world_idx, 0]
+        if self._wall_height is not None:
+            self._wall_height[world_idx] = torch.as_tensor(
+                [snapshot.wall_height for snapshot in snapshots],
+                device=self.bindings.device,
+                dtype=self._wall_height.dtype,
+            )
         self.wall_pass_absolute_thresholds[world_idx] = torch.as_tensor(
             np.stack([snapshot.wall_pass_thresholds for snapshot in snapshots]),
             device=self.bindings.device,
@@ -644,15 +654,8 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             wall_climb_done_mask = self.wall_climb_done_mask
             wall_climb_reward_distance = float(self.scenario.wall_climb_reward_distance)
             unit_ground_z = float(self.scenario.swarm.body_radius)
-        forward_reward_wall_boost_distance = (
-            float(self.scenario.forward_reward_wall_boost_distance)
-            if getattr(self.scenario, "forward_reward_wall_boost_distance", None) is not None
-            else wall_climb_reward_distance
-        )
-        forward_reward_wall_boost_height_margin = (
-            float(self.scenario.forward_reward_wall_boost_height_margin)
-            if getattr(self.scenario, "forward_reward_wall_boost_height_margin", None) is not None
-            else unit_ground_z
+        forward_reward_wall_boost_distance, forward_reward_wall_boost_height_margin = _forward_boost_geometry(
+            self.scenario, wall_climb_reward_distance, unit_ground_z,
         )
         wall_pass_reward_skew = float(self.scenario.wall_pass_reward_skew)
         wall_pass_rank_weights = (
@@ -678,7 +681,7 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
             self.bindings.units_active_mask,
             self.wall_pass_absolute_thresholds,
             wall_y,
-            float(self.scenario.wall_height),
+            self.scenario.wall_height if self._wall_height is None else self._wall_height,
             self.next_threshold_for_unit,
             wall_climb_potential,
             wall_climb_done_mask,
@@ -796,13 +799,12 @@ class WallMJWScenarioRuntime(BaseMJWScenarioRuntime):
         wall_pass_thresholds[:] = wall_y.unsqueeze(-1) + self._threshold_values.unsqueeze(0)
         return hidden_global, wall_pass_thresholds
 
-    def _apply_wall_configuration(self, *, world_idx: torch.Tensor, hidden_global_vars: torch.Tensor) -> None:
-        if self.bindings.mocap_pos.numel() == 0:
-            return
-        wall_y = hidden_global_vars[:, 0]
+    def _apply_wall_configuration(
+        self, *, world_idx: torch.Tensor, wall_y: torch.Tensor, wall_height: float | torch.Tensor,
+    ) -> None:
         self.bindings.mocap_pos[world_idx, int(self._wall_mocap_id), 0] = 0.0
         self.bindings.mocap_pos[world_idx, int(self._wall_mocap_id), 1] = wall_y
-        self.bindings.mocap_pos[world_idx, int(self._wall_mocap_id), 2] = 0.0
+        self.bindings.mocap_pos[world_idx, int(self._wall_mocap_id), 2] = wall_height - self.scenario.wall_geom_half_height
 
 
 def _mean_active_forward_progress_np(*, forward_progress_unit_y: np.ndarray, active_mask: np.ndarray) -> float:
@@ -816,36 +818,6 @@ def _compute_forward_progress_unit_y_np(*, unit_y: np.ndarray, forward_reward_ca
     capped_unit_y = np.asarray(unit_y, dtype=float)
     capped_unit_y = np.minimum(capped_unit_y, float(forward_reward_cap_y))
     return capped_unit_y.astype(np.float32, copy=False)
-
-
-def _apply_forward_reward_wall_boost_to_potential_np(
-    *,
-    unit_y: np.ndarray,
-    unit_z: np.ndarray,
-    forward_progress_unit_y: np.ndarray,
-    wall_y: float,
-    wall_height: float,
-    forward_reward_wall_boost_factor: float,
-    boost_distance: float,
-    height_margin: float,
-) -> np.ndarray:
-    if forward_reward_wall_boost_factor == 1.0:
-        return forward_progress_unit_y
-
-    boost_mask = _compute_forward_reward_wall_boost_mask_np(
-        unit_y=unit_y,
-        unit_z=unit_z,
-        wall_y=wall_y,
-        wall_height=wall_height,
-        boost_distance=boost_distance,
-        height_margin=height_margin,
-        wall_half_thickness=0.1,
-    )
-    return np.where(
-        boost_mask,
-        forward_progress_unit_y * float(forward_reward_wall_boost_factor),
-        forward_progress_unit_y,
-    ).astype(np.float32, copy=False)
 
 
 def _compute_wall_climb_potential_np(
@@ -877,35 +849,3 @@ def _compute_wall_climb_potential_np(
 
 def _compute_forward_progress_unit_y_torch(*, unit_y: torch.Tensor, forward_reward_cap_y: torch.Tensor) -> torch.Tensor:
     return torch.minimum(unit_y, forward_reward_cap_y.unsqueeze(1))
-
-
-def _apply_forward_reward_wall_boost_to_potential_torch(
-    *,
-    unit_y: torch.Tensor,
-    unit_z: torch.Tensor,
-    stable_mask: torch.Tensor,
-    forward_progress_unit_y: torch.Tensor,
-    wall_y: torch.Tensor,
-    wall_height: float,
-    forward_reward_wall_boost_factor: float,
-    boost_distance: float,
-    height_margin: float,
-) -> torch.Tensor:
-    if forward_reward_wall_boost_factor == 1.0:
-        return forward_progress_unit_y
-
-    boost_mask = _compute_forward_reward_wall_boost_mask_torch(
-        unit_y=unit_y,
-        unit_z=unit_z,
-        stable_mask=stable_mask,
-        wall_y=wall_y,
-        wall_height=wall_height,
-        boost_distance=boost_distance,
-        height_margin=height_margin,
-        wall_half_thickness=0.1,
-    )
-    return torch.where(
-        boost_mask,
-        forward_progress_unit_y * float(forward_reward_wall_boost_factor),
-        forward_progress_unit_y,
-    )

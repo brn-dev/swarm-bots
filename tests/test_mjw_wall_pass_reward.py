@@ -46,6 +46,7 @@ def _make_runtime(
     )
     runtime.progress = torch.zeros((1,), device=device, dtype=torch.float32)
     runtime.wall_y = torch.zeros((1,), device=device, dtype=torch.float32)
+    runtime._wall_height = None
     runtime.forward_progress_unit_y = torch.zeros((1, num_units), device=device, dtype=torch.float32)
     runtime.wall_pass_absolute_thresholds = torch.tensor([thresholds], device=device, dtype=torch.float32)
     runtime.next_threshold_for_unit = torch.zeros((1, num_units), device=device, dtype=torch.long)
@@ -141,6 +142,52 @@ def test_forward_reward_cap_uses_wall_success_threshold_in_mjw() -> None:
     assert float(second.info["forward_reward"][0]) == pytest.approx(0.0)
 
 
+@pytest.mark.parametrize("origin", [-2.0, 1.0])
+@pytest.mark.parametrize("height", [0.3, 0.4])
+def test_boosted_progress_is_continuous_at_wall_boundaries(origin: float, height: float) -> None:
+    runtime = _make_runtime(wall_pass_reward_weight=0.0)
+    runtime.scenario.progress_reward_weight = runtime.scenario.forward_reward_weight = 1.0
+    runtime.scenario.forward_reward_wall_boost_factor = 3.0
+    runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
+    runtime.wall_y.fill_(origin)
+    runtime._wall_height = torch.tensor([height])
+    stable = torch.tensor([True])
+    clearance_z = height + 0.1
+
+    def step(offset: float, z: float) -> float:
+        runtime._get_unit_y = lambda: torch.tensor([[origin + offset]])
+        runtime._get_unit_z = lambda: torch.tensor([[z]])
+        return runtime.compute_step_rewards(stable_mask=stable).info["forward_reward"].item()
+
+    step(-0.501, clearance_z)
+    assert step(-0.499, clearance_z) == pytest.approx(0.004, abs=2e-6)
+    step(-0.1, clearance_z - 0.0001)
+    assert 0 <= step(-0.1, clearance_z + 0.0001) < 0.002
+    step(0.099, clearance_z)
+    assert step(0.101, clearance_z) == pytest.approx(0.004, abs=2e-6)
+    assert step(0.101, 0.1) == pytest.approx(0, abs=2e-6)
+    assert step(0.201, 0.1) == pytest.approx(0.1, abs=2e-6)
+
+
+def test_lowering_clear_unit_retains_boost_when_forward_cap_is_inside_wall() -> None:
+    runtime = _make_runtime(num_units=2, wall_pass_reward_weight=0.0)
+    runtime.scenario.progress_reward_weight = runtime.scenario.forward_reward_weight = 1.0
+    runtime.scenario.forward_reward_wall_boost_factor = 2.0
+    runtime.scenario.wall_success_threshold = 0.05
+    runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
+    runtime.wall_y.fill_(1.0)
+    runtime._get_unit_y = lambda: torch.tensor([[1.2, 0.0]])
+    runtime._get_unit_z = lambda: torch.tensor([[0.6, 0.1]])
+    stable = torch.tensor([True])
+    at_height = runtime.compute_step_rewards(stable_mask=stable)
+    assert at_height.info["forward_reward"].item() == pytest.approx((1.05 + 0.55) / 2)
+    assert not at_height.terminations.item()
+
+    runtime._get_unit_z = lambda: torch.tensor([[0.1, 0.1]])
+    descended = runtime.compute_step_rewards(stable_mask=stable)
+    assert descended.info["forward_reward"].item() == pytest.approx(0.0)
+
+
 def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mjw() -> None:
     runtime = _make_runtime(num_units=2, wall_pass_reward_weight=0.0)
     runtime.scenario.progress_reward_weight = 1.0
@@ -149,14 +196,14 @@ def test_wall_height_forward_reward_boost_applies_per_high_unit_in_mjw() -> None
     runtime.scenario.forward_reward_wall_boost_distance = 0.5
     runtime.scenario.forward_reward_wall_boost_height_margin = 0.1
     runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
-    runtime.progress[0] = 1.2
-    runtime.forward_progress_unit_y[0] = torch.tensor([1.8, 0.6], dtype=torch.float32)
     runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
     runtime.scenario.wall_height = 0.4
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
+    runtime._get_unit_y = lambda: torch.tensor([[0.6, 0.6]], dtype=torch.float32)
+    runtime._get_unit_z = lambda: torch.tensor([[0.5, 0.4]], dtype=torch.float32)
+    runtime.compute_step_rewards(stable_mask=stable_mask)
     runtime._get_unit_y = lambda: torch.tensor([[0.7, 0.7]], dtype=torch.float32)
-    runtime._get_unit_z = lambda: torch.tensor([[0.5, 0.49]], dtype=torch.float32)
     result = runtime.compute_step_rewards(stable_mask=stable_mask)
 
     assert float(result.info["forward_reward"][0]) == pytest.approx(0.2)
@@ -170,14 +217,14 @@ def test_wall_height_forward_reward_boost_penalizes_backtracking_symmetrically_i
     runtime.scenario.forward_reward_wall_boost_distance = 0.5
     runtime.scenario.forward_reward_wall_boost_height_margin = 0.1
     runtime.scenario.swarm = SimpleNamespace(body_radius=0.1)
-    runtime.progress[0] = 2.1
-    runtime.forward_progress_unit_y[0] = torch.tensor([2.1], dtype=torch.float32)
     runtime.wall_y = torch.tensor([1.0], dtype=torch.float32)
     runtime.scenario.wall_height = 0.4
     stable_mask = torch.tensor([True], dtype=torch.bool)
 
-    runtime._get_unit_y = lambda: torch.tensor([[0.6]], dtype=torch.float32)
     runtime._get_unit_z = lambda: torch.tensor([[0.5]], dtype=torch.float32)
+    runtime._get_unit_y = lambda: torch.tensor([[0.7]], dtype=torch.float32)
+    runtime.compute_step_rewards(stable_mask=stable_mask)
+    runtime._get_unit_y = lambda: torch.tensor([[0.6]], dtype=torch.float32)
     backtrack = runtime.compute_step_rewards(stable_mask=stable_mask)
 
     runtime._get_unit_y = lambda: torch.tensor([[0.7]], dtype=torch.float32)

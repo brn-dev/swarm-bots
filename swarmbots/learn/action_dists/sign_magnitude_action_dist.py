@@ -8,7 +8,6 @@ from torch import nn
 from torch.nn import functional as F
 
 from swarmbots.learn.action_dists.action_dist import (
-    AGENT_ACTIONS_DIM,
     BOUNDED_ACTION_HISTOGRAM,
     ActionDist,
     ActionMetricsSplitterInput,
@@ -98,10 +97,6 @@ class SignMagnitudeActionDist(ActionDist):
     ) -> tuple[torchdist.Distribution, torchdist.Distribution]:
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def _magnitude_modes(self) -> tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError
-
     def sample(
             self,
             agent: int | None = None,
@@ -109,50 +104,16 @@ class SignMagnitudeActionDist(ActionDist):
     ) -> torch.Tensor:
         _ = agent
         self._assert_ready()
+        assert self.negative_magnitude_dist is not None and self.positive_magnitude_dist is not None
         component_indices = torchdist.Categorical(
             probs=self._component_probs(previous_actions),
             validate_args=False,
         ).sample()
-        negative_magnitudes, positive_magnitudes = self._sample_independent_magnitudes()
-        return self._select_actions(component_indices, negative_magnitudes, positive_magnitudes)
-
-    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
-        self._assert_ready()
-        assert self.negative_magnitude_dist is not None
-        assert self.positive_magnitude_dist is not None
-        negative_magnitude_mode, positive_magnitude_mode = self._magnitude_modes()
-        component_log_probs = self._component_log_probs(previous_actions)
-        component_mode_scores = [
-            component_log_probs[..., self._NEGATIVE_INDEX]
-            + self.negative_magnitude_dist.log_prob(negative_magnitude_mode),
-        ]
-        component_mode_scores.append(
-            component_log_probs[..., self._POSITIVE_INDEX]
-            + self.positive_magnitude_dist.log_prob(positive_magnitude_mode)
+        return torch.where(
+            component_indices == self._NEGATIVE_INDEX,
+            -self.negative_magnitude_dist.sample(),
+            self.positive_magnitude_dist.sample(),
         )
-        stacked_component_mode_scores = torch.stack(component_mode_scores, dim=-1)
-        component_indices = stacked_component_mode_scores.argmax(dim=-1)
-        return self._select_actions(
-            component_indices,
-            negative_magnitude_mode,
-            positive_magnitude_mode,
-        )
-
-    def log_prob(
-            self,
-            actions: torch.Tensor,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        self._assert_ready()
-        log_weights = self._component_log_probs(previous_actions)
-        negative_mask = actions < 0.0
-        negative_log_probs, positive_log_probs = self._magnitude_log_probs(actions + 1.0, actions)
-        log_prob_per_action = torch.where(
-            negative_mask,
-            log_weights[..., self._NEGATIVE_INDEX] + negative_log_probs,
-            log_weights[..., self._POSITIVE_INDEX] + positive_log_probs,
-        )
-        return log_prob_per_action.sum(dim=AGENT_ACTIONS_DIM)
 
     def _component_probs(self, previous_actions: torch.Tensor | None) -> torch.Tensor:
         _ = previous_actions
@@ -163,70 +124,6 @@ class SignMagnitudeActionDist(ActionDist):
         _ = previous_actions
         assert self.weight_logits is not None
         return F.log_softmax(self.weight_logits, dim=-1)
-
-    def _sample_independent_magnitudes(self) -> tuple[torch.Tensor, torch.Tensor]:
-        self._assert_ready()
-        assert self.negative_magnitude_dist is not None
-        assert self.positive_magnitude_dist is not None
-        return self.negative_magnitude_dist.sample(), self.positive_magnitude_dist.sample()
-
-    def _rsample_independent_magnitudes(self) -> tuple[torch.Tensor, torch.Tensor]:
-        self._assert_ready()
-        assert self.negative_magnitude_dist is not None
-        assert self.positive_magnitude_dist is not None
-        return (
-            self.negative_magnitude_dist.rsample().clamp(self.epsilon, 1.0 - self.epsilon),
-            self.positive_magnitude_dist.rsample().clamp(self.epsilon, 1.0 - self.epsilon),
-        )
-
-    def _magnitude_log_probs(
-            self,
-            negative_magnitudes: torch.Tensor,
-            positive_magnitudes: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        self._assert_ready()
-        assert self.negative_magnitude_dist is not None
-        assert self.positive_magnitude_dist is not None
-        return (
-            self.negative_magnitude_dist.log_prob(
-                negative_magnitudes.clamp(self.epsilon, 1.0 - self.epsilon)
-            ),
-            self.positive_magnitude_dist.log_prob(
-                positive_magnitudes.clamp(self.epsilon, 1.0 - self.epsilon)
-            ),
-        )
-
-    def _select_actions(
-            self,
-            component_indices: torch.Tensor,
-            negative_magnitudes: torch.Tensor,
-            positive_magnitudes: torch.Tensor,
-    ) -> torch.Tensor:
-        negative_actions = -1.0 + negative_magnitudes
-        actions = torch.where(
-            component_indices == self._NEGATIVE_INDEX,
-            negative_actions,
-            positive_magnitudes,
-        )
-        return actions
-
-    def _sampled_component_log_probs(
-            self,
-            negative_magnitudes: torch.Tensor,
-            positive_magnitudes: torch.Tensor,
-    ) -> torch.Tensor:
-        negative_magnitude_log_probs, positive_magnitude_log_probs = self._magnitude_log_probs(
-            negative_magnitudes,
-            positive_magnitudes,
-        )
-        log_weights = self._component_log_probs(previous_actions=None)
-        component_log_probs = [
-            log_weights[..., self._NEGATIVE_INDEX] + negative_magnitude_log_probs,
-        ]
-        component_log_probs.append(
-            log_weights[..., self._POSITIVE_INDEX] + positive_magnitude_log_probs
-        )
-        return torch.stack(component_log_probs, dim=-1)
 
     @property
     def compile_friendly(self) -> bool:

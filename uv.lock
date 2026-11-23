@@ -2033,6 +2033,7 @@ name = "swarmbots"
 version = "0.1.0a3"
 source = { editable = "." }
 dependencies = [
+    { name = "filelock" },
     { name = "gymnasium" },
     { name = "imageio-ffmpeg" },
     { name = "loguru" },
@@ -2072,6 +2073,7 @@ cuda = [
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2" },
+    { name = "filelock", specifier = ">=3.29.4" },
     { name = "gymnasium", specifier = ">=1.1" },
     { name = "imageio-ffmpeg", specifier = ">=0.6" },
     { name = "loguru", specifier = ">=0.7" },

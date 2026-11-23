@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -24,8 +25,8 @@ from swarmbots.learn.action_dists.predicted_std_gaussian_action_dist import Pred
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaActionDist
 from swarmbots.learn.algos.mappo.mappo_policy import MAPPOPolicy
 from swarmbots.learn.algos.mat.mat_ind_policy import MATIndPolicy
-from swarmbots.learn.algos.ppo.ppo import PPO
-from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples
+from swarmbots.learn.algos.ppo.ppo import PPO, StepsRolloutMode
+from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.sac.recurrent_sac import RecurrentSAC
 from swarmbots.learn.algos.sac.sac import SAC
 from swarmbots.learn.algos.td3 import TD3
@@ -46,6 +47,16 @@ OFF_POLICY_VARIANTS = tuple(
     variant for variant in list_variants(include_hidden=True)
     if _is_off_policy_variant(_variant_options(variant)[0]["policy_variant"])
 )
+
+
+@pytest.mark.parametrize("options", [
+    {"total_timesteps": float("inf")}, {"total_timesteps": 8, "learn_kwargs": {"additional_timesteps": 2}},
+])
+def test_train_rejects_invalid_budget_before_building_environment(options: dict[str, Any]) -> None:
+    with patch("swarmbots.learn.training.make_training") as make_trainer:
+        with pytest.raises(ValueError, match="positive integer|additional_timesteps"):
+            train("SwarmBots-WallEasy-v0", **options)
+        make_trainer.assert_not_called()
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -108,6 +119,57 @@ def capture_training_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(f"swarmbots.learn.training.{algorithm_name}", capture_algorithm)
 
 
+def test_cpu_policy_construction_seeds_only_the_cpu_generator(monkeypatch: pytest.MonkeyPatch) -> None:
+    seed = 731
+
+    def check_seed(*args: Any, **kwargs: Any) -> None:
+        assert torch.initial_seed() == seed
+        raise RuntimeError("reached environment construction")
+
+    def unexpected_cuda_seed(*args: Any) -> None:
+        pytest.fail("CPU training touched a CUDA generator")
+
+    monkeypatch.setattr("swarmbots.learn.training.make_env", check_seed)
+    monkeypatch.setattr(torch.cuda, "manual_seed", unexpected_cuda_seed)
+    monkeypatch.setattr(torch.cuda, "manual_seed_all", unexpected_cuda_seed)
+    with torch.random.fork_rng(devices=[]), pytest.raises(RuntimeError, match="reached environment construction"):
+        make_training("SwarmBots-WallEasy-v0", "ppo", num_envs=1, seed=seed, device="cpu")
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("role", ["rollout_device", "train_device", "replay_storage_device"])
+def test_mixed_training_seeds_each_sampling_device(role: str) -> None:
+    with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
+        torch.cuda.manual_seed(913)
+        options = _training_kwargs()
+        trainer = make_training("SwarmBots-WallEasy-v0", "tmasac", **options, seed=731, use_nop=False,
+                                algorithm_kwargs={role: "cuda", "batch_size": 2})
+        try:
+            assert torch.cuda.initial_seed() == 731
+        finally:
+            trainer.env.close()
+
+
+@pytest.mark.parametrize(("preset", "policy_variant", "learner", "distribution"), [
+    ("tmasac__lstm", "tmasac", SAC, PredictedStdGaussianActionDist),
+    ("tmasac", "mat_ind", PPO, SignMagnitudeBetaActionDist),
+    ("mat_ind", "tmasac", SAC, PredictedStdGaussianActionDist),
+])
+def test_policy_implementation_override_selects_matching_learner_defaults(
+    preset: str, policy_variant: str, learner: type, distribution: type,
+) -> None:
+    options = _training_kwargs()
+    options["policy_kwargs"]["policy_variant"] = policy_variant
+    trainer = make_training("SwarmBots-WallEasy-v0", preset, **options, use_nop=False,
+                            algorithm_kwargs={} if learner is PPO else {"batch_size": 2})
+    try:
+        assert type(trainer) is learner
+        assert isinstance(trainer.policy.action_dist.distributions[0], distribution)
+    finally:
+        trainer.env.close()
+
+
 @pytest.mark.parametrize(
     "variant", [name for name in list_variants(include_hidden=True) if name not in OFF_POLICY_VARIANTS],
 )
@@ -118,6 +180,62 @@ def test_on_policy_presets_share_component_learning_rates_unless_explicitly_over
     overrides = {} if multipliers is None else {"parameter_lr_multipliers": multipliers}
     config = make_training("SwarmBots-WallEasy-v0", variant, algorithm_kwargs=overrides)
     assert config["parameter_lr_multipliers"] == (multipliers or {})
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("sampler_option", [{}, {"sampler_config": None}], ids=["omitted", "none"])
+@pytest.mark.parametrize(("variant", "use_nop", "requested_steps", "expected_vector_steps"), [
+    ("mat_ind", False, 3, 2),
+    ("mat_ind", True, 3, 2),
+    ("mat_ind__lstm", True, 11, 6),
+])
+def test_ppo_rollout_override_sizes_the_full_batch_and_sequence(
+    variant: str, use_nop: bool, requested_steps: int, expected_vector_steps: int, sampler_option: dict[str, None],
+) -> None:
+    algorithm = make_training(
+        "SwarmBots-WallEasy-v0", variant, **_training_kwargs(), use_nop=use_nop,
+        rollout_steps_per_env=4,
+        algorithm_kwargs={"rollout_mode": StepsRolloutMode(requested_steps), "n_epochs": 1, **sampler_option},
+    )
+    try:
+        env_count = algorithm.env.action_space.n_envs
+        if variant == "mat_ind__lstm":
+            assert algorithm.sampler_config.sequence_length == expected_vector_steps
+            assert algorithm.sampler_config.batch_size == env_count
+        else:
+            assert algorithm.sampler_config.batch_size == env_count * expected_vector_steps
+        configuration = algorithm.training_metadata["training_configuration"]
+        assert configuration["rollout_steps_per_env"] == expected_vector_steps
+        assert configuration["algorithm_kwargs"] == {
+            "rollout_mode": {"n_steps_per_rollout": requested_steps}, "n_epochs": 1, **sampler_option,
+        }
+        assert algorithm.rollout_mode.n_steps_per_rollout == requested_steps
+        algorithm.learn(max_total_timesteps=requested_steps, enable_command_prompt=False, log_interval=None)
+        assert algorithm.n_total_timesteps == env_count * expected_vector_steps
+        assert algorithm.n_total_updates == 1
+    finally:
+        algorithm.env.close()
+
+
+@pytest.mark.integration
+def test_explicit_ppo_sampler_controls_minibatches_with_a_rollout_override() -> None:
+    sampler = PPOSamplerConfig(batch_size=2)
+    algorithm = make_training(
+        "SwarmBots-WallEasy-v0", "mat_ind", **_training_kwargs(), use_nop=False,
+        algorithm_kwargs={
+            "rollout_mode": StepsRolloutMode(3), "sampler_config": sampler,
+            "learning_rate": 1e-4, "target_kl": None, "n_epochs": 1,
+        },
+    )
+    try:
+        algorithm.learn(max_total_timesteps=3, enable_command_prompt=False, log_interval=None)
+        assert algorithm.sampler_config == sampler
+        overrides = algorithm.training_metadata["training_configuration"]["algorithm_kwargs"]
+        assert overrides["sampler_config"]["batch_size"] == sampler.batch_size
+        assert algorithm.n_total_timesteps == 4
+        assert algorithm.n_total_updates == 2
+    finally:
+        algorithm.env.close()
 
 
 @pytest.mark.integration
@@ -155,7 +273,8 @@ def test_off_policy_presets_share_common_training_defaults(
         "gamma", "tau", "max_grad_norm",
     )} == {
         "learning_rate": 5e-5, "learning_rate_warmup_updates": 500, "learning_rate_warmup_start_factor": 0.01,
-        "buffer_capacity_per_env": 1000, "learning_starts": 10_000, "rollout_steps_per_iteration": 256,
+        "buffer_capacity_per_env": 1000, "learning_starts": 96 * 256 if "learning_steps" in config else 10_000,
+        "rollout_steps_per_iteration": 256,
         "replay_exposure": 8.0, "gamma": 0.995, "tau": 0.005, "max_grad_norm": 2.0,
     }
     learning_positions = config["batch_size"] * config.get("learning_steps", 1)
@@ -180,8 +299,12 @@ def test_off_policy_startup_defaults_follow_effective_collection_and_explicit_ov
         "SwarmBots-WallEasy-v0", variant, num_envs=1024, rollout_steps_per_env=rollout_steps_per_env,
         algorithm_kwargs=overrides,
     )
+    if "learning_steps" in config and "learning_starts" not in overrides:
+        expected_learning_starts = max(expected_learning_starts, 96 * 1024)
     assert config["learning_starts"] == expected_learning_starts
     assert config["buffer_capacity_per_env"] == expected_capacity
+    collection_steps = overrides["rollout_steps_per_iteration"] or 1024
+    assert config.training_metadata["training_configuration"]["rollout_steps_per_env"] == collection_steps // 1024
 
 
 @pytest.mark.parametrize("variant", OFF_POLICY_VARIANTS)
@@ -215,6 +338,7 @@ def test_recurrent_default_batches_match_feedforward_replay_exposure(
     recurrent_positions = recurrent["batch_size"] * recurrent["learning_steps"]
     assert baseline_positions == recurrent_positions == 1024
     assert baseline["replay_exposure"] == recurrent["replay_exposure"] == 8
+    assert recurrent["learning_starts"] == max(10_000, num_envs * rollout_steps * 4, num_envs * (32 + learning_steps))
     assert baseline["rollout_steps_per_iteration"] == recurrent["rollout_steps_per_iteration"] == num_envs * rollout_steps
     assert baseline["learning_rate"] == recurrent["learning_rate"] == 5e-5
     assert {key: recurrent[key] for key in (
@@ -769,6 +893,21 @@ def test_ppo_presets_clip_and_measure_kl_at_the_intended_action_scope(
 
 
 @pytest.mark.integration
+def test_wrapped_single_agent_ppo_accepts_registered_logprob_reduction() -> None:
+    messages = []
+    sink = logger.add(lambda message: messages.append(message.record["message"]), level="WARNING")
+    try:
+        algorithm = make_training("SwarmBots-WallEasy-v0", "ppo", use_nop=True, **_training_kwargs())
+        try:
+            assert algorithm.agent_logprob_reduction == "sum"
+            assert not any("agent_logprob_reduction" in message for message in messages)
+        finally:
+            algorithm.env.close()
+    finally:
+        logger.remove(sink)
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("coefficient", [None, 0.0, 0.02])
 def test_ppo_preset_entropy_default_and_override(coefficient: float | None) -> None:
     algorithm_kwargs = {} if coefficient is None else {"mc_ent_coef": coefficient}
@@ -908,6 +1047,39 @@ def test_learning_updates_parameters_on_actual_benchmark_transitions(variant: st
         assert all(torch.isfinite(parameter).all() for parameter in algorithm.policy.parameters())
     finally:
         algorithm.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["mappo__deepset_critic", "masac__deepset_critic"])
+def test_checkpoint_counts_completed_updates_after_an_interrupted_iteration(variant: str, tmp_path: Path) -> None:
+    is_ppo = variant == "mappo__deepset_critic"
+    options = {"learning_rate": 1e-3, "n_epochs": 2, "target_kl": None} if is_ppo else {
+        "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 32, "replay_exposure": 1,
+    }
+    trainer = make_training(
+        "SwarmBots-WallEasy-v0", variant, rollout_steps_per_env=4, algorithm_kwargs=options, **_training_kwargs(),
+    )
+    try:
+        optimizer = trainer.optimizer if is_ppo else trainer.critic_optimizer
+        method_name = "compute_loss" if is_ppo else "_sample_training_batches"
+        original = getattr(trainer, method_name)
+
+        def fail_after_first_update(*args: Any, **kwargs: Any) -> Any:
+            if optimizer.state:
+                raise RuntimeError("next minibatch failed")
+            return original(*args, **kwargs)
+
+        with patch.object(trainer, method_name, side_effect=fail_after_first_update):
+            with pytest.raises(RuntimeError, match="next minibatch failed"):
+                trainer.learn(additional_timesteps=8, enable_command_prompt=False)
+
+        assert max(state["step"].item() for state in optimizer.state.values()) == 1
+        assert trainer.n_total_updates == 1
+        checkpoint = tmp_path / "recovery.pt"
+        trainer.save(checkpoint)
+        assert torch.load(checkpoint, weights_only=False)["n_total_updates"] == 1
+    finally:
+        trainer.env.close()
 
 
 @pytest.mark.integration
@@ -1135,6 +1307,41 @@ def test_training_levels_apply_independently_to_each_algorithm_family(variant: s
     assert {"timestamp", "iteration", "total_updates", "ep_rew__mean", "ep_rew_ema", "ep_success_rate_ema"} <= rows[-1].keys()
     assert f"{loss_key}__mean" not in rows[-1]
     assert "learning_rate" not in rows[-1]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["mat_ind", "masac__deepset_critic"])
+@pytest.mark.parametrize("completed_warmup", [False, True])
+def test_zero_step_checkpoint_resumes_rollout_warmup(
+    tmp_path: Path, variant: str, completed_warmup: bool,
+) -> None:
+    kwargs = _training_kwargs()
+    algorithm_options = {"n_epochs": 1} if variant == "mat_ind" else {"batch_size": 4}
+    kwargs.update(use_nop=False, rollout_steps_per_env=2, algorithm_kwargs={
+        **algorithm_options, "rollout_warmup_steps_per_env": 3,
+    })
+    options = dict(max_total_timesteps=4, log_interval=None, enable_command_prompt=False)
+    source = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
+    checkpoint = tmp_path / "zero_step.pt"
+    try:
+        if completed_warmup:
+            with patch.object(source, "perform_iteration", side_effect=RuntimeError("before first update")):
+                with pytest.raises(RuntimeError, match="before first update"):
+                    source.learn(**options)
+        assert source.n_total_timesteps == 0
+        source.save(checkpoint)
+    finally:
+        source.env.close()
+
+    resumed = make_training("SwarmBots-WallEasy-v0", variant, **kwargs)
+    try:
+        resumed.load(checkpoint)
+        with patch.object(resumed.env, "step", wraps=resumed.env.step) as step:
+            resumed.learn(**options)
+        assert step.call_count == (2 if completed_warmup else 5)
+        assert resumed.n_total_timesteps == 4
+    finally:
+        resumed.env.close()
 
 
 @pytest.mark.integration

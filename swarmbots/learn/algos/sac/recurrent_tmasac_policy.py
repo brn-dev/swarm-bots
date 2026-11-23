@@ -597,6 +597,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
     def action_log_prob_sequence_with_selected_states_and_shared_latents(
             self,
             *,
+            require_shared_grad: bool = False,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
@@ -620,6 +621,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
         if not self.uses_recurrent_shared_encoder:
             raise RuntimeError("Recurrent shared observation encoding is not configured.")
         result = self._run_actor_encoder(
+            require_shared_grad=require_shared_grad,
             local_obs=local_obs,
             global_obs=global_obs,
             agent_mask=agent_mask,
@@ -824,6 +826,7 @@ class RecurrentTMASACPolicy(TMASACPolicy):
     def _run_actor_encoder(
             self,
             *,
+            require_shared_grad: bool = False,
             local_obs: torch.Tensor,
             global_obs: torch.Tensor,
             agent_mask: torch.Tensor | None,
@@ -850,15 +853,17 @@ class RecurrentTMASACPolicy(TMASACPolicy):
                     f"No compiled shared encoder entry point for sequence length {sequence_length}; "
                     f"configured lengths are {sorted(self._compiled_actor_encoders)}."
                 )
-            shared_result = shared_encoder(
-                local_obs=local_obs,
-                global_obs=global_obs,
-                agent_mask=agent_mask,
-                time_mask=time_mask,
-                initial_state=initial_state,
-                reset_mask=reset_mask,
-                state_output_indices=state_output_indices,
-            )
+            # The critic still trains this encoder when the actor skips its update.
+            with torch.set_grad_enabled(torch.is_grad_enabled() or require_shared_grad):
+                shared_result = shared_encoder(
+                    local_obs=local_obs,
+                    global_obs=global_obs,
+                    agent_mask=agent_mask,
+                    time_mask=time_mask,
+                    initial_state=initial_state,
+                    reset_mask=reset_mask,
+                    state_output_indices=state_output_indices,
+                )
             if state_output_indices is None:
                 shared_latents, next_state = shared_result
                 actor_latents = self._encode_downstream_actor(

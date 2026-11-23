@@ -324,10 +324,11 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         local_latents = self._encode_actor_observations(local_obs, global_obs, agent_mask)
         latent_pi = self.actor(local_latents)
-        actions, log_probs = self.action_dist.get_on_policy_actions_with_log_probs(
+        actions, log_probs = self.action_dist._get_on_policy_actions_for_storage(
             latent_pi,
             deterministic,
             previous_actions=previous_actions,
+            storage_dtype=self.rollout_dtype,
         )
 
         values, _ = self._evaluate_critic(
@@ -346,14 +347,15 @@ class PPOPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
         hidden_global_vars = batch.hidden_global_vars
         agent_mask = batch.agent_mask
         previous_actions = batch.previous_actions
-        actions = self._policy_actions(batch.actions)
+        actions = self._policy_actions(batch.actions, batch.agent_mask)
 
         local_obs = self._mask_local_obs(local_obs, agent_mask)
         local_latents = self._encode_actor_observations(local_obs, global_obs, agent_mask)
         latent_pi = self.actor(local_latents)
 
-        self.action_dist.update_latent_features(latent_pi)
-        log_probs = self.action_dist.log_prob(actions, previous_actions=previous_actions)
+        log_probs = self._score_rollout_actions(
+            latent_pi, actions, previous_actions, getattr(batch, "action_dtypes", None),
+        )
 
         values, critic_latents = self._evaluate_critic(
             local_obs, global_obs, hidden_local_vars, hidden_global_vars, agent_mask, actor_latents=local_latents,

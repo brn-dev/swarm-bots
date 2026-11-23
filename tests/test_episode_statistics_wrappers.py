@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from typing import Any
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -77,6 +78,25 @@ def test_episode_statistics_survive_partial_reset_after_simultaneous_completions
     torch.testing.assert_close(
         first_infos["episode"]["r"], torch.tensor([1.0, 2.0, 0.0], dtype=torch.float64, device=env.device)
     )
+
+
+def test_elapsed_time_starts_at_each_lanes_same_step_autoreset(monkeypatch: pytest.MonkeyPatch) -> None:
+    vector_env = SyncVectorEnv(
+        [lambda: SwarmTestEnv(2, 3, 1, 1, 1, max_steps=1),
+         lambda: SwarmTestEnv(2, 3, 1, 1, 1, max_steps=2)],
+        autoreset_mode=AutoresetMode.SAME_STEP,
+    )
+    env = TorchRecordEpisodeStatisticsWrapper(SwarmBotsLearnEnvWrapper(vector_env))
+    clock = Mock()
+    clock.perf_counter.side_effect = [10.0, 12.0, 17.0, 26.0]
+    monkeypatch.setattr("swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper.time", clock)
+    try:
+        env.reset()
+        for expected in ([2.0, 0.0], [5.0, 7.0], [9.0, 0.0]):
+            _, _, _, _, infos = env.step(torch.zeros((2, 2, 2)))
+            assert infos["episode"]["t"].tolist() == expected
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("present_mask", [[True, False, True], [False, False, False]])

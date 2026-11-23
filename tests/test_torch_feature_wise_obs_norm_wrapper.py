@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 import pytest
 import torch
+from gymnasium import spaces
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
@@ -347,6 +348,118 @@ class TorchFeatureWiseObsNormWrapperTests(unittest.TestCase):
                 )
         finally:
             env.close()
+
+
+class _PaddedAgentEnv(TestingSwarmBotsEnv):
+    def __init__(self) -> None:
+        super().__init__(3, 1, 1, actuators_dim=1, connectors_dim=1)
+        self.observation_space["agent_mask"] = spaces.MultiBinary(3)
+
+    def _get_obs(self) -> dict[str, np.ndarray]:
+        obs = super()._get_obs()
+        obs["agent_mask"] = np.array([True, False, True])
+        obs["local_obs"][1] = 77.0
+        return obs
+
+
+@pytest.mark.parametrize("normalize_output", [False, True])
+@pytest.mark.parametrize("update_on_reset", [False, True])
+def test_partial_reset_counts_only_new_samples_and_returns_every_lane(
+    normalize_output: bool, update_on_reset: bool,
+) -> None:
+    env = SwarmBotsLearnEnvWrapper(SyncVectorEnv([_PaddedAgentEnv] * 2, autoreset_mode=AutoresetMode.SAME_STEP))
+    normalizers = []
+    for key in ("local_obs", "global_obs"):
+        env = TorchFeatureWiseObsNormWrapper(env, key, [0], [], eps=1.0, compile_tensor_operations=False)
+        env.obs_rms = TorchRunningMeanStd(shape=(1,), initial_count=0)
+        env.normalize_output = normalize_output
+        normalizers.append(env)
+    try:
+        env.reset()
+        env.step(torch.zeros((2, 3, env.action_space.total_agent_action_dim)))
+        for wrapper in normalizers:
+            wrapper.update_running_mean = update_on_reset
+        observations, _ = env.reset(options={"reset_mask": torch.tensor([True, False])})
+        raw = {
+            "local_obs": torch.tensor([[[0.], [77.], [0.]], [[1.], [77.], [1.]]]),
+            "global_obs": torch.tensor([[0.], [1.]]),
+        }
+        samples = torch.tensor([0., 0., 1., 1., 0.] if update_on_reset else [0., 0., 1., 1.], dtype=torch.float64)
+        mean, variance = samples.mean(), samples.var(unbiased=False)
+        for wrapper in normalizers:
+            key = wrapper.obs_key
+            rows_per_lane = 2 if key == "local_obs" else 1
+            assert wrapper.obs_rms.count.item() == samples.numel() * rows_per_lane
+            torch.testing.assert_close(wrapper.obs_rms.mean[0], mean)
+            torch.testing.assert_close(wrapper.obs_rms.var[0], variance)
+            expected = (raw[key] - mean.float()) / (variance.float() + 1).sqrt() if normalize_output else raw[key]
+            torch.testing.assert_close(observations[key], expected)
+        assert observations["agent_mask"].tolist() == [[True, False, True]] * 2
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("hook_signature", ["legacy", "keyword", "kwargs"])
+def test_partial_reset_preserves_custom_observations_hook(hook_signature: str) -> None:
+    class OffsetNormalizer(TorchFeatureWiseObsNormWrapper):
+        def observations(self, observations: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+            normalized = super().observations(observations)
+            return {**normalized, "local_obs": normalized["local_obs"] + 7.0}
+
+    class SelectiveOffsetNormalizer(TorchFeatureWiseObsNormWrapper):
+        def observations(
+            self, observations: dict[str, torch.Tensor], *, sample_lanes: torch.Tensor | None = None,
+        ) -> dict[str, torch.Tensor]:
+            normalized = super().observations(observations, sample_lanes=sample_lanes)
+            if sample_lanes is not None:
+                normalized["local_obs"] = normalized["local_obs"] + 7.0 * sample_lanes[:, None, None]
+            return normalized
+
+    class DelegatingOffsetNormalizer(TorchFeatureWiseObsNormWrapper):
+        def observations(
+            self, observations: dict[str, torch.Tensor], **kwargs: torch.Tensor,
+        ) -> dict[str, torch.Tensor]:
+            normalized = super().observations(observations)
+            if (lanes := kwargs.get("sample_lanes")) is not None:
+                normalized["local_obs"] = normalized["local_obs"] + 7.0 * lanes[:, None, None]
+            return normalized
+
+    normalizer = {
+        "legacy": OffsetNormalizer, "keyword": SelectiveOffsetNormalizer, "kwargs": DelegatingOffsetNormalizer,
+    }[hook_signature]
+    env = normalizer(_make_env(n_agents=1, n_local_obs=1), "local_obs", [0], [], eps=1.0)
+    env.obs_rms = TorchRunningMeanStd(shape=(1,), initial_count=0)
+    try:
+        env.reset()
+        actions = torch.zeros((2, 1, env.action_space.total_agent_action_dim))
+        env.step(actions)
+        observations, _ = env.reset(options={"reset_mask": torch.tensor([True, False])})
+        samples = torch.tensor([0.0, 0.0, 1.0, 1.0, 0.0])
+        normalized = (torch.tensor([0.0, 1.0]) - samples.mean()) / (samples.var(unbiased=False) + 1.0).sqrt()
+        offset = torch.tensor([7.0, 7.0] if hook_signature == "legacy" else [7.0, 0.0])
+        torch.testing.assert_close(observations["local_obs"][:, 0, 0], normalized + offset)
+        assert env.obs_rms.count.item() == 5
+
+        env.step(actions)
+        assert env.obs_rms.count.item() == 7
+    finally:
+        env.close()
+
+
+def test_partial_reset_accepts_one_argument_torchscript_observations_hook() -> None:
+    env = TorchFeatureWiseObsNormWrapper(_make_env(n_agents=1, n_local_obs=1), "local_obs", [0], [])
+    env.observations = torch.jit.CompilationUnit(
+        "def observe(obs: Dict[str, Tensor]) -> Dict[str, Tensor]:\n"
+        "    obs['local_obs'] = obs['local_obs'] + 7.0\n"
+        "    return obs\n",
+    ).observe
+    try:
+        env.reset()
+        env.step(torch.zeros((2, 1, env.action_space.total_agent_action_dim)))
+        observations, _ = env.reset(options={"reset_mask": torch.tensor([True, False])})
+        torch.testing.assert_close(observations["local_obs"][:, 0, 0], torch.tensor([7.0, 8.0]))
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("new_obs_first", [False, True])

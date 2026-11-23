@@ -7,8 +7,7 @@ import torch.distributions as torchdist
 from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
-from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
-from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
+from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist, gaussian_scale
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 LogStdNetInitialization = ActionNetInitialization
@@ -48,16 +47,14 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
 
         self.register_buffer("base_log_std", torch.tensor(math.log(base_std)))
         self.log_std_clamp_range = log_std_clamp_range
+        self._unbounded_log_scale = log_std_clamp_range[0] < -math.log(torch.finfo(torch.float32).max)
 
         self.distribution: Optional[torchdist.Normal] = None
         self.log_stds: Optional[torch.Tensor] = None
 
-        self._last_gaussian_actions: Optional[torch.Tensor] = None
-
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
-        mean_actions = self.action_net(latent_pi)
         log_stds = self.log_std_net(latent_pi) + self.base_log_std
-        return self.update_distribution_params(mean_actions, log_stds)
+        return self._update_gaussian_from_latent(latent_pi, log_stds)
 
     def update_distribution_params(
             self,
@@ -66,76 +63,8 @@ class PredictedStdGaussianActionDist(ContinuousActionDist):
     ) -> Self:
         log_stds = torch.clamp(log_stds, *self.log_std_clamp_range)
         self.log_stds = log_stds
-        self.distribution = torchdist.Normal(
-            mean_actions,
-            log_stds.exp(),
-            validate_args=False,
-        )
-        return self
-
-    def sample(
-            self,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        gaussian_actions = self.distribution.sample()
-        if self.squash_output:
-            self._last_gaussian_actions = gaussian_actions
-            return TanhBijector.forward(gaussian_actions)
-        return gaussian_actions
-
-    def rsample(
-            self,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        gaussian_actions = self.distribution.rsample()
-        if self.squash_output:
-            self._last_gaussian_actions = gaussian_actions
-            return TanhBijector.forward(gaussian_actions)
-        return gaussian_actions
-
-    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
-        gaussian_actions = self.distribution.mean
-        if self.squash_output:
-            self._last_gaussian_actions = gaussian_actions
-            return TanhBijector.forward(gaussian_actions)
-        return gaussian_actions
-
-    def log_prob(
-            self,
-            actions: torch.Tensor,
-            previous_actions: torch.Tensor | None = None,
-            gaussian_actions: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if not self.squash_output:
-            return super().log_prob(actions)
-
-        if gaussian_actions is None:
-            gaussian_actions = TanhBijector.inverse(actions)
-
-        log_prob = super().log_prob(gaussian_actions)
-        log_prob -= self.sum_action_dim(TanhBijector.log_abs_det_jacobian(gaussian_actions))
-
-        return log_prob
-
-    def get_actions_with_log_probs(
-            self,
-            latent_pi: torch.Tensor,
-            deterministic: bool = False,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-            use_rsample: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        # Avoids inverse tanh in the common sample/log-prob path, which is less numerically stable.
-        actions = self.update_latent_features(latent_pi).get_actions(
-            deterministic=deterministic,
-            agent=agent,
-            previous_actions=previous_actions,
-            use_rsample=use_rsample,
-        )
-        log_probs = self.log_prob(actions, gaussian_actions=self._last_gaussian_actions)
-        return actions, log_probs
+        self._distribution_log_scale = log_stds
+        return self._bind_gaussian(mean_actions, gaussian_scale(log_stds))
 
     def set_std(self, std: float) -> None:
         self.set_base_std(std)

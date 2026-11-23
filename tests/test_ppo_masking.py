@@ -33,11 +33,99 @@ def _make_samples() -> PPOSamples:
     )
 
 
-def _ppo_with_reduction(agent_logprob_reduction: str | None) -> PPO:
-    ppo = PPO.__new__(PPO)
+def _ppo_with_reduction(agent_logprob_reduction: str | None, ppo_type: type[PPO] = PPO) -> PPO:
+    ppo = ppo_type.__new__(ppo_type)
     ppo.agent_logprob_reduction = agent_logprob_reduction
     ppo.value_loss_fn = nn.MSELoss(reduction="none")
     return ppo
+
+
+@pytest.mark.parametrize("entropy_coefficient", [0.0, 0.5])
+def test_ppo_loss_respects_custom_agent_reduction(entropy_coefficient: float) -> None:
+    class FirstAgentPPO(PPO):
+        def reduce_agents(self, batch: PPOSamples, log_probs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            return log_probs[..., 0], batch.log_probs[..., 0]
+
+    ppo = _ppo_with_reduction("sum", FirstAgentPPO)
+    ppo.normalize_advantage = False
+    ppo.clip_range = 0.2
+    ppo.clip_range_vf = None
+    ppo.use_popart = False
+    ppo.vf_coef, ppo.mc_ent_coef = 0.0, entropy_coefficient
+    batch = _make_samples()
+    batch.agent_mask = torch.ones_like(batch.log_probs, dtype=torch.bool)
+    batch.agent_mask[-1, -1] = False
+    batch.advantages.fill_(1.0)
+    current = torch.zeros_like(batch.log_probs)
+    current[..., 1] = math.log(1.1)
+    current[-1, -1] = torch.nan
+    current.requires_grad_()
+
+    loss, approximate_kl, _metrics = ppo.compute_ppo_loss(batch, current, batch.values)
+    gradient, = torch.autograd.grad(loss, current)
+
+    joint_ratio = 1.1
+    joint_log_prob = math.log(joint_ratio)
+    torch.testing.assert_close(loss, torch.tensor(-1.0 + entropy_coefficient * joint_ratio * joint_log_prob))
+    assert approximate_kl == 0.0
+    batch_count = batch.values.numel() - 1
+    entropy_gradient = entropy_coefficient * joint_ratio * (1 + joint_log_prob) / batch_count
+    expected = torch.full_like(gradient, entropy_gradient)
+    expected[..., 0] -= 1 / batch_count
+    expected[-1, -1] = 0.
+    torch.testing.assert_close(gradient, expected)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=(
+    pytest.mark.cuda, pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA"),
+))])
+@pytest.mark.parametrize("reduction", [None, "sum", "mean"])
+@pytest.mark.parametrize("adjacent", [False, True], ids=["constant", "adjacent-float32"])
+def test_ppo_loss_preserves_small_advantage_differences_across_padding(
+        device: str, reduction: str | None, adjacent: bool,
+) -> None:
+    ppo = _ppo_with_reduction(reduction)
+    ppo.normalize_advantage = True
+    ppo.clip_range = .2
+    ppo.clip_range_vf = None
+    ppo.use_popart = False
+    ppo.vf_coef = ppo.mc_ent_coef = 0.
+
+    def loss_and_gradient(
+            advantages: torch.Tensor, log_probs: torch.Tensor, *,
+            time_mask: torch.Tensor | None = None, normalize: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        local_obs = log_probs.new_empty((*log_probs.shape, 0))
+        global_obs = advantages.new_empty((*advantages.shape, 0))
+        values = torch.zeros_like(advantages)
+        batch = PPOSamples(
+            local_obs=local_obs, global_obs=global_obs, hidden_local_vars=local_obs, hidden_global_vars=global_obs,
+            agent_mask=None, previous_actions=None, actions=torch.zeros_like(log_probs.unsqueeze(-1)),
+            log_probs=torch.zeros_like(log_probs), values=values, returns=values, advantages=advantages,
+        )
+        batch.time_mask = time_mask
+        current = log_probs.detach().requires_grad_()
+        loss, _, _ = ppo.compute_ppo_loss(batch, current, values, normalize_advantage=normalize)
+        return loss.detach(), torch.autograd.grad(loss, current)[0]
+
+    time_mask = (torch.arange(8, device=device) < 4).expand(2, -1)
+    advantages = torch.full((2, 8), .1, dtype=torch.float32, device=device)
+    if adjacent:
+        advantages[0, 0] = torch.nextafter(advantages[0, 0], advantages.new_tensor(1.))
+    log_probs = torch.linspace(-.05, .05, 32, device=device).reshape(2, 8, 2)
+    packed = advantages[time_mask]
+    reference = packed.double()
+    reference = ((reference - reference.mean()) / (reference.std() + 1e-8)).float()
+    expected_loss, expected_gradient = loss_and_gradient(reference, log_probs[time_mask], normalize=False)
+    packed_loss, packed_gradient = loss_and_gradient(packed, log_probs[time_mask])
+    padded_loss, padded_gradient = loss_and_gradient(
+        advantages.masked_fill(~time_mask, float("nan")), log_probs, time_mask=time_mask,
+    )
+    torch.testing.assert_close(packed_loss, expected_loss)
+    torch.testing.assert_close(padded_loss, expected_loss)
+    torch.testing.assert_close(packed_gradient, expected_gradient)
+    torch.testing.assert_close(padded_gradient[time_mask], expected_gradient)
+    torch.testing.assert_close(padded_gradient[~time_mask], torch.zeros_like(padded_gradient[~time_mask]))
 
 
 @pytest.mark.parametrize("reduction", [None, "mean", "sum"])
@@ -199,22 +287,40 @@ class PPOMaskingTests(unittest.TestCase):
 
         torch.testing.assert_close(valid_returns, torch.tensor([1.0, 100.0, 5.0, 6.0]))
 
-    def test_normalize_advantages_uses_only_unmasked_loss_steps_and_zeroes_masked_steps(self) -> None:
-        batch = _make_samples()
-        batch.time_mask = torch.tensor([
-            [True, False, True],
-            [False, True, True],
-        ])
+    def test_recurrent_advantage_normalization_matches_packed_transitions(self) -> None:
         ppo = _ppo_with_reduction(None)
+        for scale in (1.0, 1e-9):
+            for padded in (False, True):
+                with self.subTest(scale=scale, padded=padded):
+                    batch = _make_samples()
+                    advantages = batch.advantages * scale
+                    mask = torch.ones_like(advantages, dtype=torch.bool)
+                    if padded:
+                        mask[:, -1] = False
+                        advantages[0, -1] = float("nan")
+                        advantages[1, -1] = float("inf")
 
-        normalized = ppo._normalize_advantages(batch, batch.advantages)
+                    valid = advantages[mask]
+                    packed = ppo._normalize_advantages(batch, valid)
+                    torch.testing.assert_close(packed, (valid - valid.mean()) / (valid.std() + 1e-8))
+                    batch.time_mask = mask
+                    normalized = ppo._normalize_advantages(batch, advantages)
+                    torch.testing.assert_close(normalized[mask], packed)
+                    torch.testing.assert_close(normalized[~mask], torch.zeros_like(normalized[~mask]))
 
-        valid_values = torch.tensor([1.0, 3.0, 5.0, 6.0])
-        mean = valid_values.mean()
-        variance = ((valid_values - mean) ** 2).mean()
-        expected = torch.zeros_like(batch.advantages)
-        expected[batch.time_mask] = (valid_values - mean) / torch.sqrt(variance + 1e-8)
-        self.assertTrue(torch.allclose(normalized, expected))
+    def test_advantage_normalization_handles_zero_or_one_valid_step(self) -> None:
+        ppo = _ppo_with_reduction(None)
+        for count in (0, 1):
+            with self.subTest(count=count):
+                batch = _make_samples()
+                valid = torch.tensor([2.5])[:count]
+                torch.testing.assert_close(ppo._normalize_advantages(batch, valid), valid)
+                mask = torch.zeros_like(batch.advantages, dtype=torch.bool)
+                mask[0, :count] = True
+                batch.time_mask = mask
+                advantages = torch.full_like(batch.advantages, float("nan"))
+                advantages[mask] = valid
+                torch.testing.assert_close(ppo._normalize_advantages(batch, advantages), advantages.masked_fill(~mask, 0))
 
     def test_extra_loss_reduction_masks_agents_and_padded_steps_without_agent_reduction(self) -> None:
         batch = _make_samples()

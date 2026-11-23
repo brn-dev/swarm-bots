@@ -1,5 +1,6 @@
 import abc
 from enum import StrEnum
+from inspect import Parameter, signature
 from typing import Callable, Optional, Self, Any
 
 import torch
@@ -31,7 +32,23 @@ def validate_probability_clamp_epsilon(epsilon: float) -> None:
         raise ValueError(f"epsilon must be in (0, 0.5), got {epsilon}")
 
 
+def _accepts_keyword(method: Callable[..., Any], name: str) -> bool:
+    try:
+        parameters = signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    named = parameters.get(name)
+    return (
+        named is not None and named.kind in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
+    ) or any(parameter.kind is Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+
 class ActionDist(nn.Module, abc.ABC):
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        sampler = cls.get_on_policy_actions_with_log_probs
+        cls._on_policy_sampler_contract = sampler, _accepts_keyword(sampler, "storage_dtype")
 
     def __init__(
             self,
@@ -164,17 +181,47 @@ class ActionDist(nn.Module, abc.ABC):
             deterministic: bool = False,
             agent: int | None = None,
             previous_actions: torch.Tensor | None = None,
+            *,
+            storage_dtype: torch.dtype | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # PPO reevaluates the stored action, including any rounding from squashing.
-        # Off-policy overrides may instead use a cached pre-squash sample.
-        return ActionDist.get_actions_with_log_probs(
-            self,
-            latent_pi=latent_pi,
-            deterministic=deterministic,
-            agent=agent,
-            previous_actions=previous_actions,
+        actions = self.update_latent_features(latent_pi).get_actions(
+            deterministic=deterministic, agent=agent, previous_actions=previous_actions,
             use_rsample=False,
         )
+        if storage_dtype is not None and actions.dtype != storage_dtype:
+            actions = self.sampled_action_in_dtype(actions, storage_dtype)
+        return actions, self.log_prob(actions, previous_actions=previous_actions)
+
+    def _get_on_policy_actions_for_storage(
+            self,
+            latent_pi: torch.Tensor,
+            deterministic: bool = False,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+            *,
+            storage_dtype: torch.dtype | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        sampler = self.get_on_policy_actions_with_log_probs
+        if storage_dtype is not None and self._accepts_on_policy_storage_dtype(sampler):
+            return sampler(
+                latent_pi=latent_pi, deterministic=deterministic, agent=agent, previous_actions=previous_actions,
+                storage_dtype=storage_dtype,
+            )
+        return sampler(
+            latent_pi=latent_pi, deterministic=deterministic, agent=agent, previous_actions=previous_actions,
+        )
+
+    def _accepts_on_policy_storage_dtype(self, sampler: Callable[..., Any]) -> bool:
+        implementation, accepts_dtype = self._on_policy_sampler_contract
+        if (
+            type(self).get_on_policy_actions_with_log_probs is implementation
+            and "get_on_policy_actions_with_log_probs" not in vars(self)
+        ):
+            return accepts_dtype
+        return _accepts_keyword(sampler, "storage_dtype")
+
+    def sampled_action_in_dtype(self, actions: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        return actions.to(dtype)
 
 
 def resolve_action_metrics_splitter(

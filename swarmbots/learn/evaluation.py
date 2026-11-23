@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import time
+from bisect import bisect_right
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
 import torch
 from loguru import logger
 
+from swarmbots.learn.action_dists.gsde_action_dist import GSDEActionDist
+from swarmbots.learn.action_dists.hybrid_action_dist import HybridActionDistribution
 from swarmbots.learn.checkpointing import apply_env_state, capture_env_state, freeze_env_normalization
 from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization
 from swarmbots.learn.gsde_reset import GSDEResetMode, reset_gsde_noise, resolve_gsde_reset_mode
-from swarmbots.learn.metrics_logger import MetricsLogger
-from swarmbots.learn.rollout_utils import initial_previous_actions, to_python_episode_stat
+from swarmbots.learn.metrics_logger import MetricsLogger, RetryableMetricWrite
+from swarmbots.learn.rollout_utils import initial_previous_actions, iter_episode_rows
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.task_episode_metrics import task_episode_metric_names
 from swarmbots.learn.temporal_state import clone_detach_temporal_state
+from swarmbots.learn.torch_device import module_device
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
+from swarmbots.utils.torch_utils import fork_torch_rng, seed_torch_rng
 
 
 DEFAULT_EVALUATION_MILESTONES: tuple[float, ...] = (25, 50, 75, 90, 95, 100)
@@ -24,6 +31,21 @@ EVALUATION_ACTION_MODES: tuple[tuple[str, bool], ...] = (
     ("stochastic", False),
     ("deterministic", True),
 )
+
+
+def _snapshot_action_state(action_dist: Any, state: Any) -> Any:
+    if state is None:
+        return None
+    setter = getattr(action_dist.set_temporal_correlation_state, "__func__", None)
+    # Stock gSDE swaps buffers. Keep the training tensor and its version intact.
+    if type(action_dist) is GSDEActionDist and setter is GSDEActionDist.set_temporal_correlation_state:
+        return state
+    if type(action_dist) is HybridActionDistribution and setter is HybridActionDistribution.set_temporal_correlation_state:
+        return tuple(
+            _snapshot_action_state(dist, part)
+            for dist, part in zip(action_dist.distributions, state, strict=True)
+        )
+    return clone_detach_temporal_state(state)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,18 +88,18 @@ class FrozenEvaluationRunner:
 
     @property
     def env(self) -> Any:
-        if self._env is None:
-            # Environment factories may call torch.manual_seed, which also seeds other CUDA devices.
-            cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
-            with torch.random.fork_rng(devices=cuda_devices):
+        if self._env is not None:
+            return self._env
+        with fork_torch_rng():
+            if self._env is None:
                 env = self._make_env()
                 try:
                     normalization = ReplayNormalization.for_policy(env, self._policy)
                 except BaseException:
                     env.close()
                     raise
-            self._replay_normalization = normalization
-            self._env = env
+                self._replay_normalization = normalization
+                self._env = env
         return self._env
 
     def evaluate(
@@ -86,29 +108,27 @@ class FrozenEvaluationRunner:
         gsde_reset_mode = resolve_gsde_reset_mode(
             gsde_enabled=bool(getattr(self._policy, "gsde_enabled", False)), reset_mode=gsde_reset_mode,
         )
-        env = self.env
-        apply_env_state(env, capture_env_state(self._training_env))
-        freeze_env_normalization(env)
-
-        action_dist = getattr(self._policy, "action_dist", None)
-        action_dist_state = (
-            clone_detach_temporal_state(action_dist.get_temporal_correlation_state())
-            if action_dist is not None and hasattr(action_dist, "get_temporal_correlation_state")
-            else None
-        )
-        module_training_modes = {
-            module: module.training
-            for module in self._policy.modules()
-        }
-        cuda_devices = self._cuda_rng_devices()
-        started_at = time.perf_counter()
+        policy_device = module_device(self._policy)
         metrics: dict[str, Any] = {}
-
-        try:
-            with torch.random.fork_rng(devices=cuda_devices):
+        # A custom reset may seed every CUDA generator even when the policy runs on CPU.
+        with fork_torch_rng():
+            env = self.env
+            wrapper_device = getattr(env, "device", None)
+            physics_device = getattr(getattr(env, "unwrapped", env), "device", None)
+            apply_env_state(env, capture_env_state(self._training_env))
+            freeze_env_normalization(env)
+            action_dist = getattr(self._policy, "action_dist", None)
+            action_dist_state = (
+                _snapshot_action_state(action_dist, action_dist.get_temporal_correlation_state())
+                if action_dist is not None and hasattr(action_dist, "get_temporal_correlation_state")
+                else None
+            )
+            module_training_modes = {module: module.training for module in self._policy.modules()}
+            started_at = time.perf_counter()
+            try:
                 for action_mode, deterministic in EVALUATION_ACTION_MODES:
                     mode_started_at = time.perf_counter()
-                    self._seed_rng(cuda_devices)
+                    seed_torch_rng(self.seed, policy_device or "cpu", wrapper_device, physics_device)
                     if action_dist_state is not None:
                         action_dist.set_temporal_correlation_state(
                             clone_detach_temporal_state(action_dist_state)
@@ -125,17 +145,24 @@ class FrozenEvaluationRunner:
                     episode_metrics = self._collect_episodes(
                         env=env,
                         initial_obs=obs,
+                        policy_device=policy_device or obs["local_obs"].device,
                         deterministic=deterministic,
                         gsde_reset_mode=gsde_reset_mode,
                         finish_recording=recording_started,
                     )
                     metrics.update(self._summarize_metrics(episode_metrics, action_mode=action_mode))
                     metrics[f"eval_{action_mode}_duration"] = time.perf_counter() - mode_started_at
-        finally:
-            if action_dist is not None and hasattr(action_dist, "set_temporal_correlation_state"):
-                action_dist.set_temporal_correlation_state(action_dist_state)
-            for module, was_training in module_training_modes.items():
-                module.training = was_training
+            except BaseException:
+                # A failed rollout may leave recording slots active even after a seeded reset.
+                self.close()
+                raise
+            finally:
+                try:
+                    if action_dist is not None and hasattr(action_dist, "set_temporal_correlation_state"):
+                        action_dist.set_temporal_correlation_state(action_dist_state)
+                finally:
+                    for module, was_training in module_training_modes.items():
+                        module.training = was_training
 
         duration = time.perf_counter() - started_at
         episodes_per_mode = env.num_envs * self.episodes_per_env
@@ -152,46 +179,51 @@ class FrozenEvaluationRunner:
         return metrics
 
     def close(self) -> None:
-        if self._env is not None:
-            self._env.close()
-            self._env = None
-            self._replay_normalization = None
+        env = self._env
+        self._env = None
+        self._replay_normalization = None
+        if env is not None:
+            env.close()
 
     def _collect_episodes(
         self,
         *,
         env: Any,
         initial_obs: dict[str, torch.Tensor],
+        policy_device: torch.device,
         deterministic: bool,
         gsde_reset_mode: GSDEResetMode | None = None,
         finish_recording: bool = False,
     ) -> dict[str, list[float]]:
         self._policy.eval()
         obs = initial_obs
+        env_device = obs["local_obs"].device
         previous_actions = initial_previous_actions(
             policy=self._policy,
             obs=obs,
             n_agent_actions=env.action_space.total_agent_action_dim,
         )
+        if previous_actions is not None:
+            previous_actions = previous_actions.to(policy_device)
         temporal_state = self._policy.initial_temporal_state(
             batch_size=env.num_envs,
             n_agents=env.n_agents,
-            device=obs["local_obs"].device,
+            device=policy_device,
             dtype=obs["local_obs"].dtype,
         )
         episode_start_mask = torch.ones(
             (env.num_envs,),
-            device=obs["local_obs"].device,
+            device=policy_device,
             dtype=torch.bool,
         )
-        completed_per_env = torch.zeros_like(episode_start_mask, dtype=torch.int64)
+        completed_per_env = torch.zeros(env.num_envs, device=env_device, dtype=torch.int64)
         episode_metrics: dict[str, list[float]] = {}
         rollout_step_idx = 0
         action_dist = getattr(self._policy, "action_dist", None)
 
         normalization = (
             None if self._replay_normalization is None else self._replay_normalization.snapshot(
-                device=obs["local_obs"].device, public_only=True,
+                device=env_device, public_only=True,
             )
         )
         with torch.no_grad():
@@ -200,9 +232,11 @@ class FrozenEvaluationRunner:
                 or (finish_recording and env.unwrapped.get_video_recording_status()["active"])
             ):
                 policy_obs = obs if normalization is None else normalization.normalize_observations(obs)
+                if policy_device != env_device:
+                    policy_obs = {key: value.to(policy_device) for key, value in policy_obs.items()}
                 if not deterministic and gsde_reset_mode is not None:
                     reset_gsde_noise(
-                        action_dist=action_dist, local_obs=obs["local_obs"], episode_start_mask=episode_start_mask,
+                        action_dist=action_dist, local_obs=policy_obs["local_obs"], episode_start_mask=episode_start_mask,
                         rollout_step_idx=rollout_step_idx, gsde_reset_mode=gsde_reset_mode,
                         initialize=rollout_step_idx == 0,
                     )
@@ -214,14 +248,14 @@ class FrozenEvaluationRunner:
                     global_obs=policy_obs["global_obs"],
                     hidden_local_vars=policy_obs["hidden_local_vars"],
                     hidden_global_vars=policy_obs["hidden_global_vars"],
-                    agent_mask=obs.get("agent_mask"),
-                    **({} if "scenario_id" not in obs else {"scenario_ids": obs["scenario_id"]}),
+                    agent_mask=policy_obs.get("agent_mask"),
+                    **({} if "scenario_id" not in policy_obs else {"scenario_ids": policy_obs["scenario_id"]}),
                     previous_actions=previous_actions,
                     deterministic=deterministic,
                     temporal_state=temporal_state,
                     episode_start_mask=episode_start_mask,
                 )
-                obs, _rewards, terminations, truncations, infos = env.step(actions)
+                obs, _rewards, terminations, truncations, infos = env.step(actions.to(env_device))
                 dones = torch.logical_or(terminations, truncations)
                 accepted_dones = dones & (completed_per_env < self.episodes_per_env)
                 self._append_episode_metrics(
@@ -231,11 +265,15 @@ class FrozenEvaluationRunner:
                     dones=dones,
                 )
                 completed_per_env += accepted_dones.to(dtype=completed_per_env.dtype)
-                episode_start_mask = dones.to(device=obs["local_obs"].device, dtype=torch.bool)
+                episode_start_mask = dones.to(device=policy_device, dtype=torch.bool)
                 if previous_actions is not None:
-                    previous_actions = actions.detach().masked_fill(dones[:, None, None], 0.0)
+                    previous_actions = actions.detach().masked_fill(episode_start_mask[:, None, None], 0.0)
                 rollout_step_idx += 1
 
+        if finish_recording:
+            # Capture can finish while MP4 writers still own frames. Surface their result in this milestone.
+            while env.unwrapped.get_video_recording_status().get("writer_jobs_pending", 0):
+                time.sleep(0.01)
         return episode_metrics
 
     @staticmethod
@@ -246,7 +284,8 @@ class FrozenEvaluationRunner:
         accepted_dones: torch.Tensor,
         dones: torch.Tensor,
     ) -> None:
-        if not torch.any(accepted_dones):
+        accepted_indices = torch.nonzero(accepted_dones, as_tuple=True)[0].tolist()
+        if not accepted_indices:
             return
 
         info_source = infos
@@ -268,14 +307,8 @@ class FrozenEvaluationRunner:
         if not torch.equal(episode_mask, dones):
             raise ValueError("Expected infos['_episode'] to match evaluation dones.")
 
-        for env_idx in torch.nonzero(accepted_dones, as_tuple=False).flatten().tolist():
-            for key, values in episode_stats.items():
-                if key.startswith("_"):
-                    continue
-                value_mask = episode_stats.get(f"_{key}")
-                if value_mask is not None and not bool(to_python_episode_stat(value_mask[env_idx])):
-                    continue
-                value = to_python_episode_stat(values[env_idx])
+        for episode in iter_episode_rows(episode_stats, accepted_indices):
+            for key, value in episode.items():
                 if isinstance(value, (bool, int, float)):
                     episode_metrics.setdefault(key, []).append(float(value))
 
@@ -294,6 +327,7 @@ class FrozenEvaluationRunner:
             "successful_connections_per_unit_std": "successful_connections_per_unit_std",
             "successful_connections_per_unit_min": "successful_connections_per_unit_min",
             "successful_connections_per_unit_max": "successful_connections_per_unit_max",
+            **task_episode_metric_names(episode_metrics),
         }
         for source_key, metric_suffix in summary_keys.items():
             values = episode_metrics.get(source_key)
@@ -341,21 +375,6 @@ class FrozenEvaluationRunner:
         )
         return True
 
-    def _seed_rng(self, cuda_devices: list[int]) -> None:
-        torch.random.default_generator.manual_seed(self.seed)
-        for cuda_device in cuda_devices:
-            with torch.cuda.device(cuda_device):
-                torch.cuda.manual_seed(self.seed)
-
-    def _cuda_rng_devices(self) -> list[int]:
-        try:
-            device = next(self._policy.parameters()).device
-        except StopIteration:
-            return []
-        if device.type != "cuda":
-            return []
-        return [torch.cuda.current_device() if device.index is None else device.index]
-
 
 class ScheduledEvaluationHook:
     def __init__(
@@ -368,6 +387,9 @@ class ScheduledEvaluationHook:
         runner: FrozenEvaluationRunner,
         metrics_logger: MetricsLogger,
     ) -> None:
+        if any(isinstance(value, bool) or not isinstance(value, Integral) for value in (start_timesteps, total_timesteps)):
+            raise ValueError("Evaluation start_timesteps and total_timesteps must be integers")
+        start_timesteps, total_timesteps = int(start_timesteps), int(total_timesteps)
         if total_timesteps <= 0:
             raise ValueError(f"total_timesteps must be positive, got {total_timesteps}")
         if start_timesteps < 0 or start_timesteps >= total_timesteps:
@@ -377,42 +399,62 @@ class ScheduledEvaluationHook:
             )
         self.runner = runner
         self.metrics_logger = metrics_logger
-        current_timesteps = int(algorithm.n_total_timesteps)
-        seen_targets: set[int] = set()
-        self._pending: list[tuple[float, int]] = []
-        for percentage in sorted(milestones):
-            if percentage < 0 or percentage > 100:
+        self._start_timesteps = start_timesteps
+        self._window_steps = total_timesteps - start_timesteps
+        self._pending: list[float] = []
+        self._pending_write: tuple[int, RetryableMetricWrite] | None = None
+        for percentage in milestones:
+            if not 0 <= percentage <= 100:
                 raise ValueError(f"Evaluation milestone must be in [0, 100], got {percentage}")
-            target_timesteps = max(
-                start_timesteps + 1,
-                start_timesteps
-                + int((total_timesteps - start_timesteps) * percentage / 100),
-            )
-            if target_timesteps in seen_targets or target_timesteps <= current_timesteps:
-                continue
-            seen_targets.add(target_timesteps)
-            self._pending.append((float(percentage), target_timesteps))
+            self._pending.append(float(percentage))
+        self._pending.sort()
+        del self._pending[:self._reached_count(algorithm.n_total_timesteps)]
+
+    def _reached_count(self, timesteps: int) -> int:
+        timesteps = int(timesteps)
+        if timesteps <= self._start_timesteps:
+            return 0
+        progress = 100 * (timesteps - self._start_timesteps) / self._window_steps
+        return bisect_right(self._pending, progress)
 
     def __call__(self, algorithm: Any, metrics: dict[str, Any], rollout_steps: int) -> None:
-        _ = metrics, rollout_steps
-        if not self._pending or algorithm.n_total_timesteps < self._pending[0][1]:
+        if self._pending_write is not None:
+            self._publish_pending()
+        reached = self._reached_count(algorithm.n_total_timesteps)
+        if not reached:
             return
 
-        percentage, target_timesteps = self._pending.pop(0)
-        while self._pending and algorithm.n_total_timesteps >= self._pending[0][1]:
-            percentage, target_timesteps = self._pending.pop(0)
+        percentage = self._pending[reached - 1]
 
         logger.warning(
             f"Running frozen evaluation for {percentage:g}% milestone "
-            f"(target={target_timesteps}, actual={algorithm.n_total_timesteps})."
+            f"at {algorithm.n_total_timesteps} timesteps."
         )
         evaluation_metrics = self.runner.evaluate(
             timesteps=int(algorithm.n_total_timesteps),
             milestone_percentage=percentage,
             gsde_reset_mode=getattr(algorithm, "gsde_reset_mode", None),
         )
-        self.metrics_logger.log(evaluation_metrics)
-        self.metrics_logger.flush()
+        self._pending_write = reached, RetryableMetricWrite(evaluation_metrics.copy())
+        self._publish_pending()
+
+    def _publish_pending(self) -> None:
+        assert self._pending_write is not None
+        reached, write = self._pending_write
+        metrics_logger = self.metrics_logger
+        if (
+            isinstance(metrics_logger, MetricsLogger)
+            and getattr(metrics_logger.log, "__func__", None) is MetricsLogger.log
+            and getattr(metrics_logger.flush, "__func__", None) is MetricsLogger.flush
+        ):
+            metrics_logger.publish_retryable(write)
+        else:
+            if not write.queued:
+                metrics_logger.log(write.metrics)
+                write.queued = True
+            metrics_logger.flush()
+        self._pending_write = None
+        del self._pending[:reached]
 
     def close(self) -> None:
         try:

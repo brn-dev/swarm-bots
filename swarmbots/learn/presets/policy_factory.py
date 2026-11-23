@@ -96,9 +96,12 @@ def wrap_vec_env(
             preserve_inactive_prefix_structure=preserve_inactive_prefix_structure,
         )
     env = TorchRecordEpisodeStatisticsWrapper(env)
-    env = TorchTaskEpisodeStatsWrapper(
-        env, terminal_info_keys=tuple(vector_env.get_settings().get("scenario", {}).get("terminal_info_keys", ())),
-    )
+    settings = vector_env.get_settings()
+    child_settings = settings["scenarios"].values() if "scenarios" in settings else (settings,)
+    terminal_info_keys = tuple(dict.fromkeys(
+        key for child in child_settings for key in child.get("scenario", {}).get("terminal_info_keys", ())
+    ))
+    env = TorchTaskEpisodeStatsWrapper(env, terminal_info_keys=terminal_info_keys)
     env = TorchFeatureWiseObsNormWrapper(
         env,
         obs_key="local_obs",
@@ -456,7 +459,7 @@ def _make_base_policy(
         compile_modules=compile_policy_modules, compile_mode=policy_compile_mode, model_scale=model_scale,
     )
     encoders = PolicyEncoders(
-        feedforward=mat_encoder_config, recurrent=rmat_encoder_config,
+        feedforward=mat_encoder_config,
         recurrent_actor=rmat_actor_encoder_config, recurrent_critic=rmat_critic_encoder_config,
     )
     decoder = DecoderOptions(

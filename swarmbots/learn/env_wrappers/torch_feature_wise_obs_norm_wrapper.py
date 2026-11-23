@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from _thread import LockType, RLock
+from collections.abc import Callable
+from copy import deepcopy
+from inspect import signature
+from threading import Lock
+from typing import Any, Self
 
 import numpy as np
 import torch
@@ -12,7 +17,22 @@ from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_tensor_ops import 
     build_obs_norm_tensor_operation,
     should_compile_obs_norm_tensor_operations_by_default,
 )
+from swarmbots.learn.tensor_conversion import to_torch_tensor
 from swarmbots.learn.torch_running_mean_std import TorchRunningMeanStd
+
+
+def _accepts_sample_lanes(
+    observe: Callable[..., TorchObs], observations: TorchObs, sample_lanes: torch.Tensor,
+) -> bool:
+    try:
+        observe_signature = signature(observe)
+    except (TypeError, ValueError):
+        return False
+    try:
+        observe_signature.bind(observations, sample_lanes=sample_lanes)
+    except TypeError:
+        return False
+    return True
 
 
 class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
@@ -50,12 +70,19 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
 
         self._eps = float(eps)
         self._update_running_mean = True
+        self._reset_sample_lanes: torch.Tensor | None = None
         self.normalize_output = True
         self._compile_tensor_operations = compile_tensor_operations
         self._tensor_operations_compile_mode = tensor_operations_compile_mode
-        self._normalize_observations = self._build_normalize_observations()
-        self._normalize_frozen_observations = self._build_normalize_observations(update_statistics=False)
-        self._update_observation_statistics = self._build_normalize_observations(normalize_output=False)
+        self._rebuild_tensor_operations()
+
+    @property
+    def scalar_indices(self) -> torch.Tensor:
+        return self._scalar_indices
+
+    @property
+    def epsilon(self) -> float:
+        return self._eps
 
     @property
     def update_running_mean(self) -> bool:
@@ -65,7 +92,58 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
     def update_running_mean(self, setting: bool) -> None:
         self._update_running_mean = setting
 
-    def observations(self, observations: TorchObs) -> TorchObs:
+    def reset(self, **kwargs: Any) -> tuple[TorchObs, dict[str, Any]]:
+        reset_mask = (kwargs.get("options") or {}).get("reset_mask")
+        if reset_mask is None or not self._update_running_mean or self.obs_rms is None:
+            return super().reset(**kwargs)
+
+        obs, info = self.env.reset(**kwargs)
+        sample_lanes = to_torch_tensor(reset_mask, device=self.device, dtype=torch.bool).reshape(self._n_envs)
+        observe = self.observations
+        if getattr(observe, "__func__", None) is TorchFeatureWiseObsNormWrapper.observations:
+            return observe(obs, sample_lanes=sample_lanes), info
+
+        # A custom hook may call the base transform without forwarding the reset mask.
+        previous_sample_lanes = self._reset_sample_lanes
+        self._reset_sample_lanes = sample_lanes
+        try:
+            if _accepts_sample_lanes(observe, obs, sample_lanes):
+                return observe(obs, sample_lanes=sample_lanes), info
+            return observe(obs), info
+        finally:
+            self._reset_sample_lanes = previous_sample_lanes
+
+    def frozen_observation_copy(self, *, replacements: dict[int, Any] | None = None) -> Self:
+        """Snapshot a custom observation transform while sharing its simulator.
+
+        Direct tensor views are detached and cloned, and direct locks are replaced
+        with fresh unlocked locks. Override this method for hooks that close over
+        training state or need a custom snapshot of external resources. Pass
+        ``{id(resource): snapshot}`` as replacements to reuse the wrapper copy.
+        """
+        frozen = object.__new__(type(self))
+        # Copying the wrapper directly can resolve missing attributes through its live environment.
+        state = object.__getstate__(self)
+        attributes, slots = state if isinstance(state, tuple) else (state, {})
+        memo = {**(replacements or {}), id(self): frozen, id(self.env): self.env}
+        for value in (*attributes.values(), *slots.values()):
+            if id(value) in memo:
+                continue
+            if isinstance(value, torch.Tensor) and not value.is_leaf:
+                memo[id(value)] = value.detach().clone()
+            elif isinstance(value, LockType):
+                memo[id(value)] = Lock()
+            elif isinstance(value, RLock):
+                memo[id(value)] = RLock()
+        attributes, slots = deepcopy((attributes, slots), memo)
+        frozen.__dict__.update(attributes)
+        for name, value in slots.items():
+            object.__setattr__(frozen, name, value)
+        frozen.update_running_mean = False
+        frozen._reset_sample_lanes = None
+        return frozen
+
+    def observations(self, observations: TorchObs, *, sample_lanes: torch.Tensor | None = None) -> TorchObs:
         obs = observations[self.obs_key]
 
         if self.obs_rms is None and self._quaternion_slices.numel() == 0:
@@ -75,6 +153,11 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
             obs=obs,
             agent_mask=observations.get("agent_mask", None),
         )
+        if sample_lanes is None:
+            sample_lanes = self._reset_sample_lanes
+        if sample_lanes is not None:
+            lane_shape = (self._n_envs,) + (1,) * (statistics_mask.ndim - 1)
+            statistics_mask = statistics_mask & sample_lanes.reshape(lane_shape)
         if self.obs_rms is None:
             running_mean = torch.empty((0,), device=obs.device, dtype=torch.float64)
             running_var = torch.empty((0,), device=obs.device, dtype=torch.float64)
@@ -137,9 +220,13 @@ class TorchFeatureWiseObsNormWrapper(TorchEnvWrapper):
         self._scalar_indices = self._scalar_indices.to(self.device)
         self._quaternion_slices = self._quaternion_slices.to(self.device)
         if self.device.type != old_device_type and self._compile_tensor_operations is None:
-            self._normalize_observations = self._build_normalize_observations()
-            self._normalize_frozen_observations = self._build_normalize_observations(update_statistics=False)
-            self._update_observation_statistics = self._build_normalize_observations(normalize_output=False)
+            self._rebuild_tensor_operations()
+
+    def _rebuild_tensor_operations(self) -> None:
+        self._normalize_observations = self._build_normalize_observations()
+        self._default_frozen_observations = self._build_normalize_observations(update_statistics=False)
+        self._normalize_frozen_observations = self._default_frozen_observations
+        self._update_observation_statistics = self._build_normalize_observations(normalize_output=False)
 
     def _statistics_mask(
         self,

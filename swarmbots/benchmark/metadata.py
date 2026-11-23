@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
+from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 import json
 from pathlib import Path
@@ -13,6 +14,8 @@ import torch
 
 
 def _encode_setting(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
     if is_dataclass(value) and not isinstance(value, type):
         return {"type": type(value).__name__, **{field.name: getattr(value, field.name) for field in fields(value)}}
     if isinstance(value, np.ndarray):

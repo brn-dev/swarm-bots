@@ -164,6 +164,18 @@ def test_append_episode_infos_supports_unconditioned_environments() -> None:
     assert episode_infos == [{"r": 4.0}]
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float8_e4m3fn])
+def test_append_episode_infos_preserves_low_precision_vector_statistics(dtype: torch.dtype) -> None:
+    episode_infos: list[dict[str, object]] = []
+    values = torch.tensor([[1.25, -0.5], [3.0, 4.0]]).to(dtype)
+    append_episode_infos(
+        episode_infos=episode_infos,
+        infos={"episode": {"detail": values}, "_episode": [True, False]},
+        dones=torch.tensor([True, False]),
+    )
+    np.testing.assert_array_equal(episode_infos[0]["detail"], [1.25, -0.5])
+
+
 def test_append_episode_infos_rejects_episode_mask_disagreeing_with_dones() -> None:
     with pytest.raises(ValueError, match="match computed dones"):
         append_episode_infos(

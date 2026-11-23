@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import torch
 
-from swarmbots.learn.algos.ppo.ppo import PPO
+from swarmbots.learn.algos.ppo.ppo import PPO, _summarize_ppo_loss_metrics
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
 from swarmbots.learn.algos.sac.sac import SAC
@@ -18,6 +18,7 @@ from swarmbots.learn.optimizers import clip_grad_norm_, make_adam
 from swarmbots.learn.rollout_utils import (
     append_episode_infos, collect_rollout_step_metadata, extract_bootstrap_obs, extract_terminal_obs,
 )
+from swarmbots.learn.scheduling.auto_lr_updater import make_auto_lr_updater
 from swarmbots.learn.summary_statistics import (
     NO_DATA, TensorSummaryStatistics, compute_summary_statistics, compute_tensor_summary_statistics,
 )
@@ -32,7 +33,7 @@ CUDA = pytest.param("cuda", marks=(
 
 
 @pytest.mark.parametrize("device", ["cpu", CUDA])
-def test_ppo_step_shares_host_metadata_and_preserves_owned_terminal_observations(device: str) -> None:
+def test_rollout_step_shares_host_metadata_and_preserves_owned_terminal_observations(device: str) -> None:
     dones = torch.tensor([True, False, True], device=device)
     observations = {"local_obs": torch.arange(18, device=device).reshape(3, 2, 3).float()}
     terminal = {"local_obs": observations["local_obs"] + 100}
@@ -68,6 +69,10 @@ def test_ppo_step_shares_host_metadata_and_preserves_owned_terminal_observations
             env=SimpleNamespace(_obs_to_torch=lambda value: value), next_obs=observations,
             infos=infos, dones=dones, step_metadata=metadata,
         )
+        packed = extract_terminal_obs(
+            env=SimpleNamespace(_obs_to_torch=lambda value: value), next_obs=observations,
+            infos=infos, dones=dones, completed_indices=torch.tensor(metadata.completed_indices, device=device),
+        )
     assert episodes == [{"r": 4.}, {"r": 7.}]
     assert len(transfers) <= 2
     expected = observations["local_obs"].clone()
@@ -76,6 +81,7 @@ def test_ppo_step_shares_host_metadata_and_preserves_owned_terminal_observations
     terminal["local_obs"].zero_()
     observations["local_obs"].zero_()
     torch.testing.assert_close(bootstrap["local_obs"], expected)
+    torch.testing.assert_close(packed["local_obs"], expected[dones])
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -219,7 +225,7 @@ def test_deferred_ppo_metrics_preserve_masked_statistics_losses_and_gradients(de
         tensor = value.moments if isinstance(value, TensorSummaryStatistics) else value
         assert not tensor.requires_grad and tensor.grad_fn is None
     metrics["ratio"].moments.zero_()
-    actual = collected.compute_summary_statistics()
+    actual = _summarize_ppo_loss_metrics(collected)
     for name, expected in expected_metrics.items():
         if name == "ratio":
             assert actual[name].n == expected.n
@@ -227,9 +233,202 @@ def test_deferred_ppo_metrics_preserve_masked_statistics_losses_and_gradients(de
             assert actual[name].std == pytest.approx(expected.std)
             assert actual[name].min_value == pytest.approx(expected.min_value)
             assert actual[name].max_value == pytest.approx(expected.max_value)
+        elif name in {"approx_kl", "clip_frac"}:
+            assert actual[name].n == expected_metrics["ratio"].n
+            assert actual[name].mean == pytest.approx(expected)
         else:
             assert actual[name].n == 1
             assert actual[name].mean == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+@pytest.mark.parametrize("reduction", [None, "sum", "mean"])
+@pytest.mark.parametrize("single_ulp", [False, True], ids=["signed-deltas", "one-ulp"])
+def test_ppo_approx_kl_resolves_small_changes_in_float32_log_probs(
+        device: str, reduction: str | None, single_ulp: bool,
+) -> None:
+    ppo = _ppo_with_reduction(reduction)
+    ppo.normalize_advantage = ppo.use_popart = False
+    ppo.clip_range, ppo.clip_range_vf = .05, None
+    ppo.vf_coef = ppo.mc_ent_coef = 0.
+    batch = _make_samples()
+    for field in fields(batch):
+        value = getattr(batch, field.name)
+        if isinstance(value, torch.Tensor):
+            setattr(batch, field.name, value.to(device))
+    batch.log_probs.fill_(-8.)
+    batch.time_mask = torch.tensor([[True, False, True], [False, True, False]], device=device)
+    if single_ulp:
+        current = batch.log_probs.clone()
+        current[..., 0] = torch.nextafter(current[..., 0], torch.zeros_like(current[..., 0]))
+    else:
+        deltas = torch.linspace(-1e-4, 1e-4, batch.log_probs.numel(), device=device).reshape_as(batch.log_probs)
+        current = batch.log_probs + deltas
+    valid = batch.agent_mask & batch.time_mask.unsqueeze(-1)
+    current[~valid] = float("nan")
+    batch.log_probs.requires_grad_()
+    current.requires_grad_()
+    loss, kl, metrics = ppo.compute_ppo_loss(batch, current, batch.values)
+    loss.backward()
+    assert batch.log_probs.grad is None
+    assert torch.isfinite(current.grad).all() and current.grad[valid].abs().sum() > 0
+    changes = (current.detach().double() - batch.log_probs.detach().double()).masked_fill(~valid, 0.)
+    if reduction is None:
+        changes = changes[valid]
+    else:
+        count = valid.sum(-1)
+        changes = changes.sum(-1)[count > 0]
+        if reduction == "mean":
+            changes = changes / count[count > 0]
+    deltas = changes.cpu().numpy()
+    reference = (np.expm1(deltas) - deltas).mean()
+    assert reference > 0
+    assert kl == metrics["approx_kl"] == pytest.approx(reference, rel=1e-6, abs=0.)
+
+
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+def test_ppo_joint_diagnostics_remain_finite_beyond_the_float32_ratio_range(device: str) -> None:
+    ppo = _ppo_with_reduction("sum")
+    ppo.normalize_advantage = ppo.use_popart = False
+    ppo.clip_range, ppo.clip_range_vf = .05, None
+    ppo.vf_coef = ppo.mc_ent_coef = 0.
+    previous = torch.zeros(2, 16, device=device)
+    steps = previous[:, 0]
+    batch = PPOSamples(
+        local_obs=previous.unsqueeze(-1), global_obs=steps.unsqueeze(-1),
+        hidden_local_vars=previous.unsqueeze(-1), hidden_global_vars=steps.unsqueeze(-1),
+        agent_mask=None, previous_actions=None, actions=previous.unsqueeze(-1),
+        log_probs=previous, values=steps, returns=steps, advantages=steps,
+    )
+    # Sixteen modest per-agent changes produce a joint log ratio above log(float32.max).
+    current = torch.full_like(previous, 5.8125)
+    current[1] = 0.
+    expected = (np.expm1(93.) - 93.) / 2
+    for ordered in (current, current.flip(0)):
+        _, kl, metrics = ppo.compute_ppo_loss(batch, ordered, steps, materialize_metrics=False)
+        assert kl.item() == pytest.approx(expected)
+        pooled = MetricsLists()
+        pooled.add(metrics)
+        _, _, unchanged = ppo.compute_ppo_loss(batch, previous, steps, materialize_metrics=False)
+        pooled.add(unchanged)
+        summary = _summarize_ppo_loss_metrics(pooled)
+        assert summary["approx_kl"].n == summary["ratio"].n == 4
+        assert summary["approx_kl"].mean == pytest.approx(expected / 2)
+        reference_ratios = np.exp([93., 0., 0., 0.])
+        assert summary["ratio"].mean == pytest.approx(reference_ratios.mean())
+        assert summary["ratio"].std == pytest.approx(reference_ratios.std())
+        assert summary["ratio"].max_value == pytest.approx(reference_ratios.max())
+        assert summary["clip_frac"].mean == .25
+
+
+@pytest.mark.parametrize("device", ["cpu", CUDA])
+@pytest.mark.parametrize("clip_range", [.05, .2])
+def test_ppo_reports_clipping_only_outside_the_surrogate_bounds(device: str, clip_range: float) -> None:
+    ppo = _ppo_with_reduction(None)
+    ppo.normalize_advantage = ppo.use_popart = False
+    ppo.clip_range, ppo.clip_range_vf = clip_range, None
+    ppo.vf_coef = ppo.mc_ent_coef = 0.
+    batch = _make_samples()
+    for field in fields(batch):
+        value = getattr(batch, field.name)
+        if isinstance(value, torch.Tensor):
+            setattr(batch, field.name, value.to(device))
+    batch.agent_mask = None
+    batch.log_probs.zero_()
+    ratios = batch.log_probs.new_tensor([1 - clip_range, 1 + clip_range, .5, 1.5])
+    current = ratios.log().repeat(batch.log_probs.numel() // 4).reshape_as(batch.log_probs)
+    _, _, metrics = ppo.compute_ppo_loss(batch, current, batch.values)
+    assert metrics["clip_frac"] == .5
+
+
+@pytest.mark.parametrize("reduction", [None, "sum", "mean"])
+def test_ppo_clip_controller_pools_valid_ratios_across_minibatches(reduction: str | None) -> None:
+    ppo = _ppo_with_reduction(reduction)
+    ppo.normalize_advantage = ppo.use_popart = False
+    ppo.clip_range, ppo.clip_range_vf = .05, None
+    ppo.vf_coef = ppo.mc_ent_coef = 0.
+    collected = MetricsLists()
+    for active_agents, valid_steps, clipped_steps in [(5, 5, 0), (4, 5, 2), (4, 0, 0)]:
+        # The last column in time is padding, including for the fully masked minibatch.
+        previous = torch.zeros(1, 6, 5)
+        current = previous.clone()
+        current[:, :clipped_steps] += .06
+        current[:, valid_steps:] = .9
+        current[:, :, active_agents:] = .9
+        steps = torch.zeros(1, 6)
+        batch = PPOSamples(
+            local_obs=previous.unsqueeze(-1), global_obs=steps.unsqueeze(-1),
+            hidden_local_vars=previous.unsqueeze(-1), hidden_global_vars=steps.unsqueeze(-1),
+            agent_mask=(torch.arange(5) < active_agents).expand_as(previous), previous_actions=None,
+            actions=previous.unsqueeze(-1), log_probs=previous, values=steps, returns=steps, advantages=steps,
+        )
+        batch.time_mask = (torch.arange(6) < valid_steps).unsqueeze(0)
+        _, minibatch_kl, metrics = ppo.compute_ppo_loss(batch, current, steps, materialize_metrics=False)
+        log_change = .06 * (active_agents if reduction == "sum" else 1)
+        kl_per_clip = np.expm1(log_change) - log_change
+        assert minibatch_kl.item() == pytest.approx(kl_per_clip * clipped_steps / max(valid_steps, 1), abs=1e-7)
+        collected.add(metrics)
+        if valid_steps == 0:
+            empty = MetricsLists()
+            empty.add(metrics)
+            empty_metrics = _summarize_ppo_loss_metrics(empty)
+            assert empty_metrics["clip_frac"].n == 0 and empty_metrics["clip_frac"].mean is NO_DATA
+            assert make_auto_lr_updater()(1e-4, {}, 1, 0, 0, None, None, empty_metrics)["new_lr"] is None
+
+    pooled = _summarize_ppo_loss_metrics(collected)
+    count, clipped_count = (45, 8) if reduction is None else (10, 2)
+    fraction = clipped_count / count
+    assert pooled["clip_frac"].n == pooled["approx_kl"].n == count
+    assert pooled["clip_frac"].mean == pytest.approx(fraction)
+    assert pooled["clip_frac"].std == pytest.approx(np.sqrt(fraction * (1 - fraction)))
+    assert pooled["approx_kl"].mean == pytest.approx(kl_per_clip * fraction, abs=1e-7)
+    decision = make_auto_lr_updater()(1e-4, {}, 1, 2, 10, None, None, pooled)
+    if reduction is None:
+        assert decision["new_lr"] is None
+    else:
+        assert decision["event"] == "max_clip_frac_hit"
+        assert decision["new_lr"] == pytest.approx(8e-5)
+
+
+@pytest.mark.parametrize("batch_counts", [[(1, 40), (18, 60)], [(9, 50), (10, 50)], [(19, 100)]])
+def test_ppo_clip_controller_preserves_exact_threshold_across_partitions(batch_counts: list[tuple[int, int]]) -> None:
+    ppo = _ppo_with_reduction(None)
+    ppo.normalize_advantage = ppo.use_popart = False
+    ppo.clip_range, ppo.clip_range_vf = .05, None
+    ppo.vf_coef = ppo.mc_ent_coef = 0.
+    collected = MetricsLists()
+    for clipped, n in batch_counts:
+        old = torch.zeros(n, 1)
+        steps = torch.zeros(n)
+        current = old.clone()
+        current[:clipped] = .06
+        batch = PPOSamples(
+            local_obs=old.unsqueeze(-1), global_obs=old, hidden_local_vars=old.unsqueeze(-1),
+            hidden_global_vars=old, agent_mask=None, previous_actions=None, actions=old.unsqueeze(-1),
+            log_probs=old, values=steps, returns=steps, advantages=steps,
+        )
+        _, _, metrics = ppo.compute_ppo_loss(batch, current, steps, materialize_metrics=False)
+        collected.add(metrics)
+    pooled = _summarize_ppo_loss_metrics(collected)
+    assert pooled["clip_frac"].n == 100 and pooled["clip_frac"].mean == .19
+    assert make_auto_lr_updater()(1e-4, {}, 1, 2, 100, None, None, pooled)["new_lr"] is None
+
+
+@pytest.mark.parametrize("kl", [.01, torch.tensor(.01)])
+def test_ppo_accepts_custom_scalar_diagnostics_and_empty_sampling(kl: float | torch.Tensor) -> None:
+    batch = _make_samples()
+    ppo = _ppo_with_reduction(None)
+    ppo.policy = SimpleNamespace(evaluate_actions=lambda **kwargs: (batch.log_probs, batch.values, {}, {}))
+    ppo.metrics_action_splitters = []
+    custom_metrics = {'approx_kl': kl, 'clip_frac': .125}
+    with patch.object(ppo, 'compute_ppo_loss', return_value=(torch.tensor(0.), kl, custom_metrics)):
+        _, returned_kl, metrics = ppo.compute_loss(batch)
+    assert returned_kl == metrics['approx_kl'] == pytest.approx(.01)
+    assert metrics['clip_frac'] == .125
+    collected = MetricsLists()
+    assert _summarize_ppo_loss_metrics(collected) == {}
+    collected.add(custom_metrics)
+    assert _summarize_ppo_loss_metrics(collected)['clip_frac'].mean == .125
 
 
 @pytest.mark.parametrize("device", ["cpu", CUDA])
@@ -320,8 +519,9 @@ def test_adam_matches_reference_across_learning_rate_changes(device: str) -> Non
 
 
 @pytest.mark.parametrize("device", ["cpu", CUDA])
-@pytest.mark.parametrize("early_stop", [False, True])
-def test_ppo_training_preserves_updates_and_kl_early_stopping(device: str, early_stop: bool) -> None:
+@pytest.mark.parametrize("log_prob_shift", [0., .5, float("nan")], ids=["disabled", "over-target", "nonfinite"])
+def test_ppo_training_preserves_updates_and_kl_early_stopping(device: str, log_prob_shift: float) -> None:
+    early_stop = log_prob_shift != 0.
     env = _make_env()
     algorithm = PPO(_make_policy(env), env, train_device=device, n_epochs=2,
                     sampler_config=PPOSamplerConfig(batch_size=2), target_kl=.001 if early_stop else None)
@@ -337,7 +537,7 @@ def test_ppo_training_preserves_updates_and_kl_early_stopping(device: str, early
         actions, log_probs, values = algorithm.policy(**observations)
     segment = PPOEpisodeSegment(
         **observations, actions=actions, rewards=torch.zeros(4, device=device),
-        log_probs=log_probs - .5 if early_stop else log_probs, values=values,
+        log_probs=log_probs - log_prob_shift, values=values,
         final_local_obs=None, final_global_obs=None, final_hidden_local_vars=None,
         final_hidden_global_vars=None, final_agent_mask=None, final_value=None,
         returns=values + torch.arange(4, device=device), advantages=torch.arange(4, device=device).float(),
@@ -355,7 +555,7 @@ def test_ppo_training_preserves_updates_and_kl_early_stopping(device: str, early
     assert metrics["updates"] == algorithm.n_total_updates == (0 if early_stop else 4)
     assert len(expected_norms) == metrics["updates"]
     assert metrics["grad_norm"].n == metrics["updates"]
-    assert metrics["ratio"].n == (4 if early_stop else 16)
+    assert metrics["ratio"].n == metrics["clip_frac"].n == metrics["approx_kl"].n == (4 if early_stop else 16)
     assert 0 <= metrics["grad_clip_frac"] <= 1
     if expected_norms:
         assert metrics["grad_norm"].mean == pytest.approx(np.mean(expected_norms))

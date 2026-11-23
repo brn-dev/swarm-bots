@@ -149,7 +149,7 @@ class MATQCXPolicy(MATQCBasePolicy):
             *,
             agent_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        _ = augmented_observations, agent_embeddings
+        actions = actions.to(augmented_observations.dtype)
         return self.action_token_norm(self.action_encoder(self.action_input_norm(actions)))
 
     def _parallel_decoder_context_inputs(

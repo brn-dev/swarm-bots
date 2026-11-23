@@ -1,9 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeVar
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment, combine_action_dtype_masks
 from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
 from swarmbots.learn.base_sampler import BaseSampler, BaseSamplerConfig, BatchIndices
 
@@ -21,6 +21,7 @@ class PPOSamples:
     values: torch.Tensor
     returns: torch.Tensor
     advantages: torch.Tensor
+    action_dtypes: dict[torch.dtype, torch.Tensor] | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,9 @@ class PPOSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
         else:
             self.previous_actions = None
         self.actions = torch.concatenate(tuple(ep.actions for ep in episodes), dim=0)
+        self.action_dtypes = combine_action_dtype_masks(
+            ((ep.actions, ep.action_dtypes) for ep in episodes), self.actions.dtype, combine=torch.cat,
+        )
         self.log_probs = torch.concatenate(tuple(ep.log_probs for ep in episodes), dim=0)
         self.values = torch.concatenate(tuple(ep.values for ep in episodes), dim=0)
         self.returns = torch.concatenate(tuple(ep.returns for ep in episodes), dim=0)
@@ -85,6 +89,7 @@ class PPOSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
             values=self.values[batch_indices],
             returns=self.returns[batch_indices],
             advantages=self.advantages[batch_indices],
+            action_dtypes=select_action_dtype_masks(self.action_dtypes, batch_indices),
         )
 
 
@@ -109,6 +114,9 @@ class PPOBatchSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
             else _flatten_env_time(rollout_batch.previous_actions)
         )
         self.actions = _flatten_env_time(rollout_batch.actions)
+        self.action_dtypes = None if rollout_batch.action_dtypes is None else {
+            dtype: _flatten_env_time(mask) for dtype, mask in rollout_batch.action_dtypes.items()
+        }
         self.log_probs = _flatten_env_time(rollout_batch.log_probs)
         self.values = _flatten_env_time(rollout_batch.values)
         self.returns = _flatten_env_time(rollout_batch.returns)
@@ -133,8 +141,15 @@ class PPOBatchSampler(BaseSampler[PPOSamplesType, PPOSamplerConfigType]):
             values=self.values[batch_indices],
             returns=self.returns[batch_indices],
             advantages=self.advantages[batch_indices],
+            action_dtypes=select_action_dtype_masks(self.action_dtypes, batch_indices),
         )
 
 
 def _flatten_env_time(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.flatten(0, 1).contiguous()
+
+
+def select_action_dtype_masks(
+    action_dtypes: dict[torch.dtype, torch.Tensor] | None, batch_indices: BatchIndices,
+) -> dict[torch.dtype, torch.Tensor] | None:
+    return None if action_dtypes is None else {dtype: mask[batch_indices] for dtype, mask in action_dtypes.items()}

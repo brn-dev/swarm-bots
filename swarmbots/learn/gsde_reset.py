@@ -26,57 +26,26 @@ class GSDEProbabilityResetMode(GSDEResetMode):
     probability: float
 
 
-def build_gsde_step_reset_mask(
-    *,
-    gsde_reset_mode: GSDEResetMode | None,
-    rollout_step_idx: int,
-    batch_shape: tuple[int, ...],
-    rollout_device: torch.device,
-    initialize: bool = False,
-) -> torch.Tensor | None:
-    if gsde_reset_mode is None:
-        return None
-    if initialize:
-        return torch.ones(batch_shape, device=rollout_device, dtype=torch.bool)
-    if isinstance(gsde_reset_mode, GSDEEpisodeResetMode):
-        return None
-    if isinstance(gsde_reset_mode, GSDEIntervalResetMode):
-        if rollout_step_idx % gsde_reset_mode.interval == 0:
-            return torch.ones(batch_shape, device=rollout_device, dtype=torch.bool)
-        return None
-    if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-        return torch.empty(batch_shape, device=rollout_device, dtype=torch.bool).bernoulli_(
-            gsde_reset_mode.probability
-        )
-    raise TypeError(f"Unknown gsde_reset_mode type: {type(gsde_reset_mode)}")
-
-
 def reset_gsde_noise(
     *,
     action_dist: Any,
     local_obs: torch.Tensor,
     episode_start_mask: torch.Tensor,
     rollout_step_idx: int,
-    gsde_reset_mode: GSDEResetMode,
+    gsde_reset_mode: GSDEResetMode | None,
     initialize: bool,
 ) -> None:
+    """Refresh noise once per selected environment/agent, immediately before sampling."""
     batch_shape = tuple(local_obs.shape[:-1])
-    if initialize:
+    if gsde_reset_mode is not None and (initialize or (
+        isinstance(gsde_reset_mode, GSDEIntervalResetMode) and rollout_step_idx % gsde_reset_mode.interval == 0
+    )):
         action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
-    action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
-    if initialize:
-        return
-    step_reset_mask = build_gsde_step_reset_mask(
-        gsde_reset_mode=gsde_reset_mode,
-        rollout_step_idx=rollout_step_idx,
-        batch_shape=batch_shape,
-        rollout_device=local_obs.device,
-    )
-    if step_reset_mask is not None:
-        if isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
-            action_dist.reset_temporal_correlations_on_step(mask=step_reset_mask)
-        else:
-            action_dist.reset_temporal_correlations_on_step(batch_shape=batch_shape)
+    elif isinstance(gsde_reset_mode, GSDEProbabilityResetMode):
+        mask = torch.empty(batch_shape, device=local_obs.device, dtype=torch.bool).bernoulli_(gsde_reset_mode.probability)
+        action_dist.reset_temporal_correlations_on_step(mask=mask | episode_start_mask.unsqueeze(-1))
+    else:
+        action_dist.reset_temporal_correlations_on_ep_start(episode_start_mask)
 
 
 def gsde_reset_mode_from_settings(settings: Mapping[str, Any] | None) -> GSDEResetMode | None:

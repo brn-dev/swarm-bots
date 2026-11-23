@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import mujoco
 import pytest
 import torch
+import warp as wp
 
-from swarmbots import ALL_BENCHMARK_IDS, make_env, make_scenario
+from swarmbots import ALL_BENCHMARK_IDS, evaluate_policy, make_env, make_scenario
 from swarmbots.mjw_env.mjw_torch_utils import sample_float_or_dist
 from swarmbots.mjw_env.parameter_distributions import TruncatedNormalDistParams, UniformDistParams, eval_truncated_normal
 from swarmbots.mjw_env.scenarios.mjw_payload_step_runtime import _compute_payload_step_reward_extras_kernel
@@ -285,3 +286,126 @@ def test_wall_threshold_observations_retain_custom_order_and_latch_crossings(
         assert observations["hidden_local_vars"][0, 0].tolist() == [0.0, 1.0]
     finally:
         env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("settle_time", [0.0, 0.01])
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+def test_mixed_wall_height_matches_physics_and_rewards_across_resets(settle_time: float, device: str) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    env = make_env(
+        "SwarmBots-WallMixed-v0", num_envs=16, device=device, episode_length=2, compile_tensor_operations=False,
+        scenario_kwargs={
+            "swarm_start_y": 0.0,
+            "reset_settle_time": settle_time, "compile_reward_kernel": False,
+            "unit_start_locations": MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=[42000]),
+        },
+    )
+    try:
+        observations, _ = env.reset(seed=7)
+        assert observations["global_obs"].shape == (16, 1)
+        wall = env._host_model.body("Wall")
+        geom_id = int(wall.geomadr[0])
+        half_height = env._host_model.geom_size[geom_id, 2]
+        center = wp.to_torch(env._data.geom_xpos)[:, geom_id, 2]
+
+        def tops() -> torch.Tensor:
+            assert (center - half_height <= 0).all()
+            return center + half_height
+
+        initial_heights = tops().clone()
+        torch.testing.assert_close(initial_heights.unique(), initial_heights.new_tensor([0.3, 0.4]))
+        torch.testing.assert_close(observations["global_obs"][:, 0], initial_heights)
+        env.reset(seed=7)
+        torch.testing.assert_close(tops(), initial_heights)
+
+        reset_mask = torch.arange(env.num_envs, device=env.device) % 2 == 0
+        observations, _ = env.reset(options={"reset_mask": reset_mask})
+        heights = tops().clone()
+        torch.testing.assert_close(observations["global_obs"][:, 0], heights)
+        torch.testing.assert_close(heights[~reset_mask], initial_heights[~reset_mask])
+        assert (heights[reset_mask] != initial_heights[reset_mask]).any()
+
+        runtime = env._scenario_runtime
+        # A policy can preprocess its public input in place before stepping.
+        observations["global_obs"].fill_(-7)
+        stable = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
+        rest = runtime.compute_step_rewards(stable_mask=stable)
+        torch.testing.assert_close(rest.reward, torch.zeros_like(rest.reward), atol=1e-6, rtol=0)
+
+        root_y = int(env._metadata.unit_qpos_adr[0]) + 1
+        ground_z = env.scenario.swarm.body_radius
+        env._qpos[:, root_y] = 0.9
+        env._qpos[:, root_y + 1] = 0.25
+        climb = runtime.compute_step_rewards(stable_mask=stable).info["wall_climb_reward"]
+        medium = heights < 0.35
+        assert climb[medium].min() > climb[~medium].max() > 0
+
+        env._qpos[:, root_y + 1] = ground_z + 0.35
+        forward = runtime.compute_step_rewards(stable_mask=stable).info["forward_reward"]
+        # At y=0.9 the unit has travelled 0.35 m into the boost zone. Its root
+        # fully clears the medium wall and is halfway through the hard wall's height ramp.
+        torch.testing.assert_close(forward[medium], torch.full_like(forward[medium], 0.70))
+        torch.testing.assert_close(forward[~medium], torch.full_like(forward[~medium], 0.35))
+        torch.testing.assert_close(tops(), heights)
+
+        observations, _ = env.reset(seed=7)
+        observations["global_obs"].zero_()
+        actions = {key: torch.zeros(space.shape, device=env.device) for key, space in env.action_space.items()}
+        observations, *_ = env.step(actions)
+        torch.testing.assert_close(observations["global_obs"][:, 0], initial_heights)
+        observations, _, _, truncated, info = env.step(actions)
+        assert truncated.all()
+        torch.testing.assert_close(info["final_obs"]["global_obs"][:, 0], initial_heights)
+        torch.testing.assert_close(observations["global_obs"][:, 0], tops())
+        assert (tops() != initial_heights).any()
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("settle_time", [0.0, 0.01])
+def test_fixed_wall_restores_observable_height_after_instability(settle_time: float) -> None:
+    env = make_env(
+        "SwarmBots-WallMedium-v0", num_envs=2, device="cpu", compile_tensor_operations=False,
+        scenario_kwargs={
+            "wall_height_observable": True, "reset_settle_time": settle_time, "compile_reward_kernel": False,
+            "unit_start_locations": MJWPreConnectedUnitLocationsConfig(num_units=1, pool_seeds=[42000]),
+        },
+    )
+    try:
+        obs, _ = env.reset(seed=7)
+        expected = torch.full((2, 1), env.scenario.wall_height)
+        torch.testing.assert_close(obs["global_obs"], expected)
+
+        def fail_one_lane() -> None:
+            env._qvel[0, 0] = float("nan")
+
+        actions = {key: torch.zeros(space.shape) for key, space in env.action_space.items()}
+        with patch.object(env, "_run_physics", fail_one_lane):
+            obs, _, terminated, _, info = env.step(actions)
+        assert terminated.tolist() == [True, False]
+        assert info["final_obs"]["global_obs"][0, 0] == 0
+        torch.testing.assert_close(obs["global_obs"], expected)
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("height", [0.3, 0.4])
+def test_wall_mixed_evaluation_can_pin_the_public_height(height: float) -> None:
+    benchmark_id = "SwarmBots-WallMixed-v0"
+    scenario = make_scenario(benchmark_id, compile_reward_kernel=False)
+    action_space = scenario.get_batched_action_space(num_envs=2)
+
+    def policy(observations: dict[str, torch.Tensor], episode_starts: torch.Tensor) -> dict[str, torch.Tensor]:
+        torch.testing.assert_close(observations["global_obs"], torch.full((2, 1), height))
+        return {key: torch.zeros(space.shape) for key, space in action_space.items()}
+
+    result = evaluate_policy(
+        policy, benchmark_id, num_episodes=2, num_envs=2, episode_length=2, device="cpu",
+        scenario_kwargs={"wall_height_options": [height], "reset_settle_time": 0.0, "compile_reward_kernel": False},
+        env_kwargs={"compile_tensor_operations": False},
+    )
+    assert result.episode_lengths == (2, 2)

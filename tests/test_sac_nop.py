@@ -243,6 +243,11 @@ class SACNOPTests(unittest.TestCase):
             ({
                 "source_latent_dim": 6,
                 "action_dim": 2,
+                "config": replace(valid_config, nop_loss_coef=float("nan")),
+            }, "nop_loss_coef"),
+            ({
+                "source_latent_dim": 6,
+                "action_dim": 2,
                 "config": replace(valid_config, nop_latent_dim=0),
             }, "nop_latent_dim"),
             ({

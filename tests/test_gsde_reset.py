@@ -98,8 +98,9 @@ def test_disabling_gsde_step_resets_preserves_noise_until_each_episode_ends(
     )
     torch.testing.assert_close(distribution.get_temporal_correlation_state(), initial_noise)
 
+    # The third action ends the episode. Its successor needs fresh noise.
     collector(
-        env, policy, algorithm.rollout_buffer, n_steps=2, rollout_state=rollout_state,
+        env, policy, algorithm.rollout_buffer, n_steps=4, rollout_state=rollout_state,
         gsde_reset_mode=algorithm.gsde_reset_mode,
     )
     reset_noise = distribution.get_temporal_correlation_state()

@@ -23,6 +23,7 @@ from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper im
     SwarmBotsLearnEnvWrapper,
 )
 from swarmbots.learn.gsde_reset import GSDEEpisodeResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode
+from swarmbots.learn.rollout_utils import extract_terminal_obs
 
 
 def test_replay_rejects_empty_swarms_without_mutating_storage():
@@ -350,6 +351,163 @@ def _add_direct_step(
         temporal_state=temporal_state,
         next_temporal_state=next_temporal_state,
     )
+
+
+@pytest.mark.parametrize("packed", [False, True])
+@pytest.mark.parametrize("bad_global_obs", [None, torch.zeros(1, 2), torch.zeros(2, 1)])
+def test_malformed_terminal_fields_preserve_full_ring(
+    packed: bool, bad_global_obs: torch.Tensor | None,
+) -> None:
+    env = _make_multi_env((), (), ())
+    try:
+        buffer = _make_buffer(env, capacity_per_env=1)
+        _add_direct_step(buffer, obs_values=(0, 100, 200), next_obs_values=(10, 110, 210),
+                         action_value=1, terminations=(True, False, True), terminal_obs_values=(1, 201))
+        original = buffer.get_all()
+        terminal_obs = _multi_obs((11, 211) if packed else (11, 111, 211))
+        if bad_global_obs is None:
+            del terminal_obs["global_obs"]
+        else:
+            terminal_obs["global_obs"] = bad_global_obs
+        with pytest.raises(ValueError, match="global_obs"):
+            buffer.add(
+                obs=_multi_obs((10, 110, 210)), next_obs=_multi_obs((20, 120, 220)),
+                actions=torch.zeros(3, 2, 2), rewards=torch.zeros(3),
+                terminations=torch.tensor([True, False, True]), truncations=torch.zeros(3, dtype=torch.bool),
+                terminal_obs=terminal_obs,
+            )
+        retained = buffer.get_all()
+        for field in fields(original):
+            torch.testing.assert_close(getattr(retained, field.name), getattr(original, field.name))
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize(("completed_lanes", "terminal_values", "expected"), [
+    ([2, 0, 1], (1, 101, 201), [1, 101, 201]),
+    ([2, 0], (1, 101, 201), [1, 110, 201]),
+    ([2, 0], (201, 1), [1, 110, 201]),
+])
+def test_direct_add_maps_terminal_rows_to_supplied_completed_lanes(
+    completed_lanes: list[int], terminal_values: tuple[int, ...], expected: list[int],
+) -> None:
+    env = _make_multi_env((), (), ())
+    try:
+        buffer = _make_buffer(env, capacity_per_env=1)
+        dones = torch.zeros(3, dtype=torch.bool)
+        dones[completed_lanes] = True
+        buffer.add(
+            obs=_multi_obs((0, 100, 200)), next_obs=_multi_obs((10, 110, 210)),
+            actions=torch.zeros(3, 2, 2), rewards=torch.zeros(3),
+            terminations=torch.zeros_like(dones), truncations=dones,
+            terminal_obs=_multi_obs(terminal_values), completed_indices=torch.tensor(completed_lanes),
+        )
+
+        assert buffer.get_all().next_local_obs[:, 0, 0].tolist() == expected
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("invalid_indices", [
+    torch.empty(0, dtype=torch.long), torch.tensor([0, 1]), torch.tensor([0, 0]),
+    torch.tensor([0, 3]), torch.tensor([[0, 2]]), torch.tensor([0., 2.]),
+])
+def test_replay_rejects_invalid_completed_indices_before_overwriting_live_slot(invalid_indices: torch.Tensor) -> None:
+    env = _make_multi_env((), (), ())
+    try:
+        buffer = _make_buffer(env, capacity_per_env=1)
+        buffer.add(
+            obs=_multi_obs((0, 100, 200)), next_obs=_multi_obs((10, 110, 210)),
+            actions=torch.zeros(3, 2, 2), rewards=torch.zeros(3),
+            terminations=torch.tensor([True, False, True]), truncations=torch.zeros(3, dtype=torch.bool),
+            terminal_obs=_multi_obs((1, 201)),
+        )
+        saved = buffer.get_all()
+        with pytest.raises(ValueError, match="completed_indices"):
+            buffer.add(
+                obs=_multi_obs((10, 110, 210)), next_obs=_multi_obs((20, 120, 220)),
+                actions=torch.ones(3, 2, 2), rewards=torch.ones(3),
+                terminations=torch.tensor([True, False, True]), truncations=torch.zeros(3, dtype=torch.bool),
+                terminal_obs=_multi_obs((11, 211)), completed_indices=invalid_indices,
+            )
+        assert buffer.total_transitions_added == 3
+        retained = buffer.get_all()
+        for field in fields(saved):
+            torch.testing.assert_close(getattr(retained, field.name), getattr(saved, field.name))
+    finally:
+        env.close()
+
+
+def test_collector_preserves_custom_replay_add_signature() -> None:
+    env = _make_multi_env((1,), ())
+    try:
+        buffer = _make_buffer(env, capacity_per_env=2)
+        builtin_add = buffer.add
+
+        def custom_add(
+            *, obs: dict[str, torch.Tensor], actions: torch.Tensor, rewards: torch.Tensor,
+            terminations: torch.Tensor, truncations: torch.Tensor, next_obs: dict[str, torch.Tensor],
+            terminal_obs: dict[str, torch.Tensor] | None, previous_actions: torch.Tensor | None,
+            episode_start_mask: torch.Tensor, temporal_state: Any, next_temporal_state: Any,
+            copy_current_obs: bool,
+        ) -> None:
+            builtin_add(
+                obs=obs, actions=actions, rewards=rewards, terminations=terminations, truncations=truncations,
+                next_obs=next_obs, terminal_obs=terminal_obs, previous_actions=previous_actions,
+                episode_start_mask=episode_start_mask, temporal_state=temporal_state,
+                next_temporal_state=next_temporal_state, copy_current_obs=copy_current_obs,
+            )
+
+        with patch.object(buffer, "add", new=custom_add):
+            collect_off_policy_steps(env, buffer, 2, random_actions=True)
+        transitions = buffer.get_all()
+        assert (transitions.terminations | transitions.truncations).tolist() == [True, False]
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize("object_array", [False, True])
+@pytest.mark.parametrize(("completed_lanes", "expected"), [
+    ([2, 0, 1], [1, 101, 201]),
+    ([2, 0], [201, 1]),
+])
+def test_extracted_terminal_rows_follow_replay_order(
+    object_array: bool, completed_lanes: list[int], expected: list[int],
+) -> None:
+    env = _make_multi_env((), (), ())
+    try:
+        full_obs = _multi_obs((1, 101, 201))
+        if object_array:
+            final_obs = np.empty(3, dtype=object)
+            for lane in completed_lanes:
+                final_obs[lane] = {key: value[lane] for key, value in full_obs.items()}
+        else:
+            final_obs = full_obs
+        dones = torch.zeros(3, dtype=torch.bool)
+        dones[completed_lanes] = True
+        packed = extract_terminal_obs(
+            env=env, next_obs=full_obs, infos={"final_obs": final_obs, "_final_obs": dones},
+            dones=dones, completed_indices=torch.tensor(completed_lanes),
+        )
+        full_obs["local_obs"].zero_()
+        assert packed["local_obs"][:, 0, 0].tolist() == expected
+    finally:
+        env.close()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cuda_rollout_keeps_object_array_terminal_indices_on_host() -> None:
+    env = _make_multi_env((2,), (4,))
+    try:
+        buffer = _make_buffer(env, capacity_per_env=4)
+        with patch.object(off_policy_rollout, "extract_terminal_obs", wraps=extract_terminal_obs) as extract:
+            collect_off_policy_steps(env, buffer, 8, random_actions=True, rollout_device="cuda")
+        indices = [call.kwargs["completed_indices"] for call in extract.call_args_list]
+        assert all(value.device.type == "cpu" for value in indices)
+        assert [value.tolist() for value in indices] == [[], [0], [], [0, 1]]
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("packed", [False, True])
@@ -713,7 +871,7 @@ class OffPolicyReplayTests(unittest.TestCase):
             self.assertEqual(policy.action_dist.step_resets, [(None, (1, 2))])
             self.assertEqual(
                 [mask.tolist() for mask in policy.action_dist.episode_start_masks],
-                [[True], [False], [True], [False], [True]],
+                [[False], [True], [False], [True]],
             )
         finally:
             env.close()
@@ -1081,12 +1239,13 @@ class OffPolicyReplayTests(unittest.TestCase):
         try:
             buffer = _make_buffer(env, capacity_per_env=6)
             for step in range(6):
-                truncated = step in {0, 2, 4}
+                truncated = step in {0, 1, 2, 4}
                 _add_direct_step(
                     buffer,
                     obs_values=(float(step),),
                     next_obs_values=(float(step + 1),),
                     action_value=float(step),
+                    terminations=(step == 1,),
                     truncations=(truncated,),
                     terminal_obs_values=(float(100 + step),) if truncated else None,
                 )
@@ -1117,7 +1276,9 @@ class OffPolicyReplayTests(unittest.TestCase):
                 sorted(limited.local_obs[:, 0, 0, 0].tolist()),
                 [0.0, 2.0],
             )
-            self.assertTrue((limited.truncations[:, 1:].sum(dim=1) <= 1).all())
+            first_segment = limited.local_obs[:, 0, 0, 0] == 0
+            self.assertEqual(limited.truncations[first_segment].tolist(), [[True, True, True, False]])
+            self.assertEqual(limited.terminations[first_segment].tolist(), [[False, True, False, False]])
         finally:
             env.close()
 
@@ -1988,7 +2149,16 @@ class OffPolicyReplayTests(unittest.TestCase):
     def test_direct_done_add_rejects_terminal_obs_with_wrong_leading_dimension(self) -> None:
         env = _make_multi_env((), (), ())
         try:
-            buffer = _make_buffer(env, capacity_per_env=2)
+            buffer = _make_buffer(env, capacity_per_env=1)
+            buffer.add(
+                obs=_multi_obs((0.0, 100.0, 200.0)),
+                actions=torch.zeros(3, 2, 2),
+                rewards=torch.zeros(3),
+                terminations=torch.tensor([True, False, False]),
+                truncations=torch.zeros(3, dtype=torch.bool),
+                next_obs=_multi_obs((10.0, 110.0, 210.0)),
+                terminal_obs=_multi_obs((1.0,)),
+            )
 
             with self.assertRaisesRegex(ValueError, "leading dimension"):
                 buffer.add(
@@ -2000,6 +2170,7 @@ class OffPolicyReplayTests(unittest.TestCase):
                     next_obs=_multi_obs((10.0, 110.0, 210.0)),
                     terminal_obs=_multi_obs((999.0, 1001.0)),
                 )
+            self.assertEqual(buffer.get_all().next_local_obs[:, 0, 0].tolist(), [1.0, 110.0, 210.0])
         finally:
             env.close()
 
@@ -3123,7 +3294,7 @@ class OffPolicyReplayTests(unittest.TestCase):
 
             self.assertEqual(
                 [mask.tolist() for mask in policy.action_dist.episode_start_masks],
-                [[True], [False], [False]],
+                [[False]],
             )
             self.assertEqual(len(policy.action_dist.step_resets), 2)
             self.assertEqual(policy.action_dist.step_resets[0], (None, (1, 2)))
@@ -3192,9 +3363,9 @@ class OffPolicyReplayTests(unittest.TestCase):
             )
 
             self.assertIsNotNone(rollout_state.gsde_noise_state)
-            self.assertEqual(policy.action_dist.call_order, ["step", "ep_start"])
+            self.assertEqual(policy.action_dist.call_order, ["step"])
             self.assertEqual(policy.action_dist.step_resets, [(None, (1, 2))])
-            self.assertEqual([mask.tolist() for mask in policy.action_dist.episode_start_masks], [[False]])
+            self.assertEqual([mask.tolist() for mask in policy.action_dist.episode_start_masks], [])
         finally:
             env.close()
 
@@ -3212,7 +3383,7 @@ class OffPolicyReplayTests(unittest.TestCase):
                 gsde_reset_mode=GSDEProbabilityResetMode(probability=0.5),
             )
 
-            self.assertEqual(policy.action_dist.call_order, ["step", "ep_start", "ep_start", "step"])
+            self.assertEqual(policy.action_dist.call_order, ["step", "step"])
             self.assertEqual(policy.action_dist.step_resets[0], (None, (1, 2)))
             sampled_mask, batch_shape = policy.action_dist.step_resets[1]
             self.assertIsNone(batch_shape)

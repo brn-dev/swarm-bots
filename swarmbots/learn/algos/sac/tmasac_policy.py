@@ -22,6 +22,7 @@ from swarmbots.learn.algos.off_policy.nop import (
     SACNOPConfig,
     SACNOPLatentSource,
     SACNOPModule,
+    get_nop_loss_weights,
     normalize_nop_latent_source,
     update_nop_loss_weights,
 )
@@ -782,6 +783,9 @@ class TMASACPolicy(BaseSACPolicy):
                 ),
             })
         return metrics
+
+    def get_loss_weights(self) -> dict[str, float]:
+        return get_nop_loss_weights(self.actor_nop, self.critic_nop)
 
     def update_loss_weights(self, **weights: float) -> None:
         update_nop_loss_weights(weights, actor_nop=self.actor_nop, critic_nop=self.critic_nop)

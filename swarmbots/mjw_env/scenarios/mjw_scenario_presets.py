@@ -196,6 +196,12 @@ def hard_wall(**kwargs: object) -> MJWWallScenario:
     return default_wall(difficulty="hard", **kwargs)
 
 
+def mixed_wall(**kwargs: object) -> MJWWallScenario:
+    kwargs.setdefault("wall_height_options", (0.3, 0.4))
+    kwargs.setdefault("wall_height_observable", True)
+    return default_wall(difficulty="hard", **kwargs)
+
+
 def partially_observable_wall(
     *,
     difficulty: PoWallDifficulty = "easy",

@@ -7,6 +7,7 @@ import pytest
 import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
 
+from swarmbots.learn.algos.off_policy import collect_off_policy_steps
 from swarmbots.learn.algos.off_policy.base_algorithm import OffPolicyAlgorithm
 from swarmbots.learn.algos.off_policy.replay_buffer import OffPolicyReplayEpisodeSegmentBatch
 from swarmbots.learn.algos.off_policy.replay_exposure import resolve_replay_updates
@@ -93,6 +94,40 @@ def _iterate_with_scored_batches(algorithm: OffPolicyAlgorithm) -> tuple[dict[st
             if isinstance(batch, OffPolicyReplayEpisodeSegmentBatch) else batch.actions.shape[0]
         )
     return metrics, scored_positions
+
+
+@pytest.mark.parametrize("family", ["sac", "td3"])
+@pytest.mark.parametrize("recurrent", [False, True])
+def test_reporting_failure_preserves_actor_and_target_update_cadence(
+    family: Literal["sac", "td3"], recurrent: bool,
+) -> None:
+    env = _make_env()
+    try:
+        trainer = _make_algorithm(env, family, recurrent=recurrent, batch_size=2, rollout_steps=8, exposure=1)
+        trainer.policy_delay = 2
+        trainer.target_update_interval = 2
+        collect_off_policy_steps(env, trainer.replay_buffer, n_steps=8, policy=trainer.policy, random_actions=True)
+        for count in (1, 2, 3):
+            target = trainer.policy.critic_target
+            previous_target = [parameter.detach().clone() for parameter in target.parameters()]
+            if count < 3:
+                with patch.object(trainer, "_preserve_train_step_result", side_effect=RuntimeError("reporting failed")):
+                    with pytest.raises(RuntimeError, match="reporting failed"):
+                        trainer.train(gradient_steps=1)
+            else:
+                assert trainer.train(gradient_steps=1)["updates"] == 1
+
+            assert trainer.n_total_updates == count
+            assert max(int(state["step"]) for state in trainer.critic_optimizer.state.values()) == count
+            actor_steps = [int(state["step"]) for state in trainer.actor_optimizer.state.values()]
+            assert max(actor_steps, default=0) == count // 2
+            target_changed = any(
+                not torch.equal(previous, current)
+                for previous, current in zip(previous_target, target.parameters(), strict=True)
+            )
+            assert target_changed == (count % 2 == (1 if family == "sac" else 0))
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("rollout_steps,exposure,expected_updates", [

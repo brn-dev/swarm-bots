@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Callable
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -30,20 +33,38 @@ class PopArtLinear(nn.Module):
         self.eps = float(eps)
         self.min_std = float(min_std)
         self.init_gain = float(init_gain)
-
+        init_sigma = float(init_sigma)
+        if not 0.0 <= self.beta <= 1.0:
+            raise ValueError("PopArt beta must be in [0, 1]")
+        if not all(math.isfinite(x) and x >= 0 for x in (init_sigma, self.eps, self.min_std)):
+            raise ValueError("PopArt init_sigma, eps and min_std must be finite and nonnegative")
+        initial_variance = init_sigma * init_sigma
+        initial_scale = max(math.sqrt(max(initial_variance, self.eps)), self.min_std)
         self.weight = nn.Parameter(torch.empty((self.out_features, self.in_features), **factory_kwargs))
+        # Validate in the readout dtype without synchronizing an accelerator during construction.
+        mean, scale = torch.tensor((init_mu, initial_scale), dtype=self.weight.dtype, device="cpu").tolist()
+        if not math.isfinite(mean) or not 0.0 < scale < math.inf:
+            raise ValueError("PopArt initial mean and scale must be finite in the readout dtype, with positive scale")
+
         if bias:
             self.bias = nn.Parameter(torch.empty((self.out_features,), **factory_kwargs))
         else:
             self.bias = None
             self.register_buffer("normalization_bias", torch.zeros((self.out_features,), **factory_kwargs))
 
-        self.register_buffer("mu", torch.full((self.out_features,), float(init_mu), **factory_kwargs))
-        init_sigma_t = torch.full((self.out_features,), float(init_sigma), **factory_kwargs)
-        init_nu = self.mu.square() + init_sigma_t.square()
-        self.register_buffer("nu", init_nu)
+        self.register_buffer("mu", torch.full((self.out_features,), float(init_mu), device=device, dtype=torch.float64))
+        self.register_buffer("variance", torch.full_like(self.mu, initial_variance))
 
         self.reset_parameters()
+
+    def _apply(self, fn: Callable[[torch.Tensor], torch.Tensor], recurse: bool = True) -> PopArtLinear:
+        mean, variance = self.mu, self.variance
+        super()._apply(fn, recurse)
+        # Module-wide precision changes may move the head too. Keep accumulated moments at full precision.
+        if self.mu.dtype != torch.float64:
+            self.mu = mean.to(self.mu.device)
+            self.variance = variance.to(self.variance.device)
+        return self
 
     def reset_parameters(self) -> None:
         nn.init.orthogonal_(self.weight, gain=self.init_gain)
@@ -84,51 +105,56 @@ class PopArtLinear(nn.Module):
                 layer.bias.copy_(linear.bias)
         return layer
 
-    def _sigma_from(self, mu: torch.Tensor, nu: torch.Tensor) -> torch.Tensor:
-        var = nu - mu.square()
-        sigma = torch.sqrt(torch.clamp(var, min=self.eps))
+    def _sigma_from(self, variance: torch.Tensor) -> torch.Tensor:
+        sigma = torch.sqrt(torch.clamp(variance, min=self.eps))
         return torch.clamp(sigma, min=self.min_std)
 
     def sigma(self) -> torch.Tensor:
-        return self._sigma_from(self.mu, self.nu)
+        return self._sigma_from(self.variance).to(dtype=self.weight.dtype)
 
     def normalize(self, y: torch.Tensor) -> torch.Tensor:
-        return (y - self.mu) / self.sigma()
+        return (y - self.mu.to(dtype=self.weight.dtype)) / self.sigma()
 
     def denormalize(self, y_norm: torch.Tensor) -> torch.Tensor:
-        return y_norm * self.sigma() + self.mu
+        return y_norm * self.sigma() + self.mu.to(dtype=self.weight.dtype)
 
     @torch.no_grad()
     def update(self, targets: torch.Tensor) -> None:
         if targets.numel() == 0:
             return
+        if self.beta == 0.0:
+            if not torch.isfinite(targets).all():
+                raise ValueError("PopArt targets must be finite")
+            return
 
-        y = targets.to(device=self.mu.device, dtype=self.mu.dtype)
-        if y.ndim == 0:
-            y = y.unsqueeze(0)
-        if self.out_features == 1:
-            y = y.reshape(-1)
-        else:
-            y = y.reshape(-1, self.out_features)
-
-        batch_mean = y.mean(dim=0)
-        batch_second_moment = y.square().mean(dim=0)
-
-        old_mu = self.mu.clone()
-        old_nu = self.nu.clone()
-        old_sigma = self._sigma_from(old_mu, old_nu)
-
-        new_mu = (1.0 - self.beta) * old_mu + self.beta * batch_mean
-        new_nu = (1.0 - self.beta) * old_nu + self.beta * batch_second_moment
-        new_sigma = self._sigma_from(new_mu, new_nu)
-
-        scale = old_sigma / new_sigma
-        self.weight.mul_(scale.unsqueeze(-1))
+        y = targets.to(device=self.mu.device, dtype=self.mu.dtype).reshape(-1, self.out_features)
+        new_variance, new_mu = torch.var_mean(y, dim=0, correction=0)
+        if self.beta < 1.0:
+            delta = new_mu - self.mu
+            new_mu = torch.lerp(self.mu, new_mu, self.beta)
+            # The mixture variance includes the distance between the two populations' means.
+            new_variance = torch.lerp(self.variance, new_variance, self.beta) + (
+                self.beta * (1.0 - self.beta) * delta * delta
+            )
+        # Preserve predictions in the same rounded frame used by normalize/denormalize.
+        old_sigma = self.sigma().double()
+        new_sigma = self._sigma_from(new_variance).to(dtype=self.weight.dtype).double()
+        mean_shift = self.mu.to(dtype=self.weight.dtype).double() - new_mu.to(dtype=self.weight.dtype).double()
         bias = self.bias if self.bias is not None else self.normalization_bias
-        bias.copy_((old_sigma * bias + old_mu - new_mu) / new_sigma)
+        new_bias = ((old_sigma * bias + mean_shift) / new_sigma).to(dtype=bias.dtype)
+        new_weight = torch.empty_like(self.weight)
+        torch.mul(self.weight, (old_sigma / new_sigma).unsqueeze(-1), out=new_weight)
+        valid = (
+            torch.isfinite(new_mu) & torch.isfinite(new_variance) & torch.isfinite(new_sigma)
+            & torch.isfinite(new_bias) & torch.isfinite(new_weight).all(dim=-1)
+        )
+        if not valid.all():
+            raise ValueError("PopArt target moments and rescaled readout must be finite")
 
+        self.weight.copy_(new_weight)
+        bias.copy_(new_bias)
         self.mu.copy_(new_mu)
-        self.nu.copy_(new_nu)
+        self.variance.copy_(new_variance)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias if self.bias is not None else self.normalization_bias

@@ -7,11 +7,13 @@ import queue
 import threading
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Optional, Collection, Callable, Self
+from uuid import uuid4
 
-import torch
 from loguru import logger
 
 try:
@@ -22,12 +24,20 @@ except ValueError:
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.checkpointing import (
     align_torch_compile_state_dict_keys,
-    apply_env_state,
+    best_candidate_digest,
+    prepare_env_state,
+    install_env_state,
+    restore_best_candidate_digest,
+    snapshot_best_candidate_extra_state,
+    snapshot_policy_for_extra_state,
+    validate_policy_state,
     capture_env_state,
-    load_checkpoint,
+    load_training_checkpoint,
+    write_checkpoint,
 )
 from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage, HybridEMA
+from swarmbots.learn.loss_weights import prepare_checkpoint_loss_weights
 from swarmbots.learn.logging_levels import ConsoleSelection, LoggingLevel
 from swarmbots.learn.metrics_logger import (
     MetricsLogger,
@@ -48,6 +58,20 @@ MIN_ITERATIONS_FOR_BEST = 100
 
 LearningRate = float | list[float] | dict[str, float]
 LearnIterationHook = Callable[["BaseAlgorithm", dict[str, Any], int], None]
+
+
+@dataclass
+class _PendingIterationHooks:
+    timesteps: int
+    hooks: tuple[LearnIterationHook, ...]
+    metrics: dict[str, Any]
+    rollout_steps: int
+
+
+def validate_timestep_budget(value: int | None) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+        raise ValueError("The training timestep budget must be a positive integer")
+    return int(value)
 
 
 def validate_scalar_learning_rate(learning_rate: LearningRate) -> float:
@@ -86,9 +110,16 @@ def _apply_log_metric_reductions(metrics: dict[str, Any]) -> dict[str, Any]:
     for key in MEAN_STD_LOG_METRIC_KEYS:
         if key in logging_metrics and logging_metrics[key] is not None:
             logging_metrics[key] = mean_std(logging_metrics[key])
-    for key in SUM_LOG_METRIC_KEYS:
-        if key in logging_metrics and logging_metrics[key] is not None:
-            logging_metrics[key] = summed(logging_metrics[key])
+    for key, value in metrics.items():
+        if value is None:
+            continue
+        if key in SUM_LOG_METRIC_KEYS or (key.startswith("scenario/") and key.endswith("/episodes")):
+            logging_metrics[key] = summed(value)
+        elif key == "ep_success_rate__n" or key.endswith("/ep_success_rate__n"):
+            rate_key = key.removesuffix("__n")
+            if metrics.get(rate_key) is not None:
+                logging_metrics[rate_key] = rate(metrics[rate_key] * value, value)
+            logging_metrics[key] = summed(value)
     return logging_metrics
 
 
@@ -99,6 +130,8 @@ class BaseAlgorithm(abc.ABC):
             policy: BasePolicy,
             env: BaseLearnEnvWrapper,
             learning_rate: LearningRate,
+            *,
+            rollout_warmup_steps_per_env: int = 0,
     ) -> None:
         self.policy = policy
         self.env = env
@@ -109,12 +142,20 @@ class BaseAlgorithm(abc.ABC):
         self.n_total_iterations = 0
         self.n_total_updates = 0
         self.n_total_timesteps = 0
+        self.rollout_warmup_steps_per_env = int(rollout_warmup_steps_per_env)
+        if self.rollout_warmup_steps_per_env < 0:
+            raise ValueError(f"rollout_warmup_steps_per_env must be >= 0, got {self.rollout_warmup_steps_per_env}")
+        self._rollout_warmup_done = False
         self._command_queue: queue.Queue[str] = queue.Queue()
         self._command_prompt_started: bool = False
         self._active_run_dir: Path | None = None
         self._last_return_ema: float | None = None
         self._final_return_ema: float | None = None
+        self._episode_return_ema = HybridEMA(alpha=0.01)
+        self._episode_success_rate_ema = HybridEMA(alpha=0.01)
         self._best_return_ema: float | None = None
+        self._pending_best_save: bytes | None = None
+        self._pending_iteration_hooks: _PendingIterationHooks | None = None
         self._active_max_total_timesteps: int | None = None
         self._active_learn_started_monotonic: float | None = None
         self._active_learn_started_timesteps: int | None = None
@@ -132,6 +173,9 @@ class BaseAlgorithm(abc.ABC):
             checkpoint: dict[str, Any],
     ) -> None:
         """Reject invalid optimizer settings before loading any trainer state."""
+
+    def _restore_checkpoint_schedulers(self, optimizer_state: dict[str, Any]) -> None:
+        """Apply checked scheduler settings before copying any checkpoint tensors."""
 
     def _get_algorithm_state_dict(self) -> dict[str, Any]:
         return {}
@@ -170,6 +214,18 @@ class BaseAlgorithm(abc.ABC):
     def _before_learn_loop(self) -> None:
         pass
 
+    def _run_iteration_hooks(
+            self, hooks: tuple[LearnIterationHook, ...], metrics: dict[str, Any], rollout_steps: int,
+    ) -> None:
+        for index, hook in enumerate(hooks):
+            try:
+                hook(self, metrics, rollout_steps)
+            except BaseException:
+                self._pending_iteration_hooks = _PendingIterationHooks(
+                    self.n_total_timesteps, hooks[index:], metrics, rollout_steps,
+                )
+                raise
+
     def learn(
             self,
             max_total_timesteps: int | None = None,
@@ -179,7 +235,7 @@ class BaseAlgorithm(abc.ABC):
             save_interval: Optional[int] = None,
             save_optimizer: bool = True,
             extra_run_metadata: dict[str, Any] | None = None,
-            episode_return_ema_alpha: float = 0.01,
+            episode_return_ema_alpha: float | None = None,
             best_rotation_n: int = 1,
             wandb_project: str | None = None,
             wandb_entity: str | None = None,
@@ -197,19 +253,25 @@ class BaseAlgorithm(abc.ABC):
             enable_command_prompt: bool = True,
             post_iteration_hooks: Collection[LearnIterationHook] | None = None,
     ) -> Self:
-        assert (
-                (max_total_timesteps is not None and max_total_timesteps > 0 and additional_timesteps is None)
-                or
-                (additional_timesteps is not None and additional_timesteps > 0 and max_total_timesteps is None)
-        )
-        assert best_rotation_n >= 1
+        if (max_total_timesteps is None) == (additional_timesteps is None):
+            raise ValueError("Supply exactly one of max_total_timesteps and additional_timesteps")
+        if additional_timesteps is None:
+            max_total_timesteps = validate_timestep_budget(max_total_timesteps)
+        else:
+            max_total_timesteps = self.n_total_timesteps + validate_timestep_budget(additional_timesteps)
+        if type(best_rotation_n) is not int or best_rotation_n < 1:
+            raise ValueError("best_rotation_n must be a positive integer")
         if log_interval is not None and log_interval < 1:
             raise ValueError(f"log_interval must be >= 1 or None, got {log_interval}")
         if logging_buffer_size < 1:
             raise ValueError(f"logging_buffer_size must be >= 1, got {logging_buffer_size}")
 
-        if max_total_timesteps is None:
-            max_total_timesteps = self.n_total_timesteps + additional_timesteps
+        if save_interval is not None and (type(save_interval) is not int or save_interval < 1):
+            raise ValueError("save_interval must be a positive integer or None")
+        if episode_return_ema_alpha is not None:
+            if not 0 <= episode_return_ema_alpha <= 1:
+                raise ValueError("episode_return_ema_alpha must be between 0 and 1")
+            self._episode_return_ema.alpha = self._episode_success_rate_ema.alpha = episode_return_ema_alpha
 
         if run_dir is not None:
             run_dir = pathlib.Path(run_dir)
@@ -218,9 +280,8 @@ class BaseAlgorithm(abc.ABC):
 
         best_models_dir: pathlib.Path | None = None
         learn_started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        learn_started_iterations = self.n_total_iterations
         if run_dir is not None:
-            best_models_dir = run_dir / "models" / "best" / learn_started_at
+            best_models_dir = run_dir / "models" / "best" / f"{learn_started_at}_{uuid4().hex}"
 
         wandb_config: dict[str, Any] | None = None
         if wandb_project is not None:
@@ -253,16 +314,14 @@ class BaseAlgorithm(abc.ABC):
             persistence_level=logging_persistence_level,
             buffer_size=logging_buffer_size,
         )
-        episode_return_ema = HybridEMA(alpha=episode_return_ema_alpha)
-        episode_success_rate_ema = HybridEMA(alpha=episode_return_ema_alpha)
-        best_return_ema: float | None = self._best_return_ema
-        best_save_counter = 0
+        episode_return_ema = self._episode_return_ema
+        episode_success_rate_ema = self._episode_success_rate_ema
 
         self._active_run_dir = run_dir
         self._active_max_total_timesteps = max_total_timesteps
         self._active_learn_started_monotonic = time.monotonic()
         self._active_learn_started_timesteps = self.n_total_timesteps
-        self._last_return_ema = None
+        self._last_return_ema = episode_return_ema.get()
         self._final_return_ema = None
         should_compress_metrics_log = False
 
@@ -270,6 +329,17 @@ class BaseAlgorithm(abc.ABC):
             if enable_command_prompt:
                 self._maybe_start_command_prompt()
 
+            retry_best = self._can_retry_best_save()
+            self._pending_best_save = None
+            best_save_counter = 0
+            if retry_best:
+                best_save_counter = self._maybe_save_best_ema_model(best_models_dir, best_rotation_n, save_optimizer, 0)
+            hooks = tuple(post_iteration_hooks or ())
+            pending = self._pending_iteration_hooks
+            self._pending_iteration_hooks = None
+            if pending is not None and pending.timesteps == self.n_total_timesteps:
+                remaining = tuple(hook for hook in pending.hooks if hook in hooks)
+                self._run_iteration_hooks(remaining, pending.metrics, pending.rollout_steps)
             self._before_learn_loop()
 
             while self.n_total_timesteps < max_total_timesteps:
@@ -283,49 +353,41 @@ class BaseAlgorithm(abc.ABC):
                 )
                 iter_duration = iter_timer.stop().get_duration()
 
-                if post_iteration_hooks is not None:
-                    for hook in post_iteration_hooks:
-                        hook(self, metrics, rollout_steps)
-
-                current_return_ema = episode_return_ema.get()
-                current_success_rate_ema = episode_success_rate_ema.get()
-                current_success_rate_ema_percent = (
-                    None if current_success_rate_ema is None else 100.0 * current_success_rate_ema
-                )
-                self._last_return_ema = current_return_ema
-                if (current_return_ema is not None and
-                        self.n_total_iterations - learn_started_iterations >= MIN_ITERATIONS_FOR_BEST):
-                    best_return_ema, best_save_counter = self._maybe_save_best_ema_model(
-                        best_models_dir=best_models_dir,
-                        best_rotation_n=best_rotation_n,
-                        save_optimizer=save_optimizer,
-                        current_episode_return_ema=current_return_ema,
-                        best_episode_return_ema=best_return_ema,
-                        best_save_counter=best_save_counter,
+                try:
+                    self._run_iteration_hooks(hooks, metrics, rollout_steps)
+                finally:
+                    # A hook can fail after the optimizer has already completed this iteration.
+                    current_return_ema = episode_return_ema.get()
+                    current_success_rate_ema = episode_success_rate_ema.get()
+                    current_success_rate_ema_percent = (
+                        None if current_success_rate_ema is None else 100.0 * current_success_rate_ema
                     )
-                    self._best_return_ema = best_return_ema
-
-                if log_interval is not None and self.n_total_iterations % log_interval == 0:
-                    metric_logger.log({
-                        'learn_start': learn_started_at,
-                        'iteration': self.n_total_iterations,
-                        'timesteps': self.n_total_timesteps,
-                        'learning_rate': self.learning_rate,
-                        **_apply_log_metric_reductions(metrics),
-                        'ep_rew_ema': current_return_ema,
-                        'ep_success_rate_ema': current_success_rate_ema_percent,
-                        'best_ep_rew_ema': best_return_ema,
-                        'fps': rate(rollout_steps, iter_duration),
-                    })
-
-                if save_interval is not None and run_dir is not None and self.n_total_iterations % save_interval == 0:
-                    save_path = run_dir / f"models/model_{self.n_total_timesteps}_steps.pt"
-                    self.save(
-                        save_path,
-                        optimizer_state_dict=self._get_optimizer_state_dict() if save_optimizer else None,
-                        return_ema=current_return_ema
+                    self._last_return_ema = current_return_ema
+                    best_save_counter = self._maybe_save_best_ema_model(
+                        best_models_dir, best_rotation_n, save_optimizer, best_save_counter,
                     )
-                    logger.log("SAVE", f"Saved model to {save_path.as_posix()}")
+
+                    if log_interval is not None and self.n_total_iterations % log_interval == 0:
+                        metric_logger.log({
+                            'learn_start': learn_started_at,
+                            'iteration': self.n_total_iterations,
+                            'timesteps': self.n_total_timesteps,
+                            'learning_rate': self.learning_rate,
+                            **_apply_log_metric_reductions(metrics),
+                            'ep_rew_ema': current_return_ema,
+                            'ep_success_rate_ema': current_success_rate_ema_percent,
+                            'best_ep_rew_ema': self._best_return_ema,
+                            'fps': rate(rollout_steps, iter_duration),
+                        })
+
+                    if save_interval is not None and run_dir is not None and self.n_total_iterations % save_interval == 0:
+                        save_path = run_dir / f"models/model_{self.n_total_timesteps}_steps.pt"
+                        self.save(
+                            save_path,
+                            optimizer_state_dict=self._get_optimizer_state_dict() if save_optimizer else None,
+                            return_ema=current_return_ema
+                        )
+                        logger.log("SAVE", f"Saved model to {save_path.as_posix()}")
 
             if run_dir is not None:
                 save_path = run_dir / f"models/model_{self.n_total_timesteps}_steps_final.pt"
@@ -409,40 +471,60 @@ class BaseAlgorithm(abc.ABC):
 
         metadata_path.write_text(json.dumps(metadata_json, indent=2, sort_keys=True), encoding="utf-8")
 
+    def _current_best_candidate(self) -> bytes | None:
+        try:
+            counters = self.n_total_iterations, self.n_total_updates, self.n_total_timesteps
+            return best_candidate_digest(
+                self.policy.state_dict(), capture_env_state(self.env), counters, self._episode_return_ema.get(),
+            )
+        except Exception:
+            # Failed storage or an unavailable device may also prevent identifying the candidate.
+            # Preserve the original save error and leave an unverifiable candidate ineligible.
+            return None
+
+    def _can_retry_best_save(self) -> bool:
+        return self._pending_best_save is not None and self._pending_best_save == self._current_best_candidate()
+
     def _maybe_save_best_ema_model(
             self,
             best_models_dir: pathlib.Path | None,
             best_rotation_n: int,
             save_optimizer: bool,
-            current_episode_return_ema: float,
-            best_episode_return_ema: float | None,
             best_save_counter: int,
-    ) -> tuple[float | None, int]:
-        if best_episode_return_ema is not None and current_episode_return_ema <= best_episode_return_ema:
-            return best_episode_return_ema, best_save_counter
+    ) -> int:
+        score = self._episode_return_ema.get()
+        if score is None or self.n_total_iterations < MIN_ITERATIONS_FOR_BEST:
+            return best_save_counter
+        if self._best_return_ema is not None and score <= self._best_return_ema:
+            return best_save_counter
 
-        best_episode_return_ema = current_episode_return_ema
-        self._best_return_ema = best_episode_return_ema
+        previous_best = self._best_return_ema
+        self._best_return_ema = score
         if best_models_dir is None:
-            return best_episode_return_ema, best_save_counter
+            return best_save_counter
 
         if best_rotation_n == 1:
             best_save_path = best_models_dir / "model_best.pt"
         else:
             best_save_idx = best_save_counter % best_rotation_n
             best_save_path = best_models_dir / f"model_best_{best_save_idx}.pt"
-            best_save_counter += 1
 
-        self.save(
-            best_save_path,
-            optimizer_state_dict=self._get_optimizer_state_dict() if save_optimizer else None,
-            return_ema=current_episode_return_ema
-        )
+        # The candidate belongs in its own checkpoint. On failure it must remain eligible for retry.
+        try:
+            self.save(
+                best_save_path,
+                optimizer_state_dict=self._get_optimizer_state_dict() if save_optimizer else None,
+                return_ema=score,
+            )
+        except BaseException:
+            self._best_return_ema = previous_best
+            self._pending_best_save = self._current_best_candidate()
+            raise
         logger.log(
             "SAVE",
-            f"Saved best-EMA model to {best_save_path.as_posix()} (ep_rew_ema={best_episode_return_ema:.4f})",
+            f"Saved best-EMA model to {best_save_path.as_posix()} (ep_rew_ema={score:.4f})",
         )
-        return best_episode_return_ema, best_save_counter
+        return best_save_counter + 1
 
     def save(
             self,
@@ -450,29 +532,12 @@ class BaseAlgorithm(abc.ABC):
             optimizer_state_dict: Optional[dict[str, Any]] = None,
             return_ema: Optional[float] = None,
     ) -> None:
+        if return_ema is None:
+            return_ema = self._episode_return_ema.get()
+        if return_ema is not None and not math.isfinite(return_ema):
+            raise ValueError("Checkpoint return EMA must be finite")
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-
-        env_state = capture_env_state(self.env)
-
-        save_dict = {
-            'policy_state_dict': self.policy.state_dict(),
-            'algorithm_state_dict': self._get_algorithm_state_dict(),
-            'policy_hyper_parameters': self.policy.get_hyper_parameters(),
-            'hyper_parameters': self.get_hyper_parameters(),
-            'model_scale': getattr(self.policy, 'model_scale', None),
-            'env_state': env_state,
-            'n_total_iterations': self.n_total_iterations,
-            'n_total_updates': self.n_total_updates,
-            'n_total_timesteps': self.n_total_timesteps,
-            'return_ema': return_ema,
-            'best_return_ema': self._best_return_ema,
-        }
-
-        if optimizer_state_dict is not None:
-            save_dict['optimizer_state_dict'] = optimizer_state_dict
-
-        torch.save(save_dict, path)
 
         metadata = {
             'n_total_iterations': self.n_total_iterations,
@@ -481,8 +546,42 @@ class BaseAlgorithm(abc.ABC):
             'return_ema': return_ema,
             'best_return_ema': self._best_return_ema,
         }
-        metadata_path = path.with_name(f"{path.name}.json")
-        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+        save_dict = {
+            **metadata,
+            'policy_state_dict': self.policy.state_dict(),
+            'policy_loss_weights': self.policy.get_loss_weights(),
+            'algorithm_state_dict': self._get_algorithm_state_dict(),
+            'policy_hyper_parameters': self.policy.get_hyper_parameters(),
+            'hyper_parameters': self.get_hyper_parameters(),
+            'model_scale': getattr(self.policy, 'model_scale', None),
+            'env_state': capture_env_state(self.env),
+            'episode_return_ema': self._episode_return_ema.state_dict(),
+            'episode_success_rate_ema': self._episode_success_rate_ema.state_dict(),
+            'rollout_warmup_done': self._rollout_warmup_done,
+            'pending_best_digest': None,
+        }
+        if self._pending_best_save is not None:
+            self._attach_pending_best_candidate(save_dict)
+
+        if optimizer_state_dict is not None:
+            save_dict['optimizer_state_dict'] = optimizer_state_dict
+
+        write_checkpoint(path, save_dict, metadata)
+
+    def _attach_pending_best_candidate(self, payload: dict[str, Any]) -> None:
+        try:
+            policy_state = payload["policy_state_dict"]
+            extra_state = snapshot_best_candidate_extra_state(policy_state)
+            counters = payload["n_total_iterations"], payload["n_total_updates"], payload["n_total_timesteps"]
+            digest = best_candidate_digest(
+                policy_state, payload["env_state"], counters, payload["episode_return_ema"]["ema"], extra_state=extra_state,
+            )
+        except Exception:
+            return
+        if digest == self._pending_best_save:
+            payload["pending_best_digest"] = digest
+            if extra_state is not None:
+                payload["pending_best_extra_state"] = extra_state
 
     def load(
             self,
@@ -494,7 +593,7 @@ class BaseAlgorithm(abc.ABC):
             restore_optimizer_state: bool = True,
             restore_env_state: bool = True,
     ) -> None:
-        checkpoint = load_checkpoint(path, map_location=map_location)
+        checkpoint, verified_best_archive = load_training_checkpoint(path, map_location=map_location)
         algorithm_state_dict = checkpoint["algorithm_state_dict"]
         self._validate_algorithm_state_dict(algorithm_state_dict)
         optimizer_state_dict = (
@@ -502,47 +601,91 @@ class BaseAlgorithm(abc.ABC):
             if restore_optimizer_state
             else None
         )
-        target_policy_keys = self.policy.state_dict().keys()
+        episode_return_ema = HybridEMA.from_state_dict(checkpoint["episode_return_ema"])
+        episode_success_rate_ema = HybridEMA.from_state_dict(checkpoint["episode_success_rate_ema"])
+        counters = tuple(checkpoint[key] for key in ("n_total_iterations", "n_total_updates", "n_total_timesteps"))
+        if any(type(value) is not int or value < 0 for value in counters):
+            raise ValueError("Checkpoint counters must be nonnegative integers")
+        warmup_done = checkpoint["rollout_warmup_done"]
+        if type(warmup_done) is not bool:
+            raise ValueError("Checkpoint rollout_warmup_done must be a boolean")
+        pending_best_digest = checkpoint["pending_best_digest"]
+        if pending_best_digest is not None and not isinstance(pending_best_digest, bytes):
+            raise ValueError("Checkpoint pending_best_digest must contain bytes or None")
+        pending_best_extra_state = checkpoint.get("pending_best_extra_state")
+        if pending_best_extra_state is not None and not isinstance(pending_best_extra_state, bytes):
+            raise ValueError("Checkpoint pending_best_extra_state must contain bytes or None")
+        best_return = checkpoint["best_return_ema"] if recover_best_return_ema else self._best_return_ema
+        if best_return is not None and not math.isfinite(best_return):
+            raise ValueError("Checkpoint best return must be finite")
+        env_updates = prepare_env_state(self.env, checkpoint["env_state"]) if restore_env_state else []
+        target_policy = self.policy.state_dict()
+        target_policy_keys = target_policy.keys()
         policy_state_dict = align_torch_compile_state_dict_keys(
             checkpoint["policy_state_dict"],
             target_keys=target_policy_keys,
         )
-        if optimizer_state_dict is not None and (
-            strict_load_state_dict or policy_state_dict.keys() == target_policy_keys
-        ):
+        matching_policy = policy_state_dict.keys() == target_policy_keys
+        restore_optimizer = optimizer_state_dict is not None and (strict_load_state_dict or matching_policy)
+        if restore_optimizer:
+            saved_learning_rate = checkpoint["hyper_parameters"]["learning_rate"]
             self._validate_optimizer_checkpoint(checkpoint)
-        missing_keys, unexpected_keys = self.policy.load_state_dict(
-            policy_state_dict,
-            strict=strict_load_state_dict
+        validate_policy_state(
+            policy_state_dict, target_policy, strict=strict_load_state_dict,
+            parameter_names=dict(self.policy.named_parameters(remove_duplicate=False)).keys(),
         )
+        loss_weights = (
+            prepare_checkpoint_loss_weights(checkpoint["policy_loss_weights"], self.policy.get_loss_weights())
+            if matching_policy else {}
+        )
+        restore_policy = snapshot_policy_for_extra_state(self.policy, policy_state_dict, target_policy)
+        previous_optimizer_state = (
+            self._get_optimizer_state_dict() if restore_policy is not None and restore_optimizer else None
+        )
+        if restore_optimizer:
+            self._restore_checkpoint_schedulers(optimizer_state_dict)
+        try:
+            missing_keys, unexpected_keys = self.policy.load_state_dict(policy_state_dict, strict=strict_load_state_dict)
+        except BaseException:
+            if restore_policy is not None:
+                restore_policy()
+            if previous_optimizer_state is not None:
+                self._restore_checkpoint_schedulers(previous_optimizer_state)
+            raise
         if missing_keys or unexpected_keys:
             logger.warning(f'{missing_keys = },  {unexpected_keys = }')
+        elif loss_weights:
+            self.policy.update_loss_weights(**loss_weights)
 
         self._apply_algorithm_state_dict(algorithm_state_dict)
 
-        if optimizer_state_dict is not None:
-            if missing_keys or unexpected_keys:
-                logger.warning('Skipping optimizer state dict load, as we have missing/unexpected keys')
-                self._apply_learning_rate(self.learning_rate)
-            else:
-                # Warmup schedules recompute optimizer rates from the base rate on the next update.
-                self.learning_rate = checkpoint["hyper_parameters"]["learning_rate"]
-                self._apply_optimizer_state_dict(
-                    optimizer_state_dict,
-                    missing_keys=missing_keys,
-                    unexpected_keys=unexpected_keys,
-                )
+        if restore_optimizer and not (missing_keys or unexpected_keys):
+            # Warmup schedules recompute optimizer rates from the base rate on the next update.
+            self.learning_rate = saved_learning_rate
+            self._apply_optimizer_state_dict(optimizer_state_dict, missing_keys=[], unexpected_keys=[])
         else:
+            if optimizer_state_dict is not None:
+                logger.warning("Skipping optimizer state restore because policy keys differ")
             self._apply_learning_rate(self.learning_rate)
 
-        self.n_total_iterations = checkpoint["n_total_iterations"]
-        self.n_total_updates = checkpoint["n_total_updates"]
-        self.n_total_timesteps = checkpoint["n_total_timesteps"]
-        if recover_best_return_ema:
-            self._best_return_ema = checkpoint["best_return_ema"]
-
-        if restore_env_state:
-            apply_env_state(self.env, checkpoint["env_state"])
+        self.n_total_iterations, self.n_total_updates, self.n_total_timesteps = counters
+        self._rollout_warmup_done = warmup_done
+        self._best_return_ema = best_return
+        self._episode_return_ema = episode_return_ema
+        self._episode_success_rate_ema = episode_success_rate_ema
+        retry_best = recover_best_return_ema and restore_env_state and not (missing_keys or unexpected_keys)
+        self._final_return_ema = episode_return_ema.get()
+        install_env_state(env_updates)
+        self._pending_best_save = pending_best_digest if retry_best else None
+        if self._pending_best_save is not None:
+            try:
+                self._pending_best_save = restore_best_candidate_digest(
+                    self._pending_best_save, pending_best_extra_state, self.policy.state_dict(),
+                    capture_env_state(self.env), counters, episode_return_ema.get(), verified_archive=verified_best_archive,
+                )
+            except Exception:
+                self._pending_best_save = None
+        self._pending_iteration_hooks = None
 
     def execute_command(self, cmd: str) -> bool:
         """Run a read-only inspection command and report whether it succeeded."""

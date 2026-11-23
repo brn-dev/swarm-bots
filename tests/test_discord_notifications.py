@@ -3,6 +3,8 @@ from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from swarmbots.learn import discord_notifications
 from swarmbots.learn.discord_notifications import _format_training_run_finished_message
 
@@ -31,13 +33,11 @@ class DiscordNotificationTests(unittest.TestCase):
 
     def test_mjw_simulation_instability_notification_is_sent_once_per_run(self) -> None:
         with (
-            patch.dict(
-                "os.environ",
-                {discord_notifications.DISCORD_WEBHOOK_ENV_VAR: "https://example.test/webhook"},
-            ),
+            pytest.MonkeyPatch.context() as env,
             patch.object(discord_notifications, "_mjw_warning_notification_keys", set()),
             patch.object(discord_notifications, "send_discord_message", return_value=True) as send_message,
         ):
+            env.setenv(discord_notifications.DISCORD_WEBHOOK_ENV_VAR, "https://example.test/webhook")
             first_result = discord_notifications.notify_mjw_simulation_instability_once(
                 scenario_name="TestScenario",
                 num_envs=1024,

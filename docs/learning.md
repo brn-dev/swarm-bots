@@ -76,7 +76,7 @@ Tasks normally have a 500-control-step episode limit. Training evenly spaces the
 
 CUDA environments compile tensor operations by default, independently of policy compilation. The [GPU setup guide](gpu_setup.md) covers the compiler prerequisites for ordinary CUDA runs.
 
-SAC, DDPG, and TD3 collect at least 10,000 transitions before learning starts. Recurrent learners also need enough history for their replay sequences. Early random actions or missing losses during this warmup are expected.
+SAC, DDPG, and TD3 collect at least 10,000 transitions before learning starts. Recurrent presets use random actions for at least one full burn-in and learning sequence per environment. With the default 1,024 worlds, 32 burn-in steps and 64 learning steps, this covers 98,304 transitions. Early random actions or missing losses during this warmup are expected.
 
 ## Model scale
 
@@ -97,11 +97,13 @@ NOP means **next-observation prediction**, an auxiliary training objective enabl
 
 Default targets include public local observations and public global scalars and rotations, such as payload poses and task goals. Inactive MultiPayloadGoal records are excluded from global losses using their payload-active flags. Adding global predictors changes NOP checkpoint shapes for tasks with public global observations; checkpoints require the matching target configuration.
 
-NOP always predicts per-step changes for scalar, angle, and rotation targets. Binary targets predict next-state flags, and latent transitions use residual updates. Undefined connector twists use zero sine/cosine pairs and are excluded from angle losses. Angle deltas require defined angles at both endpoints, so a newly connected twist starts contributing on its next defined transition. Custom scalar losses used with global payload activity masks must return one unreduced loss per target, such as `nn.MSELoss(reduction="none")`. Per-item losses remain supported when masking applies to whole items.
+NOP always predicts per-step changes for scalar, angle, and rotation targets. For each PPO prediction, all scalar successors use the normalization statistics from the starting observation, including a terminal successor. A stationary feature then has zero target change even as running statistics advance. Binary targets predict next-state flags, and latent transitions use residual updates. Undefined connector twists use zero sine/cosine pairs and are excluded from angle losses. Angle deltas require defined angles at both endpoints, so a newly connected twist starts contributing on its next defined transition. Custom scalar losses used with global payload activity masks must return one unreduced loss per target, such as `nn.MSELoss(reduction="none")`. Per-item losses remain supported when masking applies to whole items.
 
 The scale names describe approximate feed-forward budgets, not exact counts or GPU memory requirements. Recurrent memory and optional gates add parameters; targets and optimizer state need additional memory. A smaller model scale reduces model and optimizer memory while retaining parallel collection.
 
 `model_scale=None` (CLI: `--model-scale custom`) enables custom widths; fixed scales take precedence over width overrides. The [model layouts](policy_parameters/model_scale.md) and [parameter inspection guide](policy_parameters/README.md) cover detailed comparisons.
+
+For custom recurrent MAT-IND and MAT-QCX models, `rmat_actor_d_model` sets the actor encoder width independently of the critic. `rmat_actor_transformer_ff_config` and `rmat_actor_inter_module_mlp` configure the actor's feed-forward layers.
 
 ## Customize training
 
@@ -136,6 +138,8 @@ trainer = train(
 
 PPO, SAC, and TD3 accept different learner options. The [recurrent TD3 example](../examples/README.md#train-recurrent-td3) supplies the recurrent actor and replay settings.
 
+The PPO presets collect four vector steps per rollout by default. To request a total across all worlds, import `StepsRolloutMode` from `swarmbots.learn.algos.ppo.ppo` and pass `algorithm_kwargs={"rollout_mode": StepsRolloutMode(n)}`. Collection rounds the requested `n` transitions up to a whole vector step. With `sampler_config=None`, the default feed-forward minibatch spans the collected rollout, and the default recurrent sequence spans the collected steps per world. A supplied sampler config takes precedence.
+
 Off-policy default batches target 1,024 learning positions independently of environment count and rollout length. Feed-forward learners sample 1,024 transitions; recurrent learners divide this budget by their effective `learning_steps`, rounding up to at least one whole sequence. The default 64-step learning horizon therefore uses 16 sequences per update. An explicit `algorithm_kwargs={"batch_size": ...}` overrides this default and counts transitions for feed-forward learners or sequences for recurrent learners. Burn-in adds computation outside the scored learning-position budget.
 
 `algorithm_kwargs={"replay_exposure": 8.0}` sets the average number of scored replay uses per newly collected transition after learning starts. This replaces the constructor's `gradient_steps` setting. The update count is `replay_exposure × collected_transitions / learning_positions_per_batch` and must be a positive whole number. Non-integral configurations are rejected before environment allocation; updates are never rounded or carried between cycles. With a 1,024-position batch, exposure 8 gives eight updates per one-step collection at the default 1,024 worlds. If a reduced world count would produce fractional updates, increase `num_envs` to a compatible parallel workload; `num_envs=1024` (CLI: `--num-envs 1024`) is the recommended starting point with the default batch and exposure. A fractional exposure value is valid when its resulting update count is integral. Uniform replay sampling does not guarantee the same number of uses for each individual transition. Burn-in, separate NOP batches and actor/target update delays are outside this ratio.
@@ -143,6 +147,8 @@ Off-policy default batches target 1,024 learning positions independently of envi
 Low-level learners with no explicit `rollout_steps_per_iteration` collect one vector-environment step. Collection sizes are never extended to fit replay batches; incompatible exposure, collection and batch settings are rejected.
 
 All registered learning presets use `gamma=0.995`. At the default 0.03-second control interval, this gives an approximately six-second discount horizon. `algorithm_kwargs={"gamma": ...}` overrides it; low-level learner constructors retain their own defaults.
+
+Changes to `PPO.gamma` or `PPO.gae_lambda` take effect when the next rollout computes advantages and returns. With PopArt disabled, the reward-normalization wrapper estimates reward scale using its own discount, initialized from the construction settings.
 
 Off-policy observation and reward statistics adapt throughout training. The training environment emits raw observations and rewards for replay; policy inputs are normalized at rollout, and sampled current, successor and terminal observations use one current statistics snapshot per training call. Recurrent burn-in and NOP windows use that same snapshot. Normalization does not update statistics when sampling and adds no calibration rollout. Checkpoint continuation restores the statistics and resumes updating them; benchmark adapters and frozen evaluations use a separate fixed evaluation snapshot.
 
@@ -162,11 +168,11 @@ Recurrent SAC/TD3 replay supports at most one time-limit truncation per learning
 | Rollout | One vector-environment step per iteration |
 | Discount / target mixing coefficient | `gamma=0.995` / `tau=0.005` |
 | Maximum gradient norm | `2.0` |
-| Learning starts | `max(10_000, 4 × rollout transitions per iteration)` |
+| Learning starts | `max(10_000, 4 × rollout transitions per iteration)`, raised for recurrent presets to at least `num_envs × (burn_in_steps + learning_steps)` |
 | Replay capacity per environment | Twice the episode length, enlarged for learning starts, batch positions and recurrent segment storage |
 | NOP when enabled | Three-step prediction, loss coefficient `0.1`, reusing the critic replay batch |
 
-All SAC presets also share automatic temperature tuning with initial coefficient `0.05`, target entropy `"auto_0.1"`, and temperature learning rate equal to the base actor/critic rate. Actor and target evaluation each sample one action; actor, temperature and target updates occur every critic update, without target-action smoothing. DDPG and TD3 use exploration noise `0.1`; TD3 retains a two-update actor/target delay and target smoothing noise `0.2`, clipped at `0.5`. DDPG retains one critic, no delay and no target smoothing.
+All SAC presets use automatic temperature tuning with initial coefficient `0.05`. Within each world, SAC averages log probabilities over active agents. The `"auto_0.1"` setting gives a target entropy of `-0.1 × D` where `D` is the action dimension of one agent, so the target is independent of swarm size. The temperature optimizer uses the base actor/critic learning rate throughout actor/critic warmup. Actor and target evaluation each sample one action, and actor, temperature and target updates occur every critic update. DDPG and TD3 use exploration noise `0.1`. TD3 retains a two-update actor/target delay and target smoothing noise `0.2`, clipped at `0.5`. DDPG uses one critic and updates its actor and targets on every critic update. SAC and DDPG use unsmoothed target actions.
 
 SAC, DDPG and TD3 average the main critic loss across Q heads before adding NOP. The common auxiliary coefficient therefore has the same relative scale for single and twin critics.
 
@@ -218,6 +224,10 @@ Console labels include `steps` (environment transitions), `ret` (return moving a
 
 For custom console selection, `logging_console_keys` accepts metric names; `[]` silences metric rows and `None` shows all metrics. Persisted fields keep their original names. The [plotting guide](log_plotting.md) covers CSV column listing and charts.
 
+Buffered success rates pool the episodes that reported an outcome. Each reported rate includes its episode count in `ep_success_rate__n`, including in the reduced persistence profiles. Windows with no reported outcomes leave both fields empty. Scenario episode counts include every completed episode for that scenario.
+
+PPO's iteration-level clip fraction and approximate KL use all valid likelihood ratios evaluated during the iteration. Minibatches with fewer valid ratios contribute proportionally less. KL early stopping still checks each minibatch before its optimizer step. The automatic learning-rate controller uses the pooled clip fraction.
+
 W&B and interactive prompts are optional. In a checkout, install them with `uv sync --extra wandb --extra prompt`; in an application project, use `uv add "swarmbots[wandb,prompt]==0.1.0a3"`. W&B starts only when explicitly configured through logging options.
 
 The interactive prompt is read-only. Available inspections include `show_hps`, `show_id`, `show_run_path`, `pid`, `show_rw`, `eta`, and `record_status`; semicolons separate multiple names. The Python equivalent is `trainer.execute_command("show_hps")`, which returns whether the inspection succeeded. Runtime commands cannot change settings, pause or stop training, save checkpoints, or start recordings. Construction options define the training configuration; Python APIs provide checkpoint saving and recording.
@@ -252,7 +262,17 @@ trainer = train(
 
 Replace the path with the actual checkpoint saved by the training run. Final checkpoints are named `model_<steps>_steps_final.pt`; the actual counter can pass the requested budget by a collection batch.
 
-`total_timesteps` is the final total counter, so resuming at one million with a target of two million adds about one million transitions. Checkpoints restore model parameters, learned SAC entropy temperature, counters, normalization, and optional optimizer state. Entropy temperature is restored even when optimizer state is omitted or its restoration is disabled. Replay scheduling has no pending fractional state. Loading requires the current checkpoint format and matching model settings. Off-policy replay buffers are rebuilt and refilled after loading.
+`total_timesteps` is the final total counter, so resuming at one million with a target of two million adds about one million transitions. Loading requires the current checkpoint format and matching model settings. Checkpoints restore model parameters, counters, normalization, and optional optimizer state. When restoring the PPO optimizer, configure the same schedulers and automatic learning-rate controller settings used for training.
+
+SAC restores its learned entropy temperature even when optimizer state is omitted. Matching policies also restore the coefficients adjustable through `policy.update_loss_weights` independently of optimizer state. PPO restores its overall NOP coefficient and six per-target weights. Off-policy learners restore the coefficients for their enabled actor and critic prediction heads. To reproduce a custom off-policy objective, also use the original per-target weights in `NextObsPredConfig`. A partial policy weight transfer preserves the destination's NOP coefficients.
+
+Off-policy replay starts empty after loading. A checkpoint taken before the first optimizer update collects random actions until the fresh buffer reaches `learning_starts`. A trained policy refills replay with its usual exploration. Replay scheduling has no pending fractional state.
+
+The return and success moving averages start collecting episodes at training iteration 11. Each average uses its first 100 reported values to establish a mean, then applies exponential smoothing. The default smoothing factor is 0.01. Passing `episode_return_ema_alpha` to `learn` sets the factor for both averages. Both carry across calls to `learn` and checkpoint continuation, including partially collected initial samples. Best-model eligibility uses the cumulative training iteration.
+
+Checkpoints record whether rollout warmup has finished. When rebuilding a trainer with a pending warmup, supply the original `rollout_warmup_steps_per_env` so the first training call runs the intended number of steps. If a best-model write fails, retrying `learn` on the same training state saves that candidate before the next update or final checkpoint.
+
+Each `.pt` checkpoint contains its counters and scores. The adjacent `.pt.json` is a quick-inspection copy. Both files are replaced individually after writing completes. If the process is interrupted between the two renames, use the values inside the checkpoint for that save.
 
 The Python API supports continuation in an existing run directory. The training example scripts require a fresh directory for each invocation. Checkpoints require matching architectures and observation layouts; matching a variant name alone is insufficient. The [layout versions](policy_parameters/model_scale.md) and [changelog](../CHANGELOG.md) record these changes.
 
@@ -276,7 +296,7 @@ result = evaluate_policy(
 print(result.mean_return, result.success_rate)
 ```
 
-Use the policy's device. The adapter shares the trained actor, so run evaluation after training or between updates. It preserves the actor's mode and training normalization statistics.
+The evaluation device selects where the simulation runs. The adapter transfers public observations to the actor's device, freezes observation statistics there on its first call, and returns actions to the simulator. The adapter shares the trained actor and preserves its training mode, so run evaluation after training or between updates.
 
 This evaluates one seed. For a [complete benchmark report](benchmark_protocol.md), repeat with a fresh adapter at each seed `1000` through `1004` and aggregate the five results as in the [reporting example](api.md#five-seed-report). Include the checkpoint and architecture in `policy_metadata`, and the benchmark commit in `source_revision`.
 
@@ -371,6 +391,10 @@ try:
 finally:
     trainer.env.close()
 ```
+
+`trainer.learn` accepts one positive integer budget. Use `max_total_timesteps` for an absolute target or `additional_timesteps` for a further number of transitions from the current counter. A rollout can carry the counter past either target.
+
+A `ScheduledEvaluationHook` evaluates the latest milestone reached by each completed rollout. If a hook fails, call `learn` again with the same trainer, hooks, and absolute target. Training resumes at the failed hook and runs the remaining hooks for that rollout, even at the final timestep. A newly constructed hook schedules future milestones from the trainer's current counter.
 
 The included collectors handle active-agent masks, terminal observations, and immediate autoreset. The [episode-handling guide](api.md#episode-lifecycle) and [standalone PPO example](../examples/README.md#train-without-the-included-learning-framework) cover independent learners.
 

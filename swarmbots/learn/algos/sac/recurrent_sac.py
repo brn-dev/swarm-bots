@@ -1,3 +1,4 @@
+from inspect import Parameter, signature
 from typing import Any
 
 import torch
@@ -63,6 +64,17 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
             action_sequence_lengths=(1,),
             action_sequence_with_selected_states_lengths=(self.learning_steps,),
         )
+        self._uses_legacy_shared_sampler = False
+        if isinstance(policy, RecurrentTMASACPolicy) and policy.uses_recurrent_shared_encoder:
+            try:
+                parameters = signature(policy.action_log_prob_sequence_with_selected_states_and_shared_latents).parameters
+            except (TypeError, ValueError):
+                self._uses_legacy_shared_sampler = True
+            else:
+                grad_parameter = parameters.get("require_shared_grad")
+                self._uses_legacy_shared_sampler = grad_parameter is None or grad_parameter.kind not in (
+                    Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY,
+                )
 
     def _train_step(
         self,
@@ -81,24 +93,24 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
         learning_batch = _slice_segment(batch, self.burn_in_steps, batch.sequence_length)
         flat_batch = _flatten_segment(learning_batch)
         actor_state, critic_state, target_critic_state = self._burn_in_states(batch)
-        truncation_indices, state_output_mask = self._padded_truncation_indices(
-            learning_batch.truncations,
-        )
+        truncation_indices, state_output_mask = self._padded_truncation_indices(learning_batch)
 
         self._reset_train_gsde_noise(learning_batch.local_obs)
-        (
-            actions_pi,
-            log_prob_pi,
-            actor_latents,
-            learning_next_actor_state,
-            truncation_actor_states,
-            last_layer_actor_state_sequence,
-            current_shared_latents,
-        ) = self._learning_sequence_actions(
-            batch=learning_batch,
-            initial_state=actor_state,
-            state_output_indices=truncation_indices,
-        )
+        # Older samplers use the caller's grad mode for the shared encoder.
+        with torch.set_grad_enabled(update_actor or self._uses_legacy_shared_sampler):
+            (
+                actions_pi,
+                log_prob_pi,
+                actor_latents,
+                learning_next_actor_state,
+                truncation_actor_states,
+                last_layer_actor_state_sequence,
+                current_shared_latents,
+            ) = self._learning_sequence_actions(
+                batch=learning_batch,
+                initial_state=actor_state,
+                state_output_indices=truncation_indices,
+            )
         current_actor_state = None
         if getattr(self.policy, "uses_actor_state_critic_input", False):
             current_actor_state = self.policy.actor_last_layer_state_critic_input(
@@ -213,9 +225,7 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
             if self._critic_uses_temporal_state:
                 actor_critic_state = self._burn_in_critic_state(batch, target=False)
 
-            critic_parameters = self.policy.critic_parameters()
-            self._set_requires_grad(critic_parameters, False)
-            try:
+            with self._frozen_critic():
                 q1_pi, q2_pi = self._actor_q_values(
                     batch=learning_batch,
                     actions_pi=actions_pi,
@@ -228,8 +238,6 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
                     log_prob_pi_mean.reshape_as(q1_pi),
                     ent_coef,
                 )
-            finally:
-                self._set_requires_grad(critic_parameters, True)
 
             if nop_training_batch is None or nop_training_batch.actor_source_latents is None:
                 actor_nop_loss, actor_nop_metrics = None, {}
@@ -248,8 +256,7 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
                 global_update_idx=global_update_idx,
             )
 
-        if global_update_idx % self.target_update_interval == 0:
-            self.policy.polyak_update_targets(self.tau)
+        self._finish_update(update_targets=global_update_idx % self.target_update_interval == 0)
         self.policy.after_optimizer_step()
 
         metrics = {
@@ -319,6 +326,7 @@ class RecurrentSAC(RecurrentOffPolicyMixin, SAC):
                 state_output_indices=state_output_indices,
                 time_mask=batch.train_mask,
                 reset_mask=batch.episode_start_mask,
+                **({} if self._uses_legacy_shared_sampler else {"require_shared_grad": True}),
             )
             return (
                 actions,

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -149,6 +154,8 @@ class _EvaluationEnv:
                     "r": returns,
                     "l": lengths,
                     "success": successes,
+                    "task/goals_completed": self.episodes.clone(),
+                    "_task/goals_completed": torch.tensor([True, False]),
                 },
             }
         return _obs(), torch.zeros(2), dones, torch.zeros(2, dtype=torch.bool), infos
@@ -184,17 +191,55 @@ class _GSDEEvaluationPolicy(_EvaluationPolicy):
         return actions, next_state
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_frozen_evaluation_restores_an_in_place_action_dist_state(fail: bool) -> None:
+    class InPlaceActionDist(_StatefulActionDist):
+        def __init__(self) -> None:
+            super().__init__()
+            self.installed_states: list[float] = []
+
+        def set_temporal_correlation_state(self, state: tuple[torch.Tensor]) -> None:
+            self.installed_states.append(state[0].item())
+            self.state.copy_(state[0])
+
+        def reset_temporal_correlations_on_ep_start(self, mask: torch.Tensor) -> None:
+            if torch.any(mask):
+                self.state.fill_(-1.0)
+
+    policy = _EvaluationPolicy()
+    action_dist = InPlaceActionDist()
+    policy.action_dist = action_dist
+    original_state = action_dist.state
+    env = _EvaluationEnv()
+    runner = FrozenEvaluationRunner(make_env=lambda: env, training_env=object(), policy=policy)
+    try:
+        if fail:
+            with patch.object(env, "step", side_effect=RuntimeError("evaluation step failed")):
+                with pytest.raises(RuntimeError, match="evaluation step failed"):
+                    runner.evaluate(timesteps=25, milestone_percentage=25.0)
+        else:
+            runner.evaluate(timesteps=25, milestone_percentage=25.0)
+        assert action_dist.state is original_state
+        torch.testing.assert_close(original_state, torch.tensor([7.0]))
+        assert action_dist.installed_states == [7.0] * (2 if fail else 3)
+    finally:
+        runner.close()
+
+
 @pytest.mark.parametrize("reset_mode", [GSDEEpisodeResetMode(), GSDEIntervalResetMode(3)])
 def test_frozen_gsde_noise_follows_episode_and_interval_schedules(reset_mode: GSDEResetMode) -> None:
     policy = _GSDEEvaluationPolicy()
     policy.action_dist.reset_temporal_correlations_on_step(batch_shape=(3, 2))
-    training_noise = clone_detach_temporal_state(policy.action_dist.get_temporal_correlation_state())
+    original_noise = policy.action_dist.get_temporal_correlation_state()
+    noise_version = original_noise[0]._version
+    training_noise = clone_detach_temporal_state(original_noise)
     runner = FrozenEvaluationRunner(
         make_env=_EvaluationEnv, training_env=object(), policy=policy, episodes_per_env=4, seed=123,
     )
     rng_state = torch.random.get_rng_state().clone()
     try:
-        runner.evaluate(timesteps=25, milestone_percentage=25.0, gsde_reset_mode=reset_mode)
+        with torch.inference_mode():
+            runner.evaluate(timesteps=25, milestone_percentage=25.0, gsde_reset_mode=reset_mode)
         stochastic_steps = policy.deterministic_modes.index(True)
         for step in range(1, stochastic_steps):
             previous = policy.noise_states[step - 1][0]
@@ -205,7 +250,10 @@ def test_frozen_gsde_noise_follows_episode_and_interval_schedules(reset_mode: GS
                 expected.fill_(True)
             torch.testing.assert_close(changed, expected)
         torch.testing.assert_close(policy.action_dist.get_temporal_correlation_state(), training_noise)
+        assert policy.action_dist.get_temporal_correlation_state()[0] is original_noise[0]
+        assert original_noise[0]._version == noise_version
         assert torch.equal(torch.random.get_rng_state(), rng_state)
+        policy.action_dist.reset_temporal_correlations_on_ep_start(torch.tensor([True, False, False]))
     finally:
         runner.close()
 
@@ -291,6 +339,84 @@ def test_frozen_evaluation_finishes_recording_without_counting_extra_episodes():
     runner.close()
 
 
+def test_scheduled_recording_retries_interrupted_milestone() -> None:
+    class InterruptedRecordingEnv(_LongRecordingEnv):
+        def step(self, actions: torch.Tensor) -> tuple:
+            if self.get_video_recording_status()["active"]:
+                raise RuntimeError("interrupted recording")
+            return super().step(actions)
+
+    interrupted_env = InterruptedRecordingEnv()
+    retry_env = _LongRecordingEnv()
+    runner = FrozenEvaluationRunner(
+        make_env=Mock(side_effect=[interrupted_env, retry_env]), training_env=object(), policy=_EvaluationPolicy(),
+        episodes_per_env=2, recording_config=EvaluationRecordingConfig(num_episodes=4), video_folder=Path("videos"),
+    )
+    algorithm = SimpleNamespace(n_total_timesteps=0)
+    metrics_logger = Mock()
+    hook = ScheduledEvaluationHook(
+        algorithm=algorithm, total_timesteps=100, milestones=(25, 50), runner=runner, metrics_logger=metrics_logger,
+    )
+    try:
+        algorithm.n_total_timesteps = 50
+        with pytest.raises(RuntimeError, match="interrupted recording"):
+            hook(algorithm, {}, rollout_steps=50)
+        assert interrupted_env.closed
+        metrics_logger.log.assert_not_called()
+
+        hook(algorithm, {}, rollout_steps=0)
+        hook(algorithm, {}, rollout_steps=0)
+        metrics_logger.log.assert_called_once()
+        assert metrics_logger.log.call_args.args[0]["eval_milestone_pct"] == 50
+        assert retry_env.recordings_completed == 4
+    finally:
+        hook.close()
+
+
+def test_frozen_recording_reports_a_delayed_writer_failure_before_returning() -> None:
+    class EncoderFailureEnv(_EvaluationEnv):
+        status_checks = 0
+
+        def get_video_recording_status(self) -> dict[str, Any]:
+            self.status_checks += 1
+            if self.status_checks == 3:
+                raise RuntimeError("video encoder failed")
+            return {"active": False, "writer_jobs_pending": 1}
+
+    env = EncoderFailureEnv()
+    runner = FrozenEvaluationRunner(
+        make_env=lambda: env, training_env=object(), policy=_EvaluationPolicy(),
+        recording_config=EvaluationRecordingConfig(num_episodes=1), video_folder=Path("videos"),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="video encoder failed"):
+            runner.evaluate(timesteps=50, milestone_percentage=50)
+        assert env.closed
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
+def test_frozen_evaluation_collects_numpy_statistics_for_accepted_lanes(device: str) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    stats = {
+        "r": np.array([1.5, 2.5, 3.5], dtype=np.float32),
+        "l": np.array([6, 7, 8], dtype=np.int32),
+        "success": np.array([True, False, True]),
+        "_success": np.array([False, True, True]),
+        "optional_vector": torch.zeros((3, 2), dtype=torch.bfloat16, device=device),
+        "_optional_vector": torch.tensor([False, True, True], device=device),
+    }
+    metrics: dict[str, list[float]] = {}
+    FrozenEvaluationRunner._append_episode_metrics(
+        episode_metrics=metrics, infos={"final_info": {"episode": stats}},
+        dones=torch.tensor([True, True, True], device=device),
+        accepted_dones=torch.tensor([True, False, True], device=device),
+    )
+    assert metrics == {"r": [1.5, 3.5], "l": [6., 8.], "success": [1.]}
+
+
 def test_frozen_evaluation_collects_each_lane_requested_number_of_times_and_restores_state() -> None:
     training_env = object()
     evaluation_env = _EvaluationEnv()
@@ -317,6 +443,9 @@ def test_frozen_evaluation_collects_each_lane_requested_number_of_times_and_rest
     assert metrics["eval_deterministic_ep_rew"].mean == 51.5
     assert metrics["eval_stochastic_success_rate"] == 50.0
     assert metrics["eval_deterministic_success_rate"] == 50.0
+    for mode in ("stochastic", "deterministic"):
+        goals = metrics[f"eval_{mode}_ep_task_goals_completed"]
+        assert (goals.n, goals.mean, goals.min_value, goals.max_value) == (2, 1.5, 1., 2.)
     assert metrics["timesteps"] == 25
     assert evaluation_env.reset_kwargs == {
         "seed": 123,
@@ -360,6 +489,81 @@ def test_frozen_evaluation_can_reuse_stateful_environment() -> None:
     assert evaluation_env.closed
 
 
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("env_device, next_policy_device", [("cpu", "cuda"), ("cuda", "cpu")])
+def test_cached_frozen_environment_follows_the_policy_across_devices(
+    env_device: str, next_policy_device: str,
+) -> None:
+    from tests.test_off_policy_normalization import _make_algorithm, _make_normalization_env, _set_statistics
+
+    algorithm = _make_algorithm("tmasac__lstm", transition_observations=True, use_nop=False)
+    _set_statistics(algorithm, mean=2.0, variance=4.0)
+    policy = algorithm.policy
+    factory = Mock(side_effect=lambda: _make_normalization_env(device=env_device, transition_observations=True))
+    runner = FrozenEvaluationRunner(make_env=factory, training_env=algorithm.env, policy=policy)
+    try:
+        for step, policy_device in enumerate((env_device, next_policy_device)):
+            policy.to(policy_device)
+            with patch.object(policy, "act_with_temporal_state", wraps=policy.act_with_temporal_state) as act:
+                metrics = runner.evaluate(timesteps=step, milestone_percentage=step * 100)
+            assert metrics["eval_episodes"] == 2
+            assert policy.training
+            first = act.call_args_list[0].kwargs
+            current = first["local_obs"][..., 0]
+            assert current.device.type == policy_device
+            assert first["episode_start_mask"].device.type == policy_device
+            torch.testing.assert_close(current, torch.full_like(current, (10.0 - 2.0) / (4.0 + 1e-6) ** 0.5))
+        factory.assert_called_once()
+    finally:
+        runner.close()
+        algorithm.env.close()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_frozen_evaluation_places_observations_on_a_buffer_only_actors_device() -> None:
+    class FixedPolicy(_EvaluationPolicy):
+        def __init__(self) -> None:
+            super().__init__()
+            del self.parameter
+            self.register_buffer("gain", torch.ones(1, 1, device="cuda"))
+
+        def act_with_temporal_state(self, *, local_obs: torch.Tensor, temporal_state: torch.Tensor,
+                                    **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
+            return local_obs @ self.gain, temporal_state
+
+    runner = FrozenEvaluationRunner(make_env=_EvaluationEnv, training_env=object(), policy=FixedPolicy())
+    try:
+        assert runner.evaluate(timesteps=1, milestone_percentage=100)["eval_episodes"] == 4
+    finally:
+        runner.close()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_frozen_evaluation_seeds_the_physics_device_with_cpu_policy_and_wrapper() -> None:
+    class CPUWrapper(_EvaluationEnv):
+        device = torch.device("cpu")
+        unwrapped = SimpleNamespace(device=torch.device("cuda"))
+
+        def reset(self, **kwargs: object) -> tuple[dict[str, torch.Tensor], dict[str, object]]:
+            physics_draws.append(torch.rand(4, device=self.unwrapped.device))
+            return super().reset(**kwargs)
+
+    physics_draws: list[torch.Tensor] = []
+    runner = FrozenEvaluationRunner(make_env=CPUWrapper, training_env=object(), policy=_EvaluationPolicy(), seed=92)
+    try:
+        prior = torch.cuda.get_rng_state()
+        runner.evaluate(timesteps=1, milestone_percentage=50)
+        expected = torch.rand(4, device="cuda", generator=torch.Generator(device="cuda").manual_seed(92))
+        for actual in physics_draws:
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        torch.testing.assert_close(torch.cuda.get_rng_state(), prior)
+    finally:
+        runner.close()
+
+
 @pytest.mark.parametrize("factory_fails", [False, True])
 @pytest.mark.parametrize("device", [
     "cpu",
@@ -399,6 +603,104 @@ def test_first_evaluation_preserves_rng_through_environment_construction(
             )
     finally:
         runner.close()
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_cpu_evaluation_preserves_cuda_rng_across_seeded_env_resets() -> None:
+    class GloballySeededEnv(_EvaluationEnv):
+        def reset(self, *, seed: int) -> tuple[dict[str, torch.Tensor], dict[str, object]]:
+            torch.manual_seed(seed)
+            return super().reset(seed=seed)
+
+    runner = FrozenEvaluationRunner(make_env=GloballySeededEnv, training_env=object(), policy=_EvaluationPolicy())
+    try:
+        with torch.random.fork_rng(devices=range(torch.cuda.device_count())):
+            torch.manual_seed(89)
+            states = torch.cuda.get_rng_state_all()
+            for timestep in (25, 50):
+                runner.evaluate(timesteps=timestep, milestone_percentage=timestep)
+                for actual, expected in zip(torch.cuda.get_rng_state_all(), states, strict=True):
+                    torch.testing.assert_close(actual, expected)
+    finally:
+        runner.close()
+
+
+def _check_fresh_cuda_evaluation(first_cuda_use: str) -> None:
+    assert not torch.cuda.is_initialized()
+    torch.manual_seed(91)
+    torch.cuda.manual_seed(92)
+    enable_gpu = False
+
+    class Env(_EvaluationEnv):
+        def reset(self, *, seed: int) -> tuple[dict[str, torch.Tensor], dict[str, object]]:
+            torch.manual_seed(seed)
+            if enable_gpu and first_cuda_use == "reset":
+                torch.rand(3, device="cuda")
+            return super().reset(seed=seed)
+
+    def make_env() -> Env:
+        torch.manual_seed(1234)
+        if enable_gpu and first_cuda_use == "factory":
+            torch.rand(3, device="cuda")
+        return Env()
+
+    for enable_gpu in (False, torch.cuda.is_available()):
+        runner = FrozenEvaluationRunner(make_env=make_env, training_env=object(), policy=_EvaluationPolicy())
+        try:
+            runner.evaluate(timesteps=1, milestone_percentage=100)
+            assert torch.cuda.is_initialized() == enable_gpu
+        finally:
+            runner.close()
+    if enable_gpu:
+        for index in range(torch.cuda.device_count()):
+            device = torch.device("cuda", index)
+            expected_seed = 92 if index == torch.cuda.current_device() else 91
+            expected = torch.rand(3, device=device, generator=torch.Generator(device=device).manual_seed(expected_seed))
+            torch.testing.assert_close(torch.rand(3, device=device), expected)
+
+
+@pytest.mark.parametrize("first_cuda_use", ["factory", "reset"])
+def test_frozen_evaluation_preserves_lazy_cuda_initialization_and_seeds(first_cuda_use: str) -> None:
+    # CUDA initialization is irreversible within a process shared with other tests.
+    subprocess.run([
+        sys.executable, "-c", "from tests.test_frozen_evaluation import _check_fresh_cuda_evaluation; "
+        f"_check_fresh_cuda_evaluation({first_cuda_use!r})",
+    ], check=True, timeout=90)
+
+
+def test_concurrent_frozen_evaluations_restore_shared_policy() -> None:
+    first_acting, second_attempting, second_finished = Event(), Event(), Event()
+
+    class PausingEnv(_EvaluationEnv):
+        def step(self, actions: torch.Tensor) -> tuple:
+            if not first_acting.is_set():
+                first_acting.set()
+                assert second_attempting.wait(timeout=10)
+                second_finished.wait(timeout=0.2)
+            return super().step(actions)
+
+    policy = _EvaluationPolicy()
+    original_noise = policy.action_dist.state.clone()
+    first = FrozenEvaluationRunner(make_env=PausingEnv, training_env=object(), policy=policy)
+    second = FrozenEvaluationRunner(make_env=_EvaluationEnv, training_env=object(), policy=policy)
+    try:
+        # Use already-built environments so the second call can reach the active policy immediately.
+        assert first.env is not second.env
+        with ThreadPoolExecutor(1) as pool:
+            task = pool.submit(first.evaluate, timesteps=1, milestone_percentage=50)
+            assert first_acting.wait(timeout=10)
+            second_attempting.set()
+            try:
+                second.evaluate(timesteps=1, milestone_percentage=50)
+            finally:
+                second_finished.set()
+            task.result(timeout=10)
+        assert policy.training
+        torch.testing.assert_close(policy.action_dist.state, original_noise)
+    finally:
+        first.close()
+        second.close()
 
 
 def test_scheduled_evaluation_runs_when_milestone_is_crossed() -> None:
@@ -481,6 +783,43 @@ def test_scheduled_evaluation_milestones_are_relative_to_continuation_window() -
     algorithm.n_total_timesteps = 300
     hook(algorithm, {}, rollout_steps=100)
     runner.evaluate.assert_called_once_with(timesteps=300, milestone_percentage=100.0, gsde_reset_mode=None)
+
+
+def test_scheduled_evaluation_waits_for_fractional_targets_and_reports_latest() -> None:
+    algorithm = SimpleNamespace(n_total_timesteps=100)
+    runner = Mock()
+    hook = ScheduledEvaluationHook(
+        algorithm=algorithm, start_timesteps=100, total_timesteps=110, milestones=(28, 25, 95, 100),
+        runner=runner, metrics_logger=Mock(),
+    )
+    for step in (102, 103, 109, 110, 111):
+        algorithm.n_total_timesteps = step
+        hook(algorithm, {}, rollout_steps=1)
+
+    evaluations = [(call.kwargs["timesteps"], call.kwargs["milestone_percentage"])
+                   for call in runner.evaluate.call_args_list]
+    assert evaluations == [(103, 28), (110, 100)]
+
+
+def test_scheduled_evaluation_handles_numpy_training_windows_and_percentages() -> None:
+    algorithm = SimpleNamespace(n_total_timesteps=np.int32(0))
+    runner = Mock()
+    hook = ScheduledEvaluationHook(algorithm=algorithm, start_timesteps=np.int32(0),
+                                  total_timesteps=np.int32(100_000_000), milestones=np.array([25, 50, 100], np.float32),
+                                  runner=runner, metrics_logger=Mock())
+    for step in (24_999_999, 25_000_000, 49_999_999, 50_000_000, 99_999_999, 100_000_000):
+        algorithm.n_total_timesteps = np.int32(step)
+        hook(algorithm, {}, rollout_steps=1)
+    evaluations = [(call.kwargs["timesteps"], call.kwargs["milestone_percentage"])
+                   for call in runner.evaluate.call_args_list]
+    assert evaluations == [(25_000_000, 25), (50_000_000, 50), (100_000_000, 100)]
+
+
+@pytest.mark.parametrize("start,total", [(0, float("nan")), (0, float("inf")), (1.5, 5), (False, 10)])
+def test_scheduled_evaluation_rejects_noninteger_windows(start: object, total: object) -> None:
+    with pytest.raises(ValueError, match="integers"):
+        ScheduledEvaluationHook(algorithm=SimpleNamespace(n_total_timesteps=0), start_timesteps=start,
+                                total_timesteps=total, milestones=[100], runner=Mock(), metrics_logger=Mock())
 
 
 def test_scheduled_evaluation_uses_the_current_training_gsde_schedule() -> None:

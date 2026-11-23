@@ -51,13 +51,18 @@ def test_checkpoint_restores_custom_scheduler_state_and_enabled_flag(tmp_path) -
 
 CHECKPOINT_CONFIGURATION_MISMATCHES = (
     "automatic_lr", "missing_automatic_lr", "schedulers", "missing_schedulers",
-    "scheduler_names", "scheduler_order",
+    "scheduler_names", "scheduler_order", "scheduler_duration", "scheduler_binding",
+    "automatic_lr_cap", "automatic_lr_updater",
 )
 
 
 def _make_incompatible_trainers(mismatch: str) -> tuple[PPO, PPO]:
     source_rate = AutomaticLearningRate(initial_lr=0.02, updater=make_auto_lr_updater())
-    target_rate = AutomaticLearningRate(initial_lr=0.001, updater=make_auto_lr_updater())
+    target_rate = AutomaticLearningRate(
+        initial_lr=0.001,
+        max_lr=0.003 if mismatch == "automatic_lr_cap" else source_rate.max_lr,
+        updater=make_auto_lr_updater(**({"max_kl_div": 0.05} if mismatch == "automatic_lr_updater" else {})),
+    )
     source, _ = _make_ppo(learning_rate=source_rate if mismatch != "missing_automatic_lr" else 0.02)
     target, _ = _make_ppo(learning_rate=target_rate if mismatch != "automatic_lr" else 0.001)
 
@@ -74,7 +79,102 @@ def _make_incompatible_trainers(mismatch: str) -> tuple[PPO, PPO]:
         configure_schedulers(source, ["first", "second"])
     if mismatch in {"missing_schedulers", "scheduler_names", "scheduler_order"}:
         configure_schedulers(target, ["second", "first"] if mismatch == "scheduler_order" else ["other"])
+    if mismatch in {"scheduler_duration", "scheduler_binding"}:
+        for algorithm in (source, target):
+            duration = 100 if algorithm is target and mismatch == "scheduler_duration" else 10
+            attribute = "gae_lambda" if algorithm is target and mismatch == "scheduler_binding" else "gamma"
+            algorithm.scheduler_manager = SchedulerManager([ScheduledHyperParameter(
+                "discount",
+                LinearScheduler(ScheduleUnit.ITERATIONS, duration, 0.02, 0.001),
+                partial(getattr, algorithm, attribute),
+                partial(setattr, algorithm, attribute),
+            )])
     return source, target
+
+
+@pytest.mark.parametrize("bound_methods", [False, True])
+def test_checkpoint_restores_schedule_with_mutable_receiver_and_unavailable_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bound_methods: bool,
+) -> None:
+    @dataclass
+    class RuntimeValues:
+        discount: float = 0.99
+
+        def get_discount(self) -> float:
+            return self.discount
+
+        def set_discount(self, value: float) -> None:
+            self.discount = value
+
+    def make_trainer(*, shared_receiver: bool = True) -> tuple[PPO, RuntimeValues]:
+        trainer, _ = _make_ppo()
+        values = RuntimeValues()
+        setter_values = values if shared_receiver else RuntimeValues()
+        trainer.scheduler_manager = SchedulerManager([ScheduledHyperParameter(
+            "discount", LinearScheduler(ScheduleUnit.ITERATIONS, 10, 0.99, 0.89),
+            values.get_discount if bound_methods else partial(getattr, values, "discount").__call__,
+            setter_values.set_discount if bound_methods else partial(setattr, setter_values, "discount"),
+        )])
+        return trainer, values
+
+    source, source_values = make_trainer()
+    source.scheduler_manager.step(n_iterations=2, n_model_updates=0, n_timesteps=0, metrics={})
+    path = tmp_path / "scheduler.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    target, target_values = make_trainer()
+    assert target_values.discount != source_values.discount
+
+    def unavailable_source(*_args: Any, **_kwargs: Any) -> str:
+        raise OSError("source unavailable")
+
+    monkeypatch.setattr("swarmbots.learn.serialization_utils.inspect.getsource", unavailable_source)
+    mismatched_target, mismatched_values = make_trainer(shared_receiver=False)
+    with pytest.raises(ValueError, match="Checkpoint scheduler configuration"):
+        mismatched_target.load(path)
+    assert mismatched_values.discount == pytest.approx(0.99)
+    target.load(path)
+    assert target_values.discount == source_values.discount == pytest.approx(0.97)
+
+
+@pytest.mark.parametrize("stock_partials", [False, True])
+def test_checkpoint_rejects_different_declared_schedule_selector(tmp_path: Path, stock_partials: bool) -> None:
+    @dataclass
+    class RuntimeBinding:
+        field: str
+        values: dict[str, float]
+
+        def get_hyper_parameters(self) -> dict[str, str]:
+            return {"field": self.field}
+
+        def get(self) -> float:
+            return self.values[self.field]
+
+        def apply(self, value: float) -> None:
+            self.values[self.field] = value
+
+        value = property(get, apply)
+
+    def make_trainer(binding: RuntimeBinding) -> PPO:
+        trainer, _ = _make_ppo()
+        get_value = partial(getattr, binding, "value").__call__ if stock_partials else binding.get
+        apply = partial(setattr, binding, "value") if stock_partials else binding.apply
+        trainer.scheduler_manager = SchedulerManager([ScheduledHyperParameter(
+            "discount", LinearScheduler(ScheduleUnit.ITERATIONS, 10, 0.99, 0.89), get_value, apply,
+        )])
+        return trainer
+
+    source = make_trainer(RuntimeBinding("gamma", {"gamma": 0.71, "gae_lambda": 0.8}))
+    path = tmp_path / "scheduler.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+
+    different = RuntimeBinding("gae_lambda", {"gamma": 0.95, "gae_lambda": 0.81})
+    with pytest.raises(ValueError, match="Checkpoint scheduler configuration"):
+        make_trainer(different).load(path)
+    assert different.values == {"gamma": 0.95, "gae_lambda": 0.81}
+
+    matching = RuntimeBinding("gamma", {"gamma": 0.95, "gae_lambda": 0.81})
+    make_trainer(matching).load(path)
+    assert matching.values == {"gamma": 0.71, "gae_lambda": 0.81}
 
 
 @pytest.mark.parametrize("mismatch", CHECKPOINT_CONFIGURATION_MISMATCHES)
@@ -107,6 +207,7 @@ def test_rejected_checkpoint_configuration_preserves_trainer(
     torch.testing.assert_close(target.policy.state_dict(), weights)
     current_optimizer = target._get_optimizer_state_dict()
     assert current_optimizer.pop("schedulers") == optimizer.pop("schedulers")
+    assert current_optimizer.pop("schedule_configuration") == optimizer.pop("schedule_configuration")
     torch.testing.assert_close(current_optimizer, optimizer)
     assert target.learning_rate == 0.001
     assert target.n_total_timesteps == 0
@@ -141,6 +242,7 @@ def test_partial_checkpoint_load_skips_incompatible_optimizer(
     torch.testing.assert_close(target.policy.state_dict(), expected_weights)
     current_optimizer = target._get_optimizer_state_dict()
     assert current_optimizer.pop("schedulers") == optimizer.pop("schedulers")
+    assert current_optimizer.pop("schedule_configuration") == optimizer.pop("schedule_configuration")
     torch.testing.assert_close(current_optimizer, optimizer)
     assert target.learning_rate == 0.001
 
@@ -639,6 +741,107 @@ def test_public_load_ignores_saved_automatic_rates_when_optimizer_is_not_restore
 def test_parameter_lr_multipliers_reject_invalid_values(value: float) -> None:
     with pytest.raises(ValueError, match="must be finite and > 0"):
         _make_ppo(parameter_lr_multipliers={"decoder": value})
+
+
+@pytest.mark.parametrize("invalid", [{"n_epochs": 0}, {"max_grad_norm": -1.0}, {"max_grad_norm": float("nan")}])
+def test_invalid_ppo_optimization_settings(invalid: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match=next(iter(invalid))):
+        PPO(_DummyPolicy(), _DummyEnv(), rollout_mode=StepsRolloutMode(2), max_episode_length=2, **invalid)
+
+
+def test_equivalent_unit_groups_restore_in_either_direction(tmp_path: Path) -> None:
+    path = tmp_path / "equivalent.pt"
+    for rules, other in (({}, {"decoder": 1.0}), ({"decoder": 1.0}, {})):
+        source, _ = _make_ppo(rules)
+        target, _ = _make_ppo(other)
+        _step_with_distinct_gradients(source)
+        source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+        target.load(path)
+        _step_with_distinct_gradients(source)
+        _step_with_distinct_gradients(target)
+        torch.testing.assert_close(source.policy.state_dict(), target.policy.state_dict())
+
+
+def test_rejected_scheduler_callback_restores_prior_settings_and_weights(tmp_path: Path) -> None:
+    source, _ = _make_ppo()
+    target, _ = _make_ppo()
+    for trainer in (source, target):
+        trainer.scheduler_manager = SchedulerManager([
+            ScheduledHyperParameter(name="gamma", scheduler=None, get_value=partial(getattr, trainer, "gamma"),
+                                    apply=partial(setattr, trainer, "gamma")),
+            ScheduledHyperParameter(name="lr", scheduler=None, get_value=partial(getattr, trainer, "learning_rate"),
+                                    apply=trainer.set_learning_rate),
+        ])
+    path = tmp_path / "invalid-schedule.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    checkpoint = torch.load(path, weights_only=False)
+    checkpoint["optimizer_state_dict"]["schedulers"][0]["value"] = 0.31
+    checkpoint["optimizer_state_dict"]["schedulers"][1]["value"] = -1.0
+    torch.save(checkpoint, path)
+    weights = {key: val.clone() for key, val in target.policy.state_dict().items()}
+    gamma, lr = target.gamma, target.learning_rate
+    with pytest.raises(ValueError, match="learning_rate"):
+        target.load(path)
+    torch.testing.assert_close(weights, target.policy.state_dict())
+    assert target.gamma == gamma and target.learning_rate == lr
+
+
+def test_nested_unit_multiplier_restores_base_rate() -> None:
+    ppo, policy = _make_ppo({"decoder": 0.5, "decoder.1": 1.0})
+    groups = _param_group_by_parameter_id(ppo)
+    assert groups[id(policy.decoder[0].weight)]["lr"] == pytest.approx(0.005)
+    assert groups[id(policy.decoder[1].weight)]["lr"] == pytest.approx(0.01)
+
+
+@pytest.mark.parametrize("corrupt", [
+    "policy", "moment", "negative_variance", "nan_momentum", "overflow_momentum",
+    "invalid_slots", "quantized_policy", "quantized_moment", "ema", "counter", "nan_parameter", "overflow_parameter",
+])
+def test_invalid_checkpoint_does_not_change_live_policy(tmp_path: Path, corrupt: str) -> None:
+    source, _ = _make_ppo()
+    _step_with_distinct_gradients(source)
+    path = tmp_path / "malformed.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    checkpoint = torch.load(path, weights_only=False)
+    if corrupt == "policy":
+        weights = checkpoint["policy_state_dict"]
+        weights[next(reversed(weights))] = torch.zeros(23)
+    elif corrupt in {"nan_parameter", "overflow_parameter"}:
+        weights = checkpoint["policy_state_dict"]
+        key = next(reversed(weights))
+        value = float("nan") if corrupt == "nan_parameter" else 1e100
+        weights[key] = torch.full_like(weights[key], value, dtype=torch.float64)
+    elif corrupt == "moment":
+        next(iter(checkpoint["optimizer_state_dict"]["state"].values()))["exp_avg"] = torch.zeros(23)
+    elif corrupt in {"negative_variance", "nan_momentum", "overflow_momentum"}:
+        slot = next(iter(checkpoint["optimizer_state_dict"]["state"].values()))
+        if corrupt == "negative_variance":
+            slot["exp_avg_sq"].fill_(-1)
+        else:
+            value = float("nan") if corrupt == "nan_momentum" else 1e100
+            slot["exp_avg"] = torch.full_like(slot["exp_avg"], value, dtype=torch.float64)
+    elif corrupt == "invalid_slots":
+        slots = checkpoint["optimizer_state_dict"]["state"]
+        slots[next(iter(slots))] = None
+    elif corrupt.startswith("quantized"):
+        if corrupt == "quantized_policy":
+            container = checkpoint["policy_state_dict"]
+            key = next(reversed(container))
+        else:
+            container = next(iter(checkpoint["optimizer_state_dict"]["state"].values()))
+            key = "exp_avg"
+        container[key] = torch.quantize_per_tensor(container[key], 0.1, 0, torch.qint8)
+    elif corrupt == "ema":
+        checkpoint["episode_return_ema"]["pre_exponential_count"] = -1
+    else:
+        del checkpoint["n_total_updates"]
+    torch.save(checkpoint, path)
+    target, _ = _make_ppo()
+    original = {key: val.clone() for key, val in target.policy.state_dict().items()}
+    with pytest.raises((ValueError, RuntimeError, KeyError)):
+        target.load(path)
+    torch.testing.assert_close(original, target.policy.state_dict())
+    assert not target.optimizer.state
 
 
 def test_parameter_lr_multipliers_scale_matching_parameters_and_keep_longest_prefix() -> None:

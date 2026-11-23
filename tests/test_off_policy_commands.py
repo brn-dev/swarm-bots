@@ -28,9 +28,11 @@ def _make_algorithm(
     kind: Literal["sac", "td3", "ddpg"],
     *,
     independent_nop_sampling: bool = False,
+    nop_source: str = "critic",
 ) -> OffPolicyAlgorithm:
     nop_config = SACNOPConfig(
         enabled=True,
+        latent_source=nop_source,
         num_next_steps=1,
         next_obs_pred_config=NextObsPredConfig(local_scalar_target_indices=[0]),
         transition_model_d_model=8,
@@ -43,7 +45,7 @@ def _make_algorithm(
         algorithm_class = SAC
     else:
         variant = "matd3__deepset_critic" if kind == "td3" else "maddpg__deepset_critic"
-        policy = make_policy(env, variant, **nop_options(steps=1))
+        policy = make_policy(env, variant, **nop_options(source=nop_source, steps=1))
         algorithm_class = TD3 if kind == "td3" else DDPG
     return algorithm_class(
         policy,

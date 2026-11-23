@@ -3,7 +3,8 @@ from typing import Optional
 
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor
+from swarmbots.learn.algos.ppo.ppo_scalar_frames import ScalarFrames
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, empty_with_dtype, promote_storage_dtype
 
 
 @dataclass(slots=True)
@@ -30,6 +31,8 @@ class PPORolloutBatch:
     episode_start_mask: torch.Tensor
     returns: torch.Tensor
     advantages: torch.Tensor
+    scalar_frames: dict[str, ScalarFrames] | None = None
+    action_dtypes: dict[torch.dtype, torch.Tensor] | None = None
 
     @property
     def n_envs(self) -> int:
@@ -56,11 +59,11 @@ class PPORolloutBatch:
             hidden_global_vars=self.hidden_global_vars.to(device=device, dtype=dtype),
             agent_mask=None if self.agent_mask is None else self.agent_mask.to(device=device),
             previous_actions=(
-                None if self.previous_actions is None else self.previous_actions.to(device=device, dtype=dtype)
+                None if self.previous_actions is None else self.previous_actions.to(device=device)
             ),
-            actions=self.actions.to(device=device, dtype=dtype),
+            actions=self.actions.to(device=device),
             rewards=self.rewards.to(device=device, dtype=dtype),
-            log_probs=self.log_probs.to(device=device, dtype=dtype),
+            log_probs=self.log_probs.to(device=device),
             values=self.values.to(device=device, dtype=dtype),
             bootstrap_local_obs=self.bootstrap_local_obs.to(device=device, dtype=dtype),
             bootstrap_global_obs=self.bootstrap_global_obs.to(device=device, dtype=dtype),
@@ -76,6 +79,12 @@ class PPORolloutBatch:
             episode_start_mask=self.episode_start_mask.to(device=device),
             returns=self.returns.to(device=device, dtype=dtype),
             advantages=self.advantages.to(device=device, dtype=dtype),
+            scalar_frames=None if not self.scalar_frames else {
+                key: frames.to(device) for key, frames in self.scalar_frames.items()
+            },
+            action_dtypes=None if self.action_dtypes is None else {
+                action_dtype: mask.to(device) for action_dtype, mask in self.action_dtypes.items()
+            },
         )
 
 
@@ -100,6 +109,8 @@ class PPORolloutBatchBuilder:
     ) -> None:
         self.n_envs = n_envs
         self.n_steps = n_steps
+        self._first_step = True
+        self._action_dtypes: list[torch.dtype] | None = None
         self.gamma = gamma
         self.gae_lambda = gae_lambda
 
@@ -183,6 +194,21 @@ class PPORolloutBatchBuilder:
             dones: torch.Tensor,
             episode_start_mask: torch.Tensor,
     ) -> None:
+        if self._first_step:
+            self.actions = empty_with_dtype(self.actions, actions.dtype)
+            self.log_probs = empty_with_dtype(self.log_probs, log_probs.dtype)
+            if self.previous_actions is not None and previous_actions is not None:
+                self.previous_actions = empty_with_dtype(self.previous_actions, previous_actions.dtype)
+            self._first_step = False
+        else:
+            if self.actions.dtype != actions.dtype:
+                if self._action_dtypes is None:
+                    self._action_dtypes = [self.actions.dtype] * step_idx
+                self.actions = promote_storage_dtype(self.actions, actions.dtype)
+            if self.log_probs.dtype != log_probs.dtype:
+                self.log_probs = promote_storage_dtype(self.log_probs, log_probs.dtype)
+        if self._action_dtypes is not None:
+            self._action_dtypes.append(actions.dtype)
         self.local_obs[:, step_idx] = local_obs
         self.global_obs[:, step_idx] = global_obs
         self.hidden_local_vars[:, step_idx] = hidden_local_vars
@@ -195,6 +221,8 @@ class PPORolloutBatchBuilder:
             if previous_actions is None:
                 self.previous_actions[:, step_idx].zero_()
             else:
+                if self.previous_actions.dtype != previous_actions.dtype:
+                    self.previous_actions = promote_storage_dtype(self.previous_actions, previous_actions.dtype)
                 self.previous_actions[:, step_idx] = previous_actions
         self.actions[:, step_idx] = actions
         self.rewards[:, step_idx] = rewards
@@ -227,6 +255,12 @@ class PPORolloutBatchBuilder:
             gae_lambda=self.gae_lambda,
         )
         returns = advantages + self.values
+        # All lanes receive the same action dtype at a given vector step.
+        action_dtypes = None if self._action_dtypes is None else {
+            dtype: torch.tensor([emitted == dtype for emitted in self._action_dtypes], device=self.actions.device)
+            .expand(self.n_envs, -1)
+            for dtype in dict.fromkeys(self._action_dtypes)
+        }
         return PPORolloutBatch(
             local_obs=self.local_obs,
             global_obs=self.global_obs,
@@ -250,6 +284,7 @@ class PPORolloutBatchBuilder:
             episode_start_mask=self.episode_start_mask,
             returns=returns,
             advantages=advantages,
+            action_dtypes=action_dtypes,
         )
 
 

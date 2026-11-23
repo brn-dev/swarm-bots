@@ -6,7 +6,7 @@ from swarmbots.learn.algos.mat.independent_encoders import encode_critic_observa
 from swarmbots.learn.base_policy import PolicyCompileConfig, policy_inference_step
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoder, RMATEncoderState
-from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSampler, RPPOWMSamplerConfig
+from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOSampler, RPPOWMSamplerConfig
 from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamples
 
 RMATPolicyState = dict[str, RMATEncoderState]
@@ -124,8 +124,8 @@ class RMATPolicyMixin:
             self,
             episodes: list[PPOEpisodeSegment],
             config: RPPOWMSamplerConfig,
-    ) -> RPPOWMSampler:
-        return RPPOWMSampler(
+    ) -> RPPOSampler:
+        return RPPOSampler(
             episodes=episodes,
             config=config,
             requires_previous_actions=self.requires_previous_actions(),

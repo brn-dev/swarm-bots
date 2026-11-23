@@ -105,7 +105,6 @@ class PolicyBuildContext:
 @dataclass(frozen=True)
 class PolicyEncoders:
     feedforward: MATEncoderConfig
-    recurrent: RMATEncoderConfig
     recurrent_actor: RMATEncoderConfig
     recurrent_critic: RMATEncoderConfig
 
@@ -377,7 +376,7 @@ def build_on_policy(
             policy_class,
             env=env,
             config=config_class(
-                encoder_config=encoders.recurrent if recurrent else encoders.feedforward,
+                encoder_config=encoders.recurrent_actor if recurrent else encoders.feedforward,
                 critic_encoder_config=rmat_critic_encoder_config if recurrent else None,
                 decoder_config=decoder.qcx(context, include_actor_head=True),
                 critic_config=mat_critic_config,
@@ -406,7 +405,7 @@ def build_on_policy(
             policy_class,
             env=env,
             config=config_class(
-                encoder_config=encoders.recurrent if recurrent else encoders.feedforward,
+                encoder_config=encoders.recurrent_actor if recurrent else encoders.feedforward,
                 critic_encoder_config=rmat_critic_encoder_config
                 if recurrent
                 else replace(

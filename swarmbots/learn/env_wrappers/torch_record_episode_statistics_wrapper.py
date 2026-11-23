@@ -17,26 +17,17 @@ class TorchRecordEpisodeStatisticsWrapper(TorchEnvWrapper):
         self.episode_returns = torch.zeros((self._n_envs,), device=self.device, dtype=torch.float64)
         self.episode_lengths = torch.zeros((self._n_envs,), device=self.device, dtype=torch.int64)
         self.episode_start_times = torch.full((self._n_envs,), time.perf_counter(), device=self.device, dtype=torch.float64)
-        self.prev_dones = torch.zeros((self._n_envs,), device=self.device, dtype=torch.bool)
-        self._previous_step_had_dones = False
 
     def reset(self, **kwargs: Any) -> tuple[TorchObs, dict[str, Any]]:
         obs, info = super().reset(**kwargs)
         reset_mask = self._extract_reset_mask(kwargs)
-        now = time.perf_counter()
-        if reset_mask is None:
-            self.episode_returns.zero_()
-            self.episode_lengths.zero_()
-            self.episode_start_times.fill_(now)
-            self.prev_dones.zero_()
-            self._previous_step_had_dones = False
-        else:
-            self.episode_returns[reset_mask] = 0.0
-            self.episode_lengths[reset_mask] = 0
-            self.episode_start_times[reset_mask] = now
-            self.prev_dones[reset_mask] = False
-            self._previous_step_had_dones = bool(self.prev_dones.any())
+        self._start_episodes(slice(None) if reset_mask is None else reset_mask, time.perf_counter())
         return obs, info
+
+    def _start_episodes(self, rows: torch.Tensor | slice, now: float) -> None:
+        self.episode_returns[rows] = 0.0
+        self.episode_lengths[rows] = 0
+        self.episode_start_times[rows] = now
 
     def step(
         self,
@@ -45,20 +36,13 @@ class TorchRecordEpisodeStatisticsWrapper(TorchEnvWrapper):
         observations, rewards, terminations, truncations, infos = self.env.step(actions)
         now = time.perf_counter()
 
-        if self._previous_step_had_dones:
-            self.episode_returns[self.prev_dones] = 0.0
-            self.episode_lengths[self.prev_dones] = 0
-            self.episode_start_times[self.prev_dones] = now
-
         self.episode_returns += rewards.to(dtype=self.episode_returns.dtype)
         self.episode_lengths += 1
 
         dones = torch.logical_or(terminations, truncations)
-        self.prev_dones = dones
-        # Reuse the required episode-info decision on the next step to avoid another CUDA synchronization.
-        self._previous_step_had_dones = bool(dones.any())
-        if self._previous_step_had_dones:
+        if dones.any():
             self._inject_episode_stats(infos=infos, dones=dones, now=now)
+            self._start_episodes(dones, now)
 
         return self.observations(observations), self.rewards(rewards), terminations, truncations, infos
 
@@ -67,7 +51,6 @@ class TorchRecordEpisodeStatisticsWrapper(TorchEnvWrapper):
         self.episode_returns = self.episode_returns.to(new_device)
         self.episode_lengths = self.episode_lengths.to(new_device)
         self.episode_start_times = self.episode_start_times.to(new_device)
-        self.prev_dones = self.prev_dones.to(new_device)
         super().set_device(new_device)
 
     def _extract_reset_mask(self, kwargs: dict[str, Any]) -> torch.Tensor | None:

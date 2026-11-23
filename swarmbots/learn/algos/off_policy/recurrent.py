@@ -12,6 +12,7 @@ from swarmbots.learn.algos.off_policy.replay_buffer import (
     OffPolicyReplayEpisodeSegmentBatch,
 )
 from swarmbots.learn.algos.off_policy.recurrent_transformer_critic import RecurrentCriticState
+from swarmbots.learn.algos.off_policy.replay_buffer_tensor_ops import truncation_bootstrap_mask
 from swarmbots.learn.algos.off_policy.nop import SACNOPSequenceBatch
 from swarmbots.learn.temporal_state import concatenate_temporal_states, detach_temporal_state
 
@@ -213,8 +214,9 @@ class RecurrentOffPolicyMixin:
 
     def _padded_truncation_indices(
         self,
-        truncations: torch.Tensor,
+        batch: OffPolicyReplayEpisodeSegmentBatch,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        truncations = truncation_bootstrap_mask(batch.terminations, batch.truncations)
         batch_size = truncations.shape[0]
         batch_indices = torch.arange(batch_size, dtype=torch.long, device=truncations.device)
         time_indices = truncations.to(dtype=torch.long).argmax(dim=1)

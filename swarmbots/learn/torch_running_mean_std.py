@@ -21,28 +21,12 @@ class TorchRunningMeanStd:
     def update(self, batch: torch.Tensor) -> None:
         if batch.ndim == 0:
             batch = batch.reshape(1)
-        if batch.shape[0] <= 0:
+        batch_count = batch.shape[0]
+        if batch_count == 0:
             return
 
         batch = batch.to(device=self.mean.device, dtype=self.mean.dtype)
-        batch_mean = batch.mean(dim=0)
-        batch_var = batch.var(dim=0, unbiased=False)
-        batch_count = torch.tensor(float(batch.shape[0]), device=self.mean.device, dtype=self.mean.dtype)
-        self._update_from_moments(batch_mean=batch_mean, batch_var=batch_var, batch_count=batch_count)
-
-    def to(self, device: torch.device | str) -> None:
-        target_device = as_device(device)
-        self.mean = self.mean.to(target_device)
-        self.var = self.var.to(target_device)
-        self.count = self.count.to(target_device)
-
-    def _update_from_moments(
-        self,
-        *,
-        batch_mean: torch.Tensor,
-        batch_var: torch.Tensor,
-        batch_count: torch.Tensor,
-    ) -> None:
+        batch_var, batch_mean = torch.var_mean(batch, dim=0, correction=0)
         delta = batch_mean - self.mean
         total_count = self.count + batch_count
 
@@ -55,3 +39,9 @@ class TorchRunningMeanStd:
         self.mean = mean
         self.var = var
         self.count = total_count
+
+    def to(self, device: torch.device | str) -> None:
+        target_device = as_device(device)
+        self.mean = self.mean.to(target_device)
+        self.var = self.var.to(target_device)
+        self.count = self.count.to(target_device)

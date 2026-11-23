@@ -8,12 +8,18 @@ from swarmbots.scenario_presets.scenario_obs_layouts import (
     MULTI_PAYLOAD_GOAL_GLOBAL_OBS_LAYOUT,
     PAYLOAD_GOAL_SEQUENCE_GLOBAL_OBS_LAYOUT,
     VERTICAL_REACH_GOAL_XYZ_GLOBAL_OBS_LAYOUT,
+    WALL_HEIGHT_GLOBAL_OBS_LAYOUT,
 )
 
 
 def _global_scalar_indices(scenario_settings: dict[str, Any], global_obs_dim: int) -> list[int]:
     if global_obs_dim == 0:
         return []
+
+    if scenario_settings.get("global_obs_layout") == WALL_HEIGHT_GLOBAL_OBS_LAYOUT:
+        if global_obs_dim != 1:
+            raise ValueError(f"Unexpected wall height global_obs_dim: {global_obs_dim}")
+        return [0]
 
     if scenario_settings.get("global_obs_layout") == PAYLOAD_GOAL_SEQUENCE_GLOBAL_OBS_LAYOUT:
         num_goals = int(scenario_settings["num_goals"])

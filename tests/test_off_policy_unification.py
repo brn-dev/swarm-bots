@@ -70,6 +70,55 @@ def make_batch(algorithm):
     return algorithm.replay_buffer.sample(2)
 
 
+@pytest.mark.parametrize(("variant", "algorithm_type"), [("tmasac", SAC), ("tmatd3", TD3)])
+def test_delayed_actor_gradients_and_frozen_critic_parameter(env, variant, algorithm_type):
+    policy = make_policy(env, variant)
+    algorithm = algorithm_type(policy, env, **algorithm_options(), policy_delay=2)
+    frozen = next(iter(policy.critic_parameters()))
+    frozen.requires_grad_(False)
+    before = frozen.detach().clone()
+    make_batch(algorithm)
+
+    skipped = algorithm.train(gradient_steps=1)
+    assert skipped["actor_grad_norm"].n == 0
+    assert skipped["critic_grad_norm"].n == 1
+    alternating = algorithm.train(gradient_steps=4)
+    assert alternating["actor_grad_norm"].n == 2
+    assert alternating["actor_grad_norm"].min_value > 0
+    assert alternating["critic_grad_norm"].n == 4
+    assert not frozen.requires_grad
+    torch.testing.assert_close(frozen, before, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("invalid", [
+    float("nan"), float("inf"), -float("inf"), 1e39, -1e39,
+    "auto*1e39", "auto*nan", "auto_inf", "auto*0", "auto_bad",
+])
+def test_sac_rejects_invalid_target_entropy_before_training(env, invalid):
+    with pytest.raises(ValueError, match="target_entropy"):
+        SAC(make_policy(env, "tmasac"), env, **algorithm_options(), target_entropy=invalid)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("max_grad_norm", float("nan")), ("ent_coef_learning_rate", float("inf")),
+    ("ent_coef", 1e39), ("ent_coef", "auto_1e-48"), ("ent_coef", f"auto_{torch.finfo(torch.float32).max}"),
+])
+def test_sac_rejects_unusable_optimization_settings(env: SwarmBotsLearnEnvWrapper, field: str, value: Any) -> None:
+    with pytest.raises(ValueError):
+        SAC(make_policy(env, "tmasac"), env, **{**algorithm_options(), field: value})
+
+
+def test_live_target_entropy_preserves_last_representable_value(env: SwarmBotsLearnEnvWrapper) -> None:
+    boundary = torch.finfo(torch.float32).max
+    algorithm = SAC(make_policy(env, "tmasac"), env, **algorithm_options(), target_entropy=-boundary)
+    with pytest.raises(ValueError, match="target_entropy"):
+        algorithm.target_entropy = -2 * boundary
+    batch = make_batch(algorithm)
+    target = algorithm._target_entropy(batch=batch, dtype=batch.rewards.dtype, device=batch.rewards.device)
+    assert algorithm.target_entropy == -boundary
+    torch.testing.assert_close(target, torch.full_like(batch.rewards, -boundary))
+
+
 def assert_parameters_equal(before: Iterable[torch.Tensor], parameters: Iterable[torch.Tensor]) -> None:
     for old, new in zip(before, parameters, strict=True):
         torch.testing.assert_close(old, new, rtol=0, atol=0)
@@ -438,7 +487,7 @@ def recurrent_td3(
     )
 
 
-def test_recurrent_sac_delay_and_multi_sample_smoothing(env):
+def test_recurrent_sac_delay_and_multi_sample_smoothing(env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     policy, algorithm = _make_recurrent_critic_algorithm(env)
     delayed = RecurrentSAC(
         policy,
@@ -453,12 +502,22 @@ def test_recurrent_sac_delay_and_multi_sample_smoothing(env):
         target_policy_noise=0.2,
         target_noise_clip=0.5,
     )
+    forward = delayed._learning_sequence_actions
+    action_requires_grad = []
+
+    def record_actions(**kwargs: Any) -> tuple[Any, ...]:
+        result = forward(**kwargs)
+        action_requires_grad.append(result[0].requires_grad)
+        return result
+
+    monkeypatch.setattr(delayed, "_learning_sequence_actions", record_actions)
     before = parameter_snapshot(policy.actor_parameters())
     metrics, _, _ = delayed._train_step(recurrent_batch(env), global_update_idx=0)
     assert metrics["actor_updated"] == 0
     assert_parameters_equal(before, policy.actor_parameters())
     metrics, actor_norm, critic_norm = delayed._train_step(recurrent_batch(env), global_update_idx=1)
     assert metrics["actor_updated"] == 1 and actor_norm > 0 and critic_norm > 0
+    assert action_requires_grad == [False, True]
 
 
 @pytest.mark.parametrize(
@@ -526,7 +585,9 @@ def test_plain_td3_rejects_recurrent_policy_and_factory_opt_in_builds_it(env):
     assert isinstance(make_policy(env, "tmatd3"), TD3Policy)
 
 
-def test_recurrent_sac_shared_encoder_keeps_critic_gradients_on_delayed_steps(env):
+def test_recurrent_sac_shared_encoder_keeps_critic_gradients_on_delayed_steps(
+    env: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     policy = RecurrentTMASACPolicy(
         env,
         _shared_recurrent_policy_config(
@@ -544,12 +605,23 @@ def test_recurrent_sac_shared_encoder_keeps_critic_gradients_on_delayed_steps(en
     )
     before_actor = parameter_snapshot(policy.actor_parameters())
     before_shared = parameter_snapshot(policy.shared_observation_encoder.parameters())
+    forward = policy.action_log_prob_sequence_with_selected_states_and_shared_latents
+    gradient_paths = []
+
+    def record_gradients(**kwargs: Any) -> tuple[Any, ...]:
+        result = forward(**kwargs)
+        actions, _, actor_latents, _, _, shared_latents = result
+        gradient_paths.append((actions.requires_grad, actor_latents.requires_grad, shared_latents.requires_grad))
+        return result
+
+    monkeypatch.setattr(policy, "action_log_prob_sequence_with_selected_states_and_shared_latents", record_gradients)
     metrics, _, _ = algorithm._train_step(recurrent_batch(env), global_update_idx=0)
     assert metrics["actor_updated"] == 0
     assert_parameters_equal(before_actor, policy.actor_parameters())
     assert any(not torch.equal(a, b) for a, b in zip(before_shared, policy.shared_observation_encoder.parameters()))
     metrics, _, _ = algorithm._train_step(recurrent_batch(env), global_update_idx=1)
     assert metrics["actor_updated"] == 1
+    assert gradient_paths == [(False, False, True), (True, True, True)]
 
 
 @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)])
@@ -614,6 +686,7 @@ def test_delayed_updates_resume_with_optimizer_and_counter_state(env, tmp_path, 
         batch = make_batch(algorithm)
     for index in range(2):
         algorithm._train_step(batch, global_update_idx=index)
+    assert algorithm.n_total_updates == 0
     algorithm.n_total_updates = 2
     checkpoint = tmp_path / "off-policy.pt"
     algorithm.save(checkpoint, optimizer_state_dict=algorithm._get_optimizer_state_dict())
@@ -625,6 +698,24 @@ def test_delayed_updates_resume_with_optimizer_and_counter_state(env, tmp_path, 
     actual = restored._train_step(batch, global_update_idx=restored.n_total_updates)
     assert actual == expected
     torch.testing.assert_close(restored.policy.state_dict(), algorithm.policy.state_dict(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("field", ["critic_optimizer", "ent_coef_optimizer"])
+def test_rejected_off_policy_optimizer_preserves_weights_and_temperature(env, tmp_path, field: str) -> None:
+    source = SAC(_make_policy(env), env, **algorithm_options(), ent_coef="auto_0.4")
+    source._train_step(make_batch(source), global_update_idx=0)
+    path = tmp_path / "invalid.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    checkpoint = torch.load(path, weights_only=False)
+    checkpoint["optimizer_state_dict"][field]["param_groups"][0]["params"].clear()
+    torch.save(checkpoint, path)
+    target = SAC(_make_policy(env), env, **algorithm_options(), ent_coef=0.1)
+    weights = {name: value.clone() for name, value in target.policy.state_dict().items()}
+    with pytest.raises(ValueError, match="parameter group"):
+        target.load(path, restore_env_state=False)
+    torch.testing.assert_close(target.policy.state_dict(), weights)
+    assert target.log_ent_coef is None and target.ent_coef == 0.1
+    assert not target.actor_optimizer.state and not target.critic_optimizer.state
 
 
 def test_recurrent_td3_truncation_bootstraps_from_history_before_reset(env):

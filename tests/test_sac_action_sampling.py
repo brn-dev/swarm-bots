@@ -67,6 +67,35 @@ def _algorithm(policy: TMASACPolicy, env: object, **kwargs: object) -> SAC:
     )
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_sac_native_precision_actions_can_feed_the_critic(dtype: torch.dtype) -> None:
+    torch.manual_seed(123)
+    env = _make_env()
+    try:
+        policy = _make_policy(env, continuous_config=PredictedStdGaussianConfig(base_std=1.)).to(dtype)
+        with torch.no_grad():
+            for dist in policy.action_dist.distributions:
+                dist.log_std_net.weight.zero_()
+                dist.log_std_net.bias.fill_(-12.)
+        batch = _make_bootstrap_batch(env)
+        observations = {
+            key: getattr(batch, key)[:1].to(dtype)
+            for key in ("local_obs", "global_obs", "hidden_local_vars", "hidden_global_vars")
+        }
+        actions, log_probs = policy.action_log_prob(**observations)
+        q1, q2 = policy.q_values(**observations, actions=actions)
+        assert actions.dtype == log_probs.dtype == q1.dtype == q2.dtype == dtype
+        assert policy.act(**observations, deterministic=True).dtype == dtype
+        (log_probs - torch.minimum(q1, q2)).mean().backward()
+        for dist in policy.action_dist.distributions:
+            assert torch.isfinite(dist.action_net.weight.grad).all()
+            # The pathwise log determinant and critic also differentiate through the sampled action.
+            torch.testing.assert_close(dist.log_std_net.bias.grad, -torch.ones_like(dist.log_std_net.bias),
+                                       rtol=0., atol=5e-2)
+    finally:
+        env.close()
+
+
 @pytest.mark.parametrize(
     "config",
     [
@@ -677,7 +706,10 @@ def test_single_sample_configuration_preserves_seeded_baseline(config: object) -
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-@pytest.mark.parametrize("config", [PredictedStdGaussianConfig(base_std=0.5), GumbelSoftmaxSignMagnitudeBetaConfig()])
+@pytest.mark.parametrize("config", [
+    PredictedStdGaussianConfig(base_std=0.5), GumbelSoftmaxSignMagnitudeBetaConfig(),
+    SquashedDiagGaussianConfig(std=0.5, std_learnable=True),
+])
 def test_compiled_cuda_multisample_training(config: object) -> None:
     env = _make_env()
     try:

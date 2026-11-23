@@ -301,8 +301,9 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             batch: PPOSamples,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
-        actions = self._policy_actions(batch.actions)
-        if self.action_dist.compile_friendly:
+        actions = self._policy_actions(batch.actions, batch.agent_mask)
+        action_dtypes = getattr(batch, "action_dtypes", None)
+        if action_dtypes is None and self.action_dist.compile_friendly:
             log_probs, values, critic_rep = self._evaluate_actions_core(
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
@@ -321,8 +322,7 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 agent_mask=batch.agent_mask,
                 actions=actions,
             )
-            self.action_dist.update_latent_features(latent_pi)
-            log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
+            log_probs = self._score_rollout_actions(latent_pi, actions, batch.previous_actions, action_dtypes)
         if batch.agent_mask is not None:
             log_probs = log_probs.masked_fill(~batch.agent_mask, 0.0)
         return log_probs, values, {}, {}, critic_rep
@@ -390,8 +390,8 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             *,
             agent_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        shifted_actions = self._build_shifted_actions(actions, agent_mask=agent_mask)
         decoder_obs_rep = self._project_encoder_rep_for_decoder(encoder_rep)
+        shifted_actions = self._build_shifted_actions(actions.to(decoder_obs_rep.dtype), agent_mask=agent_mask)
         return self.decoder(shifted_actions, decoder_obs_rep, agent_mask=agent_mask)
 
     def _project_encoder_rep_for_decoder(
@@ -550,8 +550,9 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         batch_size = decoder_obs_rep.shape[0]
         shifted_actions = decoder_obs_rep.new_zeros((batch_size, self.n_agents, self.agent_action_dim))
-        output_actions = decoder_obs_rep.new_zeros((batch_size, self.n_agents, self.agent_action_dim))
-        output_log_probs = decoder_obs_rep.new_zeros((batch_size, self.n_agents)) if return_log_probs else None
+        output_dtype = self.rollout_dtype if return_log_probs else decoder_obs_rep.dtype
+        output_actions = torch.empty_like(shifted_actions, dtype=output_dtype)
+        output_log_probs: torch.Tensor | None = None
 
         for agent_idx in range(self.n_agents):
             latent_pi = self.decoder(shifted_actions, decoder_obs_rep, agent_mask=agent_mask)[
@@ -561,12 +562,23 @@ class MATOrigPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             previous_action_i = None if previous_actions is None else previous_actions[:, agent_idx:agent_idx + 1, :]
 
             if return_log_probs:
-                action_i, log_prob_i = self.action_dist.get_on_policy_actions_with_log_probs(
+                action_i, log_prob_i = self.action_dist._get_on_policy_actions_for_storage(
                     latent_pi,
                     deterministic=deterministic,
                     agent=sample_agent_idx,
                     previous_actions=previous_action_i,
+                    storage_dtype=output_dtype,
                 )
+                # The action cell determines the likelihood, but the score itself can have a wider dtype.
+                if output_log_probs is None:
+                    if action_i.dtype != output_actions.dtype:
+                        output_actions = torch.empty_like(output_actions, dtype=action_i.dtype)
+                    output_log_probs = log_prob_i.new_empty((batch_size, self.n_agents))
+                else:
+                    if action_i.dtype != output_actions.dtype:
+                        output_actions = output_actions.to(torch.promote_types(output_actions.dtype, action_i.dtype))
+                    if log_prob_i.dtype != output_log_probs.dtype:
+                        output_log_probs = output_log_probs.to(torch.promote_types(output_log_probs.dtype, log_prob_i.dtype))
                 output_log_probs[:, agent_idx] = log_prob_i.squeeze(1)
             else:
                 action_i = self.action_dist.update_latent_features(latent_pi).get_actions(

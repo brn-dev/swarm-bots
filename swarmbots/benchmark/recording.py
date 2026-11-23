@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from swarmbots.benchmark.evaluation import Policy, policy_observation
 from swarmbots.benchmark.registry import make_env
 from swarmbots.mjw_env.mjw_swarm_bots_vector_env import MJWSwarmBotsVectorEnv
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
+from swarmbots.utils.torch_utils import seed_torch_rng, seeded_torch_rng
 
 
 def _record_episodes(
@@ -26,7 +28,7 @@ def _record_episodes(
     height: int = DEFAULT_RECORDING_HEIGHT,
     camera: int | str = -1,
 ) -> None:
-    torch.manual_seed(seed)
+    seed_torch_rng(seed, env.device, getattr(policy, "inference_device", None))
     observations, _ = env.reset(seed=seed)
     env.start_video_recording(
         video_folder=str(video_folder),
@@ -73,19 +75,22 @@ def record_policy(
     The environment is closed and all MP4 writers finish before returning the
     output directory. Configure neural-network evaluation mode and frozen
     normalization in the callable, or use ``as_benchmark_policy(trainer)``.
+    The recording seed covers CPU, the simulation device, and a callable's declared inference_device.
     """
     if num_episodes <= 0 or max_parallel_episodes <= 0:
         raise ValueError("num_episodes and max_parallel_episodes must be positive")
-    env = make_env(
-        benchmark_id,
-        num_envs=min(num_episodes, max_parallel_episodes),
-        device=device,
-        seed=seed,
-        episode_length=episode_length,
-        scenario_kwargs=scenario_kwargs,
-        **dict(env_kwargs or {}),
-    )
-    try:
+    with (
+        seeded_torch_rng(seed, device, getattr(policy, "inference_device", None)),
+        closing(make_env(
+            benchmark_id,
+            num_envs=min(num_episodes, max_parallel_episodes),
+            device=device,
+            seed=seed,
+            episode_length=episode_length,
+            scenario_kwargs=scenario_kwargs,
+            **dict(env_kwargs or {}),
+        )) as env,
+    ):
         _record_episodes(
             env,
             policy,
@@ -98,6 +103,4 @@ def record_policy(
             height=height,
             camera=camera,
         )
-    finally:
-        env.close()
     return Path(video_folder)

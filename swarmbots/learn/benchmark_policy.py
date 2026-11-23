@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from inspect import getattr_static
 from typing import Any
 
 import torch
@@ -22,6 +23,7 @@ from swarmbots.learn.gsde_reset import (
 )
 from swarmbots.learn.rollout_utils import initial_previous_actions
 from swarmbots.learn.temporal_state import clone_detach_temporal_state
+from swarmbots.learn.torch_device import module_device
 
 
 @dataclass
@@ -29,6 +31,20 @@ class _TransitionObservationState:
     local_obs: torch.Tensor
     global_obs: torch.Tensor | None
     actions: torch.Tensor
+
+
+_FrozenTransform = NormalizationSnapshot | TorchFeatureWiseObsNormWrapper | TorchTransitionObsWrapper
+
+
+def _uses_builtin_observation_transform(wrapper: TorchFeatureWiseObsNormWrapper) -> bool:
+    builtin = TorchFeatureWiseObsNormWrapper
+    return type(wrapper).__getattribute__ is builtin.__getattribute__ and all(
+        getattr_static(wrapper, name) is getattr(builtin, name)
+        for name in (
+            "observations", "frozen_observation_copy", "scalar_indices", "epsilon",
+            "_statistics_mask", "_build_normalize_observations", "_rebuild_tensor_operations",
+        )
+    ) and wrapper._normalize_frozen_observations is wrapper._default_frozen_observations
 
 
 class BenchmarkPolicy:
@@ -58,7 +74,7 @@ class BenchmarkPolicy:
         self.rollout_step_idx = 0
         self.has_scenario_id = env.has_scenario_id
         self._replay_normalization = ReplayNormalization.for_policy(env, policy)
-        self._normalization_snapshot: NormalizationSnapshot | None = None
+        self._frozen_transforms: tuple[_FrozenTransform, ...] | None = None
         if scenario_id is not None:
             if not self.has_scenario_id:
                 raise ValueError("scenario_id selection requires a scenario-conditioned training environment.")
@@ -66,7 +82,13 @@ class BenchmarkPolicy:
                 raise ValueError(f"scenario_id must be in [0, {len(env.scenario_names)}), got {scenario_id}.")
         observation_transforms = []
         while hasattr(env, "env"):
-            if isinstance(env, TorchFeatureWiseObsNormWrapper) and env.obs_key in ("local_obs", "global_obs"):
+            if (
+                isinstance(env, TorchFeatureWiseObsNormWrapper) and self._replay_normalization is None
+                and env.obs_key in ("local_obs", "global_obs")
+                and (not _uses_builtin_observation_transform(env) or (
+                    env.normalize_output and (env.obs_rms is not None or env._quaternion_slices.numel())
+                ))
+            ):
                 observation_transforms.append(env)
             if isinstance(env, TorchTransitionObsWrapper):
                 observation_transforms.append(env)
@@ -81,6 +103,23 @@ class BenchmarkPolicy:
         self.distribution_state = () if action_dist is None else tuple(None for _ in action_dist.distributions)
         self.initialized = False
 
+    @property
+    def inference_device(self) -> torch.device | None:
+        return module_device(self.policy)
+
+    def _freeze_transforms(self, device: torch.device) -> tuple[_FrozenTransform, ...]:
+        transforms: list[_FrozenTransform] = []
+        for wrapper in self.observation_transforms:
+            if not isinstance(wrapper, TorchFeatureWiseObsNormWrapper):
+                transforms.append(wrapper)
+            elif _uses_builtin_observation_transform(wrapper):
+                transforms.append(NormalizationSnapshot.from_observation_wrapper(wrapper, device=device))
+            else:
+                transforms.append(wrapper.frozen_observation_copy())
+        if self._replay_normalization is not None:
+            transforms.append(self._replay_normalization.snapshot(device=device, public_only=True))
+        return tuple(transforms)
+
     @torch.no_grad()
     def __call__(
         self,
@@ -88,7 +127,10 @@ class BenchmarkPolicy:
         episode_starts: torch.Tensor,
     ) -> Mapping[str, torch.Tensor]:
         # The evaluator may pass privileged fields, but they must never reach the actor.
-        actor_obs = {key: observations[key] for key in ("local_obs", "global_obs", "agent_mask")}
+        simulation_device = observations["local_obs"].device
+        actor_device = self.inference_device or simulation_device
+        actor_obs = {key: observations[key].to(actor_device) for key in ("local_obs", "global_obs", "agent_mask")}
+        episode_starts = episode_starts.to(actor_device)
         scenario_ids = observations.get("scenario_id")
         if scenario_ids is None and self.scenario_id is not None:
             scenario_ids = torch.full_like(episode_starts, self.scenario_id, dtype=torch.long)
@@ -103,28 +145,21 @@ class BenchmarkPolicy:
             if padding > 0:
                 actor_obs["global_obs"] = F.pad(global_obs, (0, padding))
         if scenario_ids is not None:
-            actor_obs["scenario_ids"] = scenario_ids
-        for transform in self.observation_transforms:
-            if isinstance(transform, TorchFeatureWiseObsNormWrapper):
-                if self._replay_normalization is not None:
-                    continue
-                was_updating = transform.update_running_mean
-                was_normalizing = transform.normalize_output
-                transform.update_running_mean = False
-                transform.normalize_output = True
-                try:
+            actor_obs["scenario_ids"] = scenario_ids.to(actor_device)
+        if self._frozen_transforms is None:
+            self._frozen_transforms = self._freeze_transforms(actor_obs["local_obs"].device)
+        for transform in self._frozen_transforms:
+            if isinstance(transform, NormalizationSnapshot):
+                actor_obs = transform.normalize_observations(actor_obs)
+            elif isinstance(transform, TorchFeatureWiseObsNormWrapper):
+                # A custom hook can use tensors owned by the wrapper on its original device.
+                if transform.device == actor_device:
                     actor_obs = transform.observations(actor_obs)
-                finally:
-                    transform.update_running_mean = was_updating
-                    transform.normalize_output = was_normalizing
+                else:
+                    prepared = {key: value.to(transform.device) for key, value in actor_obs.items()}
+                    actor_obs = {key: value.to(actor_device) for key, value in transform.observations(prepared).items()}
             else:
                 actor_obs = self._transition_observations(transform, actor_obs, episode_starts)
-        if self._replay_normalization is not None:
-            if self._normalization_snapshot is None:
-                self._normalization_snapshot = self._replay_normalization.snapshot(
-                    device=actor_obs["local_obs"].device, public_only=True,
-                )
-            actor_obs = self._normalization_snapshot.normalize_observations(actor_obs)
         local_obs = actor_obs["local_obs"]
         if not self.initialized:
             self.temporal_state = self.policy.initial_temporal_state(
@@ -173,10 +208,10 @@ class BenchmarkPolicy:
         self.temporal_state = clone_detach_temporal_state(temporal_state)
         self.rollout_step_idx += 1
         for transform, state in self.transition_states.items():
-            state.actions = transform._actions_to_features(actions, dtype=state.local_obs.dtype).clone()
+            state.actions = transform._actions_to_features(actions, like=state.local_obs).clone()
         if self.previous_actions is not None:
             self.previous_actions = actions.clone()
-        return self.action_env._actions_to_env(actions)
+        return self.action_env._actions_to_env(actions.to(simulation_device))
 
     def _transition_observations(
         self,

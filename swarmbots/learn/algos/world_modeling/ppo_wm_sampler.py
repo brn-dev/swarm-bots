@@ -3,9 +3,12 @@ from typing import TypeVar
 
 import torch
 
+from swarmbots.learn.algos.ppo.ppo_scalar_frames import rebase_scalar_targets_
 from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
-from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSampler, PPOBatchSampler, PPOSamplerConfig
+from swarmbots.learn.algos.ppo.ppo_sampler import (
+    PPOSamples, PPOSampler, PPOBatchSampler, PPOSamplerConfig, select_action_dtype_masks,
+)
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler, BaseWMSamples
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
     WMEpisodeWindows,
@@ -123,7 +126,9 @@ class PPOWMSampler(
                 dim=0,
             )
 
-            self.multi_step_actions[flat_batch_indices] = episode_windows.multi_step_actions.flatten(0, 1)
+            self.multi_step_actions[flat_batch_indices] = episode_windows.multi_step_actions.flatten(0, 1).to(
+                self.multi_step_actions.dtype,
+            )
             self.next_local_obs[flat_batch_indices] = episode_windows.next_local_obs.flatten(0, 1)
             self.wm_target_time_mask[flat_batch_indices] = episode_windows.wm_target_time_mask.flatten(0, 1)
             self.next_global_obs[flat_batch_indices] = episode_windows.next_global_obs.flatten(0, 1)
@@ -152,6 +157,7 @@ class PPOWMSampler(
             values=self.values[batch_indices],
             returns=self.returns[batch_indices],
             advantages=self.advantages[batch_indices],
+            action_dtypes=select_action_dtype_masks(self.action_dtypes, batch_indices),
             next_local_obs=self.next_local_obs[batch_indices],
             wm_target_time_mask=self.wm_target_time_mask[batch_indices],
             next_global_obs=self.next_global_obs[batch_indices],
@@ -189,6 +195,10 @@ class PPOWMBatchSampler(
         if config.compile_wm_window_helper:
             # CUDA-graph outputs must stay valid across model calls and subsequent sampler construction.
             windows = windows.clone()
+        for key, frames in (rollout_batch.scalar_frames or {}).items():
+            targets = getattr(windows, f"next_{key}").unflatten(0, (rollout_batch.n_envs, rollout_batch.n_steps))
+            valid = windows.wm_target_time_mask.unflatten(0, (rollout_batch.n_envs, rollout_batch.n_steps))
+            rebase_scalar_targets_(targets, valid, [frames])
         self.multi_step_actions = windows.multi_step_actions
         self.next_local_obs = windows.next_local_obs
         self.wm_target_time_mask = windows.wm_target_time_mask
@@ -210,6 +220,7 @@ class PPOWMBatchSampler(
             values=self.values[batch_indices],
             returns=self.returns[batch_indices],
             advantages=self.advantages[batch_indices],
+            action_dtypes=select_action_dtype_masks(self.action_dtypes, batch_indices),
             next_local_obs=self.next_local_obs[batch_indices],
             wm_target_time_mask=self.wm_target_time_mask[batch_indices],
             next_global_obs=self.next_global_obs[batch_indices],

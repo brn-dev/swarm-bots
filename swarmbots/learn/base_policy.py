@@ -87,6 +87,10 @@ class BasePolicy(nn.Module, abc.ABC):
     ) -> torch.Tensor:
         raise NotImplementedError()
 
+    def get_loss_weights(self) -> dict[str, float]:
+        """Return the current adjustable loss weights using canonical update names."""
+        return {}
+
     @abc.abstractmethod
     def update_loss_weights(self, **weights: float) -> None:
         """

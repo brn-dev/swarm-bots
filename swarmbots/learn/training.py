@@ -11,7 +11,7 @@ import torch
 from torch import nn
 
 from swarmbots.benchmark.registry import get_benchmark_spec, make_env
-from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
+from swarmbots.learn.algos.base_algorithm import BaseAlgorithm, validate_timestep_budget
 from swarmbots.learn.algos.off_policy.recurrent import validate_recurrent_episode_length
 from swarmbots.learn.algos.off_policy.replay_exposure import resolve_replay_updates
 from swarmbots.learn.algos.ppo.ppo import PPO, AutomaticLearningRate, StepsRolloutMode
@@ -53,6 +53,7 @@ from swarmbots.learn.scheduling.cosine_scheduler import CosineSchedulerConfig
 from swarmbots.learn.scheduling.schedulers import ScheduleUnit
 from swarmbots.learn.serialization_utils import serialize_value
 from swarmbots.learn.swarmbots_obs_indices import build_obs_indices
+from swarmbots.utils.torch_utils import seed_torch_rng
 
 
 TrainingAlgorithm = TypeVar("TrainingAlgorithm", bound=BaseAlgorithm)
@@ -71,7 +72,10 @@ def list_variants(*, include_hidden: bool = False) -> tuple[str, ...]:
     return tuple(name for name, config in VARIANT_CONFIGS.items() if include_hidden or not config.hidden)
 
 
-def _variant_options(variant: str, *, model_scale: str | None = DEFAULT_MODEL_SCALE) -> tuple[dict[str, Any], dict[str, Any]]:
+def _variant_options(
+    variant: str, *, model_scale: str | None = DEFAULT_MODEL_SCALE, policy_kwargs: Mapping[str, Any] | None = None,
+    continuous_action_dist: ContinuousActionDistVariant | None = None, use_nop: bool | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     if variant not in VARIANT_CONFIGS:
         raise ValueError(f"Unknown learning variant {variant!r}. Available: {', '.join(list_variants())}")
     model_scale = normalize_model_scale(model_scale)
@@ -81,12 +85,17 @@ def _variant_options(variant: str, *, model_scale: str | None = DEFAULT_MODEL_SC
     else:
         policy_options = {"policy_variant": config.policy_variant}
         algorithm_options = {}
-    deterministic = _is_deterministic_policy_variant(policy_options["policy_variant"])
-    if deterministic or policy_options["policy_variant"] in {"masac__mlp_critic", "masac__deepset_critic"}:
+    overrides = {} if policy_kwargs is None else policy_kwargs
+    resolved_variant = overrides.get("policy_variant", policy_options["policy_variant"])
+    if resolved_variant != policy_options["policy_variant"]:
+        # make_training selects optimizer and replay defaults for the resolved learner below.
+        algorithm_options = {}
+    deterministic = _is_deterministic_policy_variant(resolved_variant)
+    if deterministic or resolved_variant in {"masac__mlp_critic", "masac__deepset_critic"}:
         policy_options["mat_encoder_transformer_ff_config"] = MLPConfig(hidden_dims=[512, 512])
     default_distribution = None if deterministic else (
         "predicted_std_gaussian"
-        if _is_sac_policy_variant(policy_options["policy_variant"])
+        if _is_sac_policy_variant(resolved_variant)
         else "sign_magnitude_beta"
     )
     policy_options.update(
@@ -97,6 +106,11 @@ def _variant_options(variant: str, *, model_scale: str | None = DEFAULT_MODEL_SC
     )
     if config.gated_deepset:
         policy_options["deepset_interaction_config"] = DeepSetInteractionConfig(gated=True)
+    policy_options.update(overrides)
+    if continuous_action_dist is not None:
+        policy_options["continuous_action_dist"] = continuous_action_dist
+    if use_nop is not None:
+        policy_options["use_nop"] = use_nop
     return policy_options, algorithm_options
 
 
@@ -168,12 +182,13 @@ def _make_policy_env(
     policy_options: Mapping[str, Any],
     gamma: float = DEFAULT_GAMMA,
     compile_modules: bool = False,
+    additional_rng_devices: tuple[str | torch.device, ...] = (),
 ) -> tuple[BaseLearnEnvWrapper, BasePolicy]:
     policy_options = dict(policy_options)
     policy_options["model_scale"] = normalize_model_scale(policy_options.get("model_scale"))
     is_off_policy = _is_off_policy_variant(policy_options["policy_variant"])
     use_popart = policy_options.get("use_popart", not is_off_policy)
-    torch.manual_seed(seed)
+    seed_torch_rng(seed, device, *additional_rng_devices)
     vector_env = make_env(
         benchmark_id,
         num_envs=num_envs,
@@ -259,6 +274,9 @@ def make_training(
     ``use_nop=False`` disables the auxiliary model without changing main widths.
     ``policy_kwargs`` overrides the arguments to the preset policy builder;
     ``algorithm_kwargs`` overrides arguments to PPO/SAC/RecurrentSAC/TD3/DDPG.
+    For PPO, an explicit ``rollout_mode`` sets the collection target. Omitting
+    ``sampler_config`` or passing None selects the preset sampler, which covers
+    the full rollout rounded up to complete vector steps.
     Off-policy default batches target 1,024 learning positions independently of
     rollout size. Recurrent batches round up to whole learning sequences;
     an explicit ``batch_size`` counts sequences for recurrent learners and
@@ -266,13 +284,11 @@ def make_training(
     sets scored replay uses per new transition (default 8). The resulting updates
     per collection cycle must be a positive integer. Registered presets use gamma=0.995.
     """
-    policy_options, algorithm_options = _variant_options(variant, model_scale=model_scale)
-    policy_options.update(policy_kwargs or {})
+    policy_options, algorithm_options = _variant_options(
+        variant, model_scale=model_scale, policy_kwargs=policy_kwargs, continuous_action_dist=continuous_action_dist,
+        use_nop=use_nop,
+    )
     algorithm_options.update(algorithm_kwargs or {})
-    if continuous_action_dist is not None:
-        policy_options["continuous_action_dist"] = continuous_action_dist
-    if use_nop is not None:
-        policy_options["use_nop"] = use_nop
     policy_variant = policy_options["policy_variant"]
     is_sac = _is_sac_policy_variant(policy_variant)
     is_deterministic = _is_deterministic_policy_variant(policy_variant)
@@ -293,6 +309,8 @@ def make_training(
         rollout_steps_per_env = 1 if is_off_policy else 4
     if rollout_steps_per_env <= 0:
         raise ValueError("rollout_steps_per_env must be positive")
+    if num_envs <= 0:
+        raise ValueError(f"Expected num_envs > 0, got {num_envs}")
     episode_limit = get_benchmark_spec(benchmark_id).episode_length if episode_length is None else int(episode_length)
     recurrent_off_policy = is_off_policy and is_recurrent
     rollout_samples = num_envs * rollout_steps_per_env
@@ -313,10 +331,15 @@ def make_training(
         learning_positions = int(off_policy_options["batch_size"]) * learning_steps
         collection_steps = off_policy_options.setdefault("rollout_steps_per_iteration", rollout_samples)
         collection_steps = num_envs if collection_steps is None else int(collection_steps)
+        rollout_steps_per_env = collection_steps // num_envs
         resolve_replay_updates(
             replay_exposure=float(off_policy_options["replay_exposure"]), rollout_steps=collection_steps,
             learning_positions_per_batch=learning_positions,
         )
+    else:
+        rollout_mode = algorithm_options.setdefault("rollout_mode", StepsRolloutMode(rollout_samples))
+        rollout_steps_per_env = math.ceil(rollout_mode.n_steps_per_rollout / num_envs)
+        rollout_samples = num_envs * rollout_steps_per_env
     training_metadata = serialize_value({
         "benchmark_id": benchmark_id,
         "learning_variant": variant,
@@ -340,8 +363,6 @@ def make_training(
     if "first_episode_length" not in env_kwargs and "first_episode_lengths" not in env_kwargs:
         if episode_limit <= 0:
             raise ValueError(f"Expected episode_length > 0, got {episode_limit}")
-        if num_envs <= 0:
-            raise ValueError(f"Expected num_envs > 0, got {num_envs}")
         env_kwargs["first_episode_lengths"] = _staggered_first_episode_lengths(
             num_envs=num_envs, episode_length=episode_limit,
         )
@@ -356,6 +377,10 @@ def make_training(
         policy_options=policy_options,
         gamma=gamma,
         compile_modules=compile_modules,
+        additional_rng_devices=tuple(
+            algorithm_options[key] for key in ("train_device", "rollout_device", "replay_storage_device")
+            if algorithm_options.get(key) is not None
+        ),
     )
     vector_env = env.unwrapped
     device = vector_env.device
@@ -375,9 +400,13 @@ def make_training(
             algorithm_class = RecurrentSAC if recurrent else SAC
             if is_deterministic:
                 algorithm_class = DDPG if _is_ddpg_policy_variant(policy_variant) else RecurrentTD3 if recurrent else TD3
+            learning_starts = max(10_000, collection_steps * 4)
+            if recurrent:
+                sequence_length = off_policy_options["burn_in_steps"] + off_policy_options["learning_steps"]
+                learning_starts = max(learning_starts, sequence_length * num_envs)
             algorithm_config = {
                 "buffer_capacity_per_env": vector_env.episode_length * 2,
-                "learning_starts": max(10_000, collection_steps * 4),
+                "learning_starts": learning_starts,
                 "replay_storage_device": device,
                 **shared_options,
                 **off_policy_options,
@@ -421,20 +450,21 @@ def make_training(
                     ),
                 ),
             )
-        sampler_options = {
-            "batch_size": num_envs if is_recurrent_ppo else rollout_samples,
-            "num_next_steps": policy_options.get("world_model_num_next_steps", 3),
-            "compile_wm_window_helper": compile_modules,
-        }
-        if is_recurrent_ppo:
-            sampler = RPPOWMSamplerConfig(sequence_length=rollout_steps_per_env, **sampler_options)
-        elif policy_options["use_nop"]:
-            sampler = PPOWMSamplerConfig(**sampler_options)
-        else:
-            sampler = PPOSamplerConfig(batch_size=rollout_samples)
+        sampler = algorithm_options.pop("sampler_config", None)
+        if sampler is None:
+            sampler_options = {
+                "batch_size": num_envs if is_recurrent_ppo else rollout_samples,
+                "num_next_steps": policy_options.get("world_model_num_next_steps", 3),
+                "compile_wm_window_helper": compile_modules,
+            }
+            if is_recurrent_ppo:
+                sampler = RPPOWMSamplerConfig(sequence_length=rollout_steps_per_env, **sampler_options)
+            elif policy_options["use_nop"]:
+                sampler = PPOWMSamplerConfig(**sampler_options)
+            else:
+                sampler = PPOSamplerConfig(batch_size=rollout_samples)
         algorithm_config = {
             "learning_rate": learning_rate,
-            "rollout_mode": StepsRolloutMode(rollout_samples),
             "max_episode_length": vector_env.episode_length,
             "sampler_config": sampler,
             "n_epochs": n_epochs,
@@ -470,11 +500,14 @@ def train(
     The returned trainer retains its trained policy and normalization statistics.
     ``total_timesteps`` is an absolute final counter when resuming a checkpoint.
     """
+    total_timesteps = validate_timestep_budget(total_timesteps)
+    options = dict(learn_kwargs or {})
+    if options.get("additional_timesteps") is not None:
+        raise ValueError("train() uses total_timesteps and cannot also accept additional_timesteps")
     algorithm = make_training(benchmark_id, variant, **training_kwargs)
     try:
         if load_path is not None:
             algorithm.load(load_path)
-        options = dict(learn_kwargs or {})
         options.setdefault("enable_command_prompt", False)
         metadata = dict(options.pop("extra_run_metadata", None) or {})
         if load_path is not None:

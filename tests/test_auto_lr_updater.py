@@ -10,6 +10,18 @@ from swarmbots.learn.serialization_utils import serialize_fn
 from swarmbots.learn.summary_statistics import SummaryStatistics
 
 
+def test_ppo_cosine_warmup_reaches_its_configured_learning_rate() -> None:
+    cold_lr, warm_lr = 5e-7, 1e-4
+    updater = make_auto_lr_updater(warm_scheduler_config=CosineSchedulerConfig(
+        unit=ScheduleUnit.ITERATIONS, duration=200, start_value=cold_lr, final_value=warm_lr,
+    ))
+    value = cold_lr
+    state = {}
+    for iteration in range(1, 201):
+        value = updater(value, state, iteration, 0, 0, None, None, {})["new_lr"]
+    assert value == warm_lr
+
+
 def test_auto_lr_updater_uses_configured_max_kl_threshold() -> None:
     default_updater = make_auto_lr_updater()
     default_result = default_updater(
@@ -39,6 +51,15 @@ def test_auto_lr_updater_uses_configured_max_kl_threshold() -> None:
     assert tuned_result["event"] == "max_kl_hit"
     assert tuned_result["new_lr"] is not None
     assert tuned_result["new_lr"] < 1e-3
+
+
+@pytest.mark.parametrize("kl", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_kl_stop_reduces_learning_rate_even_at_a_late_epoch(kl: float) -> None:
+    state = {"counter": 1, "warmup": False}
+    result = make_auto_lr_updater()(1e-3, state, 8, 20, 100, kl, 7, {})
+    assert result["new_lr"] == pytest.approx(4e-4)
+    assert result["event"] == "max_kl_hit"
+    assert state["counter"] == 0
 
 
 def test_auto_lr_updater_decays_on_high_clip_fraction_and_resets_growth_counter() -> None:

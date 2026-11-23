@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from swarmbots.learn.presets.model_scale import DEFAULT_MODEL_SCALE
 from swarmbots.learn.gsde_reset import GSDEResetMode, gsde_reset_mode_from_settings
 from swarmbots.learn.training import _make_policy_env, _variant_options
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
+from swarmbots.utils.torch_utils import seeded_torch_rng
 
 
 def record_checkpoint(
@@ -61,25 +63,24 @@ def record_checkpoint(
     if num_episodes <= 0 or max_parallel_episodes <= 0:
         raise ValueError("num_episodes and max_parallel_episodes must be positive")
     checkpoint_path = Path(checkpoint_path)
-    checkpoint = load_checkpoint(checkpoint_path)
-    policy_options, _ = _variant_options(variant, model_scale=model_scale)
-    policy_options.update(policy_kwargs or {})
-    if continuous_action_dist is not None:
-        policy_options["continuous_action_dist"] = continuous_action_dist
-    if use_nop is not None:
-        policy_options["use_nop"] = use_nop
-    env, policy = _make_policy_env(
-        benchmark_id,
-        num_envs=min(num_episodes, max_parallel_episodes),
-        device=device,
-        seed=seed,
-        episode_length=episode_length,
-        scenario_kwargs=scenario_kwargs,
-        env_kwargs=env_kwargs,
-        policy_options=policy_options,
-        compile_modules=compile_modules,
-    )
-    try:
+    with seeded_torch_rng(seed, device), ExitStack() as cleanup:
+        checkpoint = load_checkpoint(checkpoint_path)
+        policy_options, _ = _variant_options(
+            variant, model_scale=model_scale, policy_kwargs=policy_kwargs,
+            continuous_action_dist=continuous_action_dist, use_nop=use_nop,
+        )
+        env, policy = _make_policy_env(
+            benchmark_id,
+            num_envs=min(num_episodes, max_parallel_episodes),
+            device=device,
+            seed=seed,
+            episode_length=episode_length,
+            scenario_kwargs=scenario_kwargs,
+            env_kwargs=env_kwargs,
+            policy_options=policy_options,
+            compile_modules=compile_modules,
+        )
+        cleanup.callback(env.close)
         if isinstance(policy, TD3Policy):
             if exploration_noise is None:
                 exploration_noise = checkpoint["policy_hyper_parameters"]["exploration_noise"]
@@ -119,6 +120,4 @@ def record_checkpoint(
             height=height,
             camera=camera,
         )
-    finally:
-        env.close()
     return Path(video_folder)

@@ -13,8 +13,15 @@ from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
 )
 from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import flatten_recurrent_wm_batch
+from swarmbots.learn.loss_weights import validate_loss_weight
 from swarmbots.learn.masking import build_valid_mask, masked_mean, restrict_loss_agent_mask
 from swarmbots.learn.serialization_utils import serialize_value
+
+
+NOP_TARGET_WEIGHT_ALIASES = {
+    f"{target}_loss_weight": (f"{target}_loss_weight", target)
+    for target in ("scalar", "angle", "rot6d", "binary", "global_scalar", "global_rot6d")
+}
 
 
 @dataclass(frozen=True)
@@ -169,12 +176,8 @@ class NextObsPredMixin(abc.ABC):
         self.global_scalars_predictor = global_scalars_predictor
         self.global_rot6ds_predictor = global_rot6ds_predictor
 
-        self.scalar_loss_weight = config.scalar_loss_weight
-        self.angle_loss_weight = config.angle_loss_weight
-        self.rot6d_loss_weight = config.rot6d_loss_weight
-        self.binary_loss_weight = config.binary_loss_weight
-        self.global_scalar_loss_weight = config.global_scalar_loss_weight
-        self.global_rot6d_loss_weight = config.global_rot6d_loss_weight
+        for name in NOP_TARGET_WEIGHT_ALIASES:
+            setattr(self, name, validate_loss_weight(name, getattr(config, name)))
         self.binary_target_ema_decay = config.binary_target_ema_decay
         self.binary_target_ema_eps = config.binary_target_ema_eps
 

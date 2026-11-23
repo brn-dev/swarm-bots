@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from functools import partial
-from operator import attrgetter, itemgetter, methodcaller
+from operator import attrgetter, getitem, itemgetter, methodcaller, setitem
 from typing import Any
 
 import numpy as np
@@ -14,6 +14,7 @@ import torch
 
 _OPERATOR_HELPERS = (attrgetter, itemgetter, methodcaller)
 _CALLABLE_HELPERS = (partial, *_OPERATOR_HELPERS)
+_RECEIVER_ACCESSORS = (getattr, setattr, getitem, setitem, dict.get, dict.__getitem__, dict.__setitem__)
 
 
 def _type_identity(value: Any) -> str:
@@ -22,6 +23,24 @@ def _type_identity(value: Any) -> str:
 
 def _opaque_record(value: Any) -> dict[str, Any]:
     return {"type": _type_identity(value), "opaque": True}
+
+
+def _partial_accessor_receiver(bound: partial) -> object | None:
+    if bound.args and (
+        isinstance(bound.func, _OPERATOR_HELPERS) or any(bound.func is op for op in _RECEIVER_ACCESSORS)
+    ):
+        return bound.args[0]
+    return None
+
+
+def bound_accessor_receiver(callback: Callable[..., Any]) -> object | None:
+    bound = callback if isinstance(callback, partial) else getattr(callback, "__self__", None)
+    if isinstance(bound, partial):
+        receiver = _partial_accessor_receiver(bound)
+        return bound_accessor_receiver(bound.func) if receiver is None else receiver
+    if isinstance(bound, (type, *_OPERATOR_HELPERS)) or inspect.ismodule(bound):
+        return None
+    return bound
 
 
 def _callable_identity(fn: Callable[..., Any]) -> str:
@@ -41,6 +60,14 @@ def _callable_identity(fn: Callable[..., Any]) -> str:
     return f"{module or type(fn).__module__}.{qualified_name}"
 
 
+def _is_configuration_receiver(receiver: Any) -> bool:
+    # Runtime hosts also expose get_hyper_parameters(), which can recurse into callbacks.
+    return not inspect.isclass(receiver) and (
+        is_dataclass(receiver) or isinstance(receiver, (Enum, *_CALLABLE_HELPERS))
+        or (callable(receiver) and callable(getattr(receiver, "get_hyper_parameters", None)))
+    )
+
+
 def _callable_configuration_owner(fn: Callable[..., Any]) -> Any | None:
     if inspect.isclass(fn):
         return None
@@ -49,18 +76,13 @@ def _callable_configuration_owner(fn: Callable[..., Any]) -> Any | None:
     receiver = getattr(fn, "__self__", None)
     if getattr(fn, "__name__", None) == "__call__" and inspect.isroutine(receiver):
         return receiver
-    # Runtime hosts also expose get_hyper_parameters(), which can recurse into these callbacks.
-    if not inspect.isclass(receiver):
-        if is_dataclass(receiver) or isinstance(receiver, (Enum, *_CALLABLE_HELPERS)) or (
-            callable(receiver) and callable(getattr(receiver, "get_hyper_parameters", None))
-        ):
-            return receiver
-    return None
+    return receiver if _is_configuration_receiver(receiver) else None
 
 
 class _Serializer:
-    def __init__(self, *, opaque_objects: bool) -> None:
+    def __init__(self, *, opaque_objects: bool, for_checkpoint_match: bool) -> None:
         self.opaque_objects = opaque_objects
+        self.for_checkpoint_match = for_checkpoint_match
         self._active_path: ContextVar[frozenset[tuple[str, int]]] = ContextVar("active_metadata_path", default=frozenset())
 
     @contextmanager
@@ -80,28 +102,48 @@ class _Serializer:
         finally:
             self._active_path.reset(token)
 
-    def function(self, fn: Callable[..., Any]) -> dict[str, Any]:
+    def _record_declared_accessor_config(self, record: dict[str, Any], owner: Any) -> None:
+        # Accessors restore mutable values separately. Only the explicitly declared configuration binds a selector.
+        hook = getattr(owner, "get_hyper_parameters", None)
+        if callable(hook):
+            with self._visit(owner, role="configuration") as first_configuration:
+                record["config"] = self.value(hook()) if first_configuration else _opaque_record(owner)
+
+    def function(self, fn: Callable[..., Any], *, include_receiver_config: bool = True) -> dict[str, Any]:
         with self._visit(fn, role="callable") as first_visit:
             if not first_visit:
                 return _opaque_record(fn)
             result: dict[str, Any] = {"repr": _callable_identity(fn), "source": None}
             # Bound arguments have no declared enum type, so member names alone can collide.
             if isinstance(fn, partial):
+                receiver = _partial_accessor_receiver(fn) if self.for_checkpoint_match else None
+                if receiver is not None:
+                    binding = _opaque_record(receiver)
+                    if not include_receiver_config and _is_configuration_receiver(receiver):
+                        self._record_declared_accessor_config(binding, receiver)
+                    args = [binding, *self.value(fn.args[1:], preserve_enum_identity=True)]
+                else:
+                    args = self.value(fn.args, preserve_enum_identity=True)
                 result.update(
-                    function=self.function(fn.func),
-                    args=self.value(fn.args, preserve_enum_identity=True),
+                    function=self.function(fn.func, include_receiver_config=include_receiver_config),
+                    args=args,
                     keywords=self.value(fn.keywords, preserve_enum_identity=True),
                 )
             elif isinstance(fn, _OPERATOR_HELPERS):
                 constructor, arguments = fn.__reduce__()
                 result.update(constructor=self.function(constructor), args=self.value(arguments, preserve_enum_identity=True))
-            else:
+            elif not self.for_checkpoint_match:
                 source_target = fn if getattr(fn, "__qualname__", None) is not None else type(fn)
                 try:
                     result["source"] = inspect.getsource(source_target)
                 except (OSError, TypeError):
                     pass
             owner = _callable_configuration_owner(fn)
+            receiver = getattr(fn, "__self__", None)
+            if not include_receiver_config and receiver is not None and bound_accessor_receiver(fn) is receiver:
+                result["receiver"] = _type_identity(receiver)
+                self._record_declared_accessor_config(result, owner)
+                return result
             if owner is not None:
                 if owner is not fn:
                     result["receiver"] = _type_identity(owner)
@@ -110,7 +152,7 @@ class _Serializer:
                     if not first_configuration:
                         result["config"] = _opaque_record(owner)
                     elif owner is not fn and (isinstance(owner, _CALLABLE_HELPERS) or inspect.isroutine(owner)):
-                        result["config"] = self.function(owner)
+                        result["config"] = self.function(owner, include_receiver_config=include_receiver_config)
                     else:
                         hook = getattr(owner, "get_hyper_parameters", None)
                         if callable(hook):
@@ -207,16 +249,16 @@ _metadata_scope: ContextVar[_SerializationScope | None] = ContextVar("metadata_s
 
 
 @contextmanager
-def _serialization_context(*, opaque_objects: bool) -> Iterator[_Serializer]:
+def _serialization_context(*, opaque_objects: bool, for_checkpoint_match: bool = False) -> Iterator[_Serializer]:
     current = _metadata_scope.get()
     inherited_path = None
     while current is not None and current.closed:
         inherited_path = current.inherited_path
         current = current.parent
-    if current is not None:
+    if current is not None and (current.serializer.for_checkpoint_match or not for_checkpoint_match):
         serializer = current.serializer
     else:
-        serializer = _Serializer(opaque_objects=opaque_objects)
+        serializer = _Serializer(opaque_objects=opaque_objects, for_checkpoint_match=for_checkpoint_match)
     if not serializer.opaque_objects:
         yield serializer
         return
@@ -235,9 +277,11 @@ def _serialization_context(*, opaque_objects: bool) -> Iterator[_Serializer]:
             serializer._active_path.reset(path_token)
 
 
-def serialize_fn(fn: Callable[..., Any]) -> dict[str, Any]:
-    with _serialization_context(opaque_objects=True) as serializer:
-        return serializer.function(fn)
+def serialize_fn(
+    fn: Callable[..., Any], *, for_checkpoint_match: bool = False, include_receiver_config: bool = True,
+) -> dict[str, Any]:
+    with _serialization_context(opaque_objects=True, for_checkpoint_match=for_checkpoint_match) as serializer:
+        return serializer.function(fn, include_receiver_config=include_receiver_config)
 
 
 def serialize_value(value: Any, *, opaque_objects: bool = False) -> Any:

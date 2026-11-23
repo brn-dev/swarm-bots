@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import mujoco
 import numpy as np
@@ -13,7 +13,11 @@ from swarmbots.mjw_env.scenarios.scenario_validation import finite_positive
 from swarmbots.mjw_env.parameter_distributions import FloatOrDistParams
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRuntimeBindings, MJWRecordingCameraConfig
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWHomogeneousSwarm
+from swarmbots.scenario_presets.scenario_obs_layouts import WALL_HEIGHT_GLOBAL_OBS_LAYOUT
 from swarmbots.utils.mujoco_render_geoms import add_wall_y_reference_line_geoms
+
+
+WALL_HALF_THICKNESS = 0.1
 
 
 @dataclass
@@ -54,6 +58,8 @@ class MJWWallScenario(BaseMJWScenario):
     compile_reward_kernel: bool = False
     reward_kernel_compile_mode: str = "default"
     randomize_initial_swarm_z_rotation: bool = False
+    wall_height_options: Sequence[float] | None = None
+    wall_height_observable: bool = False
 
     def __post_init__(self) -> None:
         self.reset_settle_timestep_scale = finite_positive(
@@ -85,6 +91,13 @@ class MJWWallScenario(BaseMJWScenario):
                     f"got {self.forward_reward_wall_boost_height_margin}"
                 )
         self.wall_height = float(self.wall_height)
+        if self.wall_height_options is not None:
+            heights = tuple(
+                finite_positive(height, name="wall_height_options entry") for height in self.wall_height_options
+            )
+            if not heights or len(set(heights)) != len(heights):
+                raise ValueError("wall_height_options must contain one or more distinct heights")
+            self.wall_height_options = heights
         self.wall_climb_reward_weight = float(self.wall_climb_reward_weight)
         self.wall_climb_reward_distance = float(self.wall_climb_reward_distance)
         self.wall_success_threshold = float(self.wall_success_threshold)
@@ -123,6 +136,8 @@ class MJWWallScenario(BaseMJWScenario):
             "reset_settle_time": self.reset_settle_time,
             "reset_settle_timestep_scale": self.reset_settle_timestep_scale,
             "wall_height": self.wall_height,
+            **({"wall_height_options": list(self.wall_height_options)} if self.wall_height_options is not None else {}),
+            **({"global_obs_layout": WALL_HEIGHT_GLOBAL_OBS_LAYOUT} if self.wall_height_observable else {}),
             "wall_distance": self.wall_distance,
             "street_width": self.street_width,
             "forward_reward_weight": self.forward_reward_weight,
@@ -140,10 +155,15 @@ class MJWWallScenario(BaseMJWScenario):
             "reward_kernel_compile_mode": self.reward_kernel_compile_mode,
         }
 
+    @property
+    def wall_geom_half_height(self) -> float:
+        # With the tallest top at the body's default pose, all sampled poses keep the bottom underground.
+        return self.wall_height if self.wall_height_options is None else max(self.wall_height_options)
+
     def get_default_recording_camera_config(self) -> MJWRecordingCameraConfig | None:
         wall_distance = self.wall_distance if isinstance(self.wall_distance, (int, float)) else 1.0
         lookat_y = max(0.75, min(float(wall_distance) * 0.9, float(wall_distance) + 0.5))
-        lookat_z = max(0.35, self.wall_height * 1.25)
+        lookat_z = max(0.35, self.wall_geom_half_height * 1.25)
         distance = max(3.0, min(8.0, self.street_width * 0.45 + self.swarm.max_unit_extent * 1.5))
         return MJWRecordingCameraConfig(
             lookat=(0.0, lookat_y, lookat_z),
@@ -184,7 +204,7 @@ class MJWWallScenario(BaseMJWScenario):
         wall_body = worldbody.add_body(name="Wall", mocap=True, pos=[0, 0, 0])
         wall_body.add_geom(
             type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=[self.side_wall_x, 0.1, self.wall_height],
+            size=[self.side_wall_x, WALL_HALF_THICKNESS, self.wall_geom_half_height],
             rgba=[0.5, 0.5, 0.6, 1],
         )
 
@@ -201,6 +221,7 @@ class MJWWallScenario(BaseMJWScenario):
     def get_single_observation_space(self) -> spaces.Dict:
         return make_observation_space(
             self,
+            global_obs_dim=int(self.wall_height_observable),
             hidden_local_vars_dim=self.total_thresholds,
             hidden_global_vars_dim=1,
         )

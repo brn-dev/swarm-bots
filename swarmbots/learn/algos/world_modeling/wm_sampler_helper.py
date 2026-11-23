@@ -7,6 +7,7 @@ from typing import ParamSpec, TypeVar
 
 import torch
 
+from swarmbots.learn.algos.ppo.ppo_scalar_frames import rebase_scalar_targets_
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import MaybeTensor, PPOEpisodeSegment
 
 
@@ -68,27 +69,8 @@ def build_wm_episode_windows(
         compile_modules: bool = False,
         compile_mode: str = "default",
 ) -> WMEpisodeWindows:
-    _validate_episode_for_wm_windows(episode, num_next_steps)
-    if episode.final_local_obs is None:
-        raise ValueError("final_local_obs must be provided to build world-model windows")
-    if episode.final_global_obs is None:
-        raise ValueError("final_global_obs must be provided to build world-model windows")
-
-    batched_windows = _build_wm_windows_from_batched_tensors(
-        local_obs=episode.local_obs.unsqueeze(0),
-        global_obs=episode.global_obs.unsqueeze(0),
-        actions=episode.actions.unsqueeze(0),
-        final_local_obs=episode.final_local_obs.unsqueeze(0),
-        final_global_obs=episode.final_global_obs.unsqueeze(0),
-        agent_mask=None if episode.agent_mask is None else episode.agent_mask.unsqueeze(0),
-        final_agent_mask=(
-            None
-            if episode.final_agent_mask is None
-            else episode.final_agent_mask.unsqueeze(0)
-        ),
-        num_next_steps=num_next_steps,
-        compile_modules=compile_modules,
-        compile_mode=compile_mode,
+    batched_windows = build_wm_episode_windows_batch(
+        [episode], num_next_steps=num_next_steps, compile_modules=compile_modules, compile_mode=compile_mode,
     )
     return _squeeze_wm_episode_windows_batch_dim(batched_windows)
 
@@ -141,7 +123,7 @@ def build_wm_episode_windows_batch(
             agent_mask_list.append(episode.agent_mask)
             final_agent_mask_list.append(episode.final_agent_mask)
 
-    return _build_wm_windows_from_batched_tensors(
+    windows = _build_wm_windows_from_batched_tensors(
         local_obs=torch.stack(tuple(local_obs_list), dim=0),
         global_obs=torch.stack(tuple(global_obs_list), dim=0),
         actions=torch.stack(tuple(actions_list), dim=0),
@@ -157,6 +139,10 @@ def build_wm_episode_windows_batch(
         compile_modules=compile_modules,
         compile_mode=compile_mode,
     )
+    for key in episodes[0].scalar_frames or {}:
+        histories = [episode.scalar_frames[key] for episode in episodes]
+        rebase_scalar_targets_(getattr(windows, f"next_{key}"), windows.wm_target_time_mask, histories)
+    return windows
 
 
 def _validate_episode_for_wm_windows(

@@ -1,11 +1,8 @@
 from dataclasses import dataclass
-from typing import Optional, Self, Any
-
-import torch
+from typing import Any
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
 from swarmbots.learn.action_dists.diag_gaussian_action_dist import DiagGaussianActionDist
-from swarmbots.learn.action_dists.tanh_bijector import TanhBijector
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
@@ -15,7 +12,6 @@ class SquashedDiagGaussianConfig:
     std_learnable: bool
 
 
-# Inspired by
 class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
 
     def __init__(
@@ -34,63 +30,6 @@ class SquashedDiagGaussianActionDist(DiagGaussianActionDist):
             action_net_initialization=action_net_initialization,
         )
         self.squash_output = True
-        self._last_gaussian_actions: Optional[torch.Tensor] = None
-
-    def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
-        super().update_latent_features(latent_pi)
-        return self
-
-    def log_prob(
-            self,
-            actions: torch.Tensor,
-            previous_actions: torch.Tensor | None = None,
-            gaussian_actions: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if gaussian_actions is None:
-            gaussian_actions = TanhBijector.inverse(actions)
-
-        log_prob = super().log_prob(gaussian_actions)
-        log_prob -= self.sum_action_dim(TanhBijector.log_abs_det_jacobian(gaussian_actions))
-
-        return log_prob
-
-    def sample(
-            self,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        self._last_gaussian_actions = super().sample()
-        return torch.tanh(self._last_gaussian_actions)
-
-    def rsample(
-            self,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        self._last_gaussian_actions = super().rsample()
-        return torch.tanh(self._last_gaussian_actions)
-
-    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
-        self._last_gaussian_actions = super().mode()
-        return torch.tanh(self._last_gaussian_actions)
-
-    def get_actions_with_log_probs(
-            self,
-            latent_pi: torch.Tensor,
-            deterministic: bool = False,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-            use_rsample: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        # Avoids inverse tanh in the common sample/log-prob path, which is less numerically stable.
-        actions = self.update_latent_features(latent_pi).get_actions(
-            deterministic=deterministic,
-            agent=agent,
-            previous_actions=previous_actions,
-            use_rsample=use_rsample,
-        )
-        log_probs = self.log_prob(actions, gaussian_actions=self._last_gaussian_actions)
-        return actions, log_probs
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

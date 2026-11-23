@@ -33,6 +33,7 @@ from swarmbots.learn.serialization_utils import serialize_dataclass
 from swarmbots.learn.nn_components.deep_set import (
     DeepSet, DeepSetInteraction, DeepSetInteractionConfig, GatedDeepSetInteraction,
 )
+from swarmbots.learn.nn_components.feed_forward import MLPConfig
 from swarmbots.learn.nn_components.residual_mlp import ResidualMLP
 
 
@@ -747,6 +748,29 @@ def test_fixed_tmasac_supports_mlstm_temporal_overrides(scale: str) -> None:
         )
     assert actions.shape == (2, 3, 3) and log_probs.shape == (2, 3)
     assert torch.isfinite(actions).all() and torch.isfinite(log_probs).all()
+
+
+@pytest.mark.parametrize("variant", ["mat_ind__lstm", "mat_qcx__lstm"])
+@pytest.mark.parametrize("scale", [None, DEFAULT_MODEL_SCALE])
+def test_recurrent_mat_actor_width_and_feedforward_overrides(variant: str, scale: str | None) -> None:
+    actor_ff = MLPConfig(hidden_dims=[24])
+    shared_ff = MLPConfig(hidden_dims=[40])
+    with torch.device("meta"):
+        baseline = make_policy(variant, scale, use_nop=False, enc_d_model=32, mat_encoder_transformer_ff_config=shared_ff)
+        policy = make_policy(
+            variant, scale, use_nop=False, enc_d_model=32, mat_encoder_transformer_ff_config=shared_ff,
+            rmat_actor_d_model=16, rmat_actor_transformer_ff_config=actor_ff, rmat_actor_inter_module_mlp=True,
+        )
+    assert policy.critic_encoder_config == baseline.critic_encoder_config
+    if scale is None:
+        assert policy.critic_encoder_config.d_model == 32
+        assert policy.critic_encoder_config.transformer_ff_config == shared_ff
+        assert not policy.critic_encoder_config.inter_module_mlp
+        assert policy.actor_encoder_config.d_model == 16
+        assert policy.actor_encoder_config.transformer_ff_config == actor_ff
+        assert all(layer.inter_module_feedforward is not None for layer in policy.actor_encoder.layers)
+    else:
+        assert policy.actor_encoder_config == baseline.actor_encoder_config
 
 
 @pytest.mark.parametrize("variant", ["mat_ind__lstm", "mat_qcx__lstm"])

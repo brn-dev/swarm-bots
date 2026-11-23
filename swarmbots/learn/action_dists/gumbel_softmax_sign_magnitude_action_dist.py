@@ -8,6 +8,7 @@ from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import (
     SignMagnitudeBetaActionDist,
     SignMagnitudeBetaConfig,
+    beta_log_density,
 )
 
 
@@ -20,25 +21,34 @@ def _straight_through_gumbel_softmax(
         logits: torch.Tensor,
         temperature: torch.Tensor,
 ) -> torch.Tensor:
-    gumbel_noise = -torch.empty_like(logits).exponential_().log()
-    relaxed_selection = F.softmax((logits + gumbel_noise) / temperature, dim=-1)
+    working_logits = logits.to(torch.promote_types(logits.dtype, torch.float32))
+    gumbel_noise = -torch.empty_like(working_logits).exponential_().log()
+    perturbed = (working_logits - working_logits.amax(dim=-1, keepdim=True)) + gumbel_noise
+    peak, indices = perturbed.max(dim=-1, keepdim=True)
+    # Temperature controls only the surrogate gradient. Softmax probabilities can round to a tie.
+    relaxed_selection = F.softmax((perturbed - peak) / temperature, dim=-1)
     hard_selection = F.one_hot(
-        relaxed_selection.argmax(dim=-1),
+        indices.squeeze(-1),
         num_classes=logits.shape[-1],
-    ).to(dtype=logits.dtype)
-    return hard_selection - relaxed_selection.detach() + relaxed_selection
+    )
+    return (hard_selection + (relaxed_selection - relaxed_selection.detach())).to(logits.dtype)
+
+
+def _temperature_tensor(value: float, dtype: torch.dtype) -> torch.Tensor:
+    temperature = torch.tensor(value, dtype=dtype, device="cpu")
+    if not 0.0 < temperature.item() < float("inf"):
+        raise ValueError(f"gumbel_temperature must be finite and positive in {dtype}, got {value}")
+    return temperature
 
 
 class GumbelSoftmaxSignMagnitudeBetaActionDist(SignMagnitudeBetaActionDist):
     """Uses an exact hard component in forward and a biased straight-through gradient."""
 
     def __init__(self, *args: Any, gumbel_temperature: float = 1.0, **kwargs: Any) -> None:
-        if gumbel_temperature <= 0.0:
-            raise ValueError(f"gumbel_temperature must be > 0, got {gumbel_temperature}")
         super().__init__(*args, **kwargs)
         self.register_buffer(
             "_gumbel_temperature",
-            torch.tensor(float(gumbel_temperature), dtype=torch.float32),
+            _temperature_tensor(gumbel_temperature, torch.float32).to(self.output_net.weight.device),
         )
 
     @property
@@ -74,10 +84,11 @@ class GumbelSoftmaxSignMagnitudeBetaActionDist(SignMagnitudeBetaActionDist):
         _ = (agent, previous_actions)
         self.update_latent_features(latent_pi)
         actions, selection, negative_magnitudes, positive_magnitudes = self._rsample_with_selection()
-        component_log_probs = self._sampled_component_log_probs(
-            negative_magnitudes,
-            positive_magnitudes,
-        )
+        negative, positive = self.negative_magnitude_dist, self.positive_beta_dist
+        assert isinstance(negative, torch.distributions.Beta) and positive is not None
+        negative_score = beta_log_density(negative_magnitudes, negative.concentration1, negative.concentration0)
+        positive_score = beta_log_density(positive_magnitudes, positive.concentration1, positive.concentration0)
+        component_log_probs = self._component_log_probs(previous_actions) + torch.stack((negative_score, positive_score), dim=-1)
         log_probs = (selection * component_log_probs).sum(dim=-1).sum(dim=AGENT_ACTIONS_DIM)
         return actions, log_probs
 
@@ -86,22 +97,18 @@ class GumbelSoftmaxSignMagnitudeBetaActionDist(SignMagnitudeBetaActionDist):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         self._assert_ready()
         assert self.weight_logits is not None
-        selection = _straight_through_gumbel_softmax(
-            self.weight_logits,
-            temperature=self._gumbel_temperature.to(dtype=self.weight_logits.dtype),
-        )
-        negative_magnitudes, positive_magnitudes = self._rsample_independent_magnitudes()
-        negative_actions = -1.0 + negative_magnitudes
+        assert self.negative_magnitude_dist is not None and self.positive_magnitude_dist is not None
+        selection = _straight_through_gumbel_softmax(self.weight_logits, self._gumbel_temperature)
+        negative_magnitudes = self.negative_magnitude_dist.rsample()
+        positive_magnitudes = self.positive_magnitude_dist.rsample()
         actions = (
-                selection[..., self._NEGATIVE_INDEX] * negative_actions
-                + selection[..., self._POSITIVE_INDEX] * positive_magnitudes
+            selection[..., self._POSITIVE_INDEX] * positive_magnitudes
+            - selection[..., self._NEGATIVE_INDEX] * negative_magnitudes
         )
         return actions, selection, negative_magnitudes, positive_magnitudes
 
     def set_gumbel_temperature(self, value: float) -> None:
-        if value <= 0.0:
-            raise ValueError(f"gumbel_temperature must be > 0, got {value}")
-        self._gumbel_temperature.fill_(float(value))
+        self._gumbel_temperature.copy_(_temperature_tensor(value, self._gumbel_temperature.dtype))
 
     def get_hyper_parameters(self) -> dict[str, Any]:
         return {

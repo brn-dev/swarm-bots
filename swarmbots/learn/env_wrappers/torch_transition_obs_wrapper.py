@@ -148,7 +148,7 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
         actions: torch.Tensor,
     ) -> tuple[TorchObs, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         prev_local = self._prev_local
-        prev_actions = self._actions_to_features(actions, dtype=prev_local.dtype)
+        prev_actions = self._actions_to_features(actions, like=prev_local)
         prev_global = self._prev_global if self._has_global_obs else None
 
         obs, rewards, terminations, truncations, infos = self.env.step(actions)
@@ -255,10 +255,10 @@ class TorchTransitionObsWrapper(TorchEnvWrapper):
                 stacked["global_obs"] = torch.cat((prev_global, global_obs), dim=-1)
         return stacked
 
-    def _actions_to_features(self, actions: torch.Tensor, *, dtype: torch.dtype) -> torch.Tensor:
+    def _actions_to_features(self, actions: torch.Tensor, *, like: torch.Tensor) -> torch.Tensor:
         if actions.ndim == 2:
             actions = actions.unsqueeze(0)
-        features = actions.to(device=self.device, dtype=dtype)
+        features = actions.to(like)
         if self.normalize_prev_binary_actions and self._prev_action_binary_indices.numel() > 0:
             features = features.clone()
             binary_indices = self._prev_action_binary_indices.to(device=features.device)

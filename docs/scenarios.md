@@ -1,6 +1,6 @@
 # Scenario catalog
 
-SwarmBots has 17 registered tasks covering coordinated locomotion, physical reconfiguration, partial observability, and payload transport. Eight tasks form the core evaluation suite. Every task uses the same articulated modular units and actuator/connector interface, so policies must control both the units' movement and their connections.
+SwarmBots has 18 registered tasks covering coordinated locomotion, physical reconfiguration, partial observability, and payload transport. Eight tasks form the core evaluation suite. Every task uses the same articulated modular units and actuator/connector interface, so policies must control both the units' movement and their connections.
 
 | Wall traversal | Finding an opening |
 | --- | --- |
@@ -36,6 +36,7 @@ Maturity and version identifiers serve different purposes:
 | `SwarmBots-WallEasy-v0` | fixed 0.2 m wall | Beta | no | yes |
 | `SwarmBots-WallMedium-v0` | fixed 0.3 m wall | Beta | yes | yes |
 | `SwarmBots-WallHard-v0` | fixed 0.4 m wall | Beta | no | yes |
+| `SwarmBots-WallMixed-v0` | 0.3 m or 0.4 m wall, equally likely per episode | Alpha | no | yes |
 | `SwarmBots-POWallEasy-v0` | connected locomotion over a hidden 0.25 m wall | Beta | no | yes |
 | `SwarmBots-POWallMedium-v0` | connected locomotion over a hidden 0.3 m wall | Beta | yes | yes |
 | `SwarmBots-POWallHard-v0` | connected locomotion over a hidden 0.4 m wall | Beta | no | yes |
@@ -54,6 +55,8 @@ Maturity and version identifiers serve different purposes:
 Wall and PO-wall tasks primarily challenge connected locomotion through coordinated movement and physical connections during obstacle traversal. Fixed walls provide three heights: 0.2, 0.3, and 0.4 m. PO-wall adds difficulty through partial observability and randomized hidden geometry, with heights of 0.25, 0.3, and 0.4 m. The hard PO-wall shares the medium variant's observations, rewards, and randomization, with a higher wall.
 
 Wall resets intentionally include partially solved assemblies: some units may already be beyond the wall after settling. This provides an implicit curriculum within the fixed reset distribution. Already-crossed climb and pass milestones are latched at reset and do not earn retroactive rewards; success still requires every active unit to reach the finish threshold.
+
+In `SwarmBots-WallMixed-v0`, each world draws its wall height at episode reset and uses it for collision geometry, height-dependent rewards, and the actor's height observation throughout the episode. To evaluate the same policy at each height, run WallMixed twice with `scenario_kwargs={"wall_height_options": [0.3]}` and `scenario_kwargs={"wall_height_options": [0.4]}`. Each evaluation uses the same one-scalar observation layout as mixed training.
 
 FindOpening focuses on partial observability and exploration within an episode. The task combines discovery of a hidden passage using observations gathered during that episode with coordinated swarm traversal through it.
 
@@ -98,7 +101,8 @@ Shared task features in `global_obs` are positions in world coordinates unless s
 
 | Task | Shared features |
 | --- | --- |
-| Wall, PO Wall, Bridge | Empty; privileged obstacle information is not actor input |
+| WallEasy, WallMedium, WallHard, PO Wall, Bridge | Empty; privileged obstacle information is not actor input |
+| WallMixed | Wall height above ground, in metres |
 | FindOpening | Empty; privileged opening information is not actor input |
 | Climb, VerticalReach | Goal position `(x, y, z)` |
 | MoveToGoal | Goal position `(x, y)` |
@@ -127,6 +131,8 @@ Success is a team-level boolean. Padding never counts toward success. For succes
 
 PayloadPlane, DualPayloadPlane, and MoveToGoal have no success metric; their scores are episode returns. Episodes truncate at 500 control steps by default, or 1,000 for PayloadGoalSequence. Success terminates an episode for the success-enabled tasks; bridge falls and nonfinite simulator state can also terminate unsuccessfully. The default control period is `0.003 * 10 = 0.03` seconds. Reward terms are exposed in `info["reward_terms"]`; weights and thresholds are in `env.get_settings()` and exported evaluation metadata.
 
+For wall tasks with a forward boost, approaching the wall earns extra forward progress as the unit clears the top. The boost ramps in over one body radius of height. Crossing the far face retains the accumulated progress as the unit descends. Reset and step rewards use the same potential and the wall height for that episode.
+
 Rewards measure task progress and task-specific outcomes. Connection topology contributes no direct reward or penalty; connections affect the swarm's physical behavior. Historical reward and physics changes are recorded in the [changelog](../CHANGELOG.md) and can make scores from different revisions incomparable.
 
 PayloadGoal uses one box payload and samples a new goal each episode on a noisy arc centred on the payload's spawn position before physics settling. The default `goal_arc_radius` is 3 m and `goal_arc_degrees` is 120°: a uniform angle from −60° to +60° around world +Y, the swarm-to-payload spawn direction. Independent zero-mean Gaussian offsets with `goal_noise_std=0.15` m are added to X and Y. For angle `theta`, the sampled goal is `payload_spawn_xy + 3 * (sin(theta), cos(theta)) + noise_xy`. The noise is unbounded and can put goals slightly beyond the nominal arc; no clipping or rejection changes its distribution. The goal stays fixed until the next reset. Settling can shift the payload relative to the sampled arc. The payload starts one metre ahead of the swarm; their shared starting translation varies by ±0.25 m in X and Y. Success uses a 0.35 m goal radius. Configure `goal_arc_radius`, `goal_arc_degrees` and `goal_noise_std` through scenario overrides; `goal_rect` applies to MultiPayloadGoal.
@@ -140,6 +146,8 @@ The sequence task accepts the payload centre within 0.15 m of `(goal_x, goal_y, 
 The optional inside-goal flag uses this same 3D centre tolerance, including at reset. It describes the target shown in the observation: immediately after a waypoint completes it refers to the next goal, and on final completion it still refers to the final point. Being inside alone does not mean the required hold has completed.
 
 Forward and approach shaping use the currently active goal, with the same default weights 10 and 1 as PayloadGoal. The first two completions each add a one-time `waypoint_reward=2`; final completion adds `success_reward=5`. Both shaping potentials are reinitialized against the new goal after scoring the transition, so changing targets creates no reward jump. The public current-goal coordinates update immediately. The one-hot indicator becomes all zero on final completion, while current-goal coordinates retain the final point and hold fraction is 1. `info["current_goal_index"]` is zero-based, with `num_goals` denoting a completed sequence; `goals_completed` and `goal_1_reached` through `goal_3_reached` report partial progress. Included learners persist their episode summaries as `ep_task_goals_completed` and `ep_task_goal_<n>_reached`; reach means are fractions of completed episodes, including timeouts. These metrics distinguish mastery of the easy first leg from full delivery. Stage indicators remain raw actor inputs; continuous geometry and hold progress participate in normalization and NOP.
+
+Frozen evaluations prefix these progress metrics with `eval_stochastic_` or `eval_deterministic_`. In mixed-scenario training, each summary counts only episodes from scenarios that report that metric.
 
 `goal_hold_reward_fraction` optionally distributes part of each goal's existing completion bonus across its hold, with a default of zero. For fraction `f`, bonus `B`, and confirmed hold-time fraction `h`, `hold_progress` rewards `f * B * (h_next - h_previous)` and completion pays the remaining `(1 - f) * B`, all scaled by `progress_reward_weight`. First entry starts the clock and earns no hold credit when a positive hold time is required. Leaving before completion reverses the accumulated credit; repeated entries alone earn nothing. Completed holds retain their total bonus of 2, 2, and 5 under the default weights. For example, `goal_hold_reward_fraction=0.5` distributes half of each bonus across the confirmed intervals and pays half at completion. An unfinished hold at episode timeout can retain partial credit; it never counts as a reached goal. This reward changes timing and discounted returns, so record the fraction when comparing experiments. The velocity option and hold fraction are exported in scenario settings; neither changes the goal tolerance or completion rule.
 

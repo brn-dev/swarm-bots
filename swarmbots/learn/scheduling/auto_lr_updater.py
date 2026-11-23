@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -58,18 +59,20 @@ class AutoLRUpdater:
                 'event': 'zero_epoch_hit'
             }
 
-        if early_stop_kl_div is not None and early_stop_kl_div > self.config.max_kl_div:
-            state['counter'] = 0
-            state['warmup'] = False
-            decay_factor = np.clip(0.9 - early_stop_kl_div * 50, 0.4, 0.9)
-            return {
-                'new_lr': old_lr * decay_factor,
-                'msg': f'kl={early_stop_kl_div:.3f}',
-                'event': 'max_kl_hit'
-            }
+        if early_stop_kl_div is not None:
+            kl_for_decay = early_stop_kl_div if math.isfinite(early_stop_kl_div) else math.inf
+            if kl_for_decay > self.config.max_kl_div:
+                state['counter'] = 0
+                state['warmup'] = False
+                decay_factor = np.clip(0.9 - kl_for_decay * 50, 0.4, 0.9)
+                return {
+                    'new_lr': old_lr * decay_factor,
+                    'msg': f'kl={early_stop_kl_div:.3f}',
+                    'event': 'max_kl_hit'
+                }
 
         clip_frac_stats: Optional[SummaryStatistics] = metrics.get('clip_frac', None)
-        if clip_frac_stats and clip_frac_stats.mean > 0.19:
+        if clip_frac_stats and clip_frac_stats.n > 0 and clip_frac_stats.mean > 0.19:
             state['counter'] = 0
             state['warmup'] = False
             clip_frac = clip_frac_stats.mean

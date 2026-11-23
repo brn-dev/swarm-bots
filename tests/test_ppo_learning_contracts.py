@@ -1,4 +1,5 @@
 from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,7 +21,55 @@ from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig
 from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NextObsPredWrapper, NOPWorldModelConfig
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
+from tests.test_learning_training import _small_policy
 from tests.test_same_step_pipeline import _AgentMaskRolloutEnv, _ConstantValuePolicy, _make_scripted_env
+
+
+@pytest.mark.parametrize("variant", [
+    "ppo", "mappo__deepset_critic", "mat_orig", "mat_ind", "mat_dec", "mat_qcx", "mat_ind__lstm", "mat_qcx__lstm",
+])
+def test_ppo_ignores_missing_actions_in_inactive_agent_and_time_slots(variant: str) -> None:
+    torch.manual_seed(219)
+    actor = _small_policy(variant, policy_kwargs={"mat_add_agent_embeddings": False})
+    policy = NextObsPredWrapper(actor, world_model_config=NOPWorldModelConfig(
+        n_agents=3, local_latent_dim=actor.nop_latent_dim, action_dim=3,
+        d_model_transition_model=12, nhead_transition_model=2, num_layers_transition_model=1,
+        dim_feedforward_transition_model=24, wm_pre_transition_dims=[12],
+        next_obs_pred_config=NextObsPredConfig(local_scalar_target_indices=[0]),
+    ))
+    agent_mask = torch.tensor([[True, True, False], [True, False, True]])
+    if variant == "mat_orig":
+        agent_mask[1] = torch.tensor([True, False, False])
+    recurrent = isinstance(actor, (RMATIndPolicy, RMATQCXPolicy))
+    if recurrent:
+        agent_mask = agent_mask[:, None].expand(-1, 2, -1)
+    prefix = agent_mask.shape[:-1]
+    local = torch.randn(*agent_mask.shape, 5)
+    global_obs = torch.randn(*prefix, 2)
+    batch = SimpleNamespace(
+        local_obs=local, global_obs=global_obs, hidden_local_vars=local[..., :0], hidden_global_vars=global_obs[..., :0],
+        agent_mask=agent_mask, previous_actions=None, next_local_obs=torch.randn_like(local).unsqueeze(-3),
+        wm_agent_mask=agent_mask.unsqueeze(-2), wm_loss_agent_mask=agent_mask.unsqueeze(-2),
+        wm_target_time_mask=torch.ones(*prefix, 1, dtype=torch.bool),
+    )
+    valid = agent_mask
+    if recurrent:
+        batch.initial_temporal_state = None
+        batch.time_mask = torch.tensor([[True, False], [True, True]])
+        batch.episode_start_mask = torch.tensor([[True, False], [True, False]])
+        valid = valid & batch.time_mask.unsqueeze(-1)
+    actions = torch.rand(*agent_mask.shape, 3) * 2 - 1
+
+    def outputs_and_gradients(fill: float) -> tuple[torch.Tensor, ...]:
+        batch.actions = actions.masked_fill(~valid.unsqueeze(-1), fill)
+        batch.wm_actions = batch.actions.unsqueeze(-3)
+        log_probs, values, losses, _ = policy.evaluate_actions(batch)
+        scores = log_probs[valid]
+        objective = scores.mean() + values.mean() + losses["world_model"]
+        gradients = torch.autograd.grad(objective, policy.parameters(), allow_unused=True)
+        return (scores, values, losses["world_model"], *(grad for grad in gradients if grad is not None))
+
+    torch.testing.assert_close(outputs_and_gradients(float("nan")), outputs_and_gradients(0.0))
 
 
 @pytest.mark.parametrize("segmented", [False, True])
@@ -96,6 +145,45 @@ def _make_recurrent_algorithm(
         sampler_config=RPPOWMSamplerConfig(batch_size=3, sequence_length=sequence_length, num_next_steps=3),
         n_epochs=1, gamma=0.995, use_popart=True, train_device="cpu", rollout_device="cpu",
     )
+
+
+@pytest.mark.parametrize(("reward_scale", "expected"), [(1.0, 0.75), (1e-5, 0.75), (0.0, 0.0)])
+def test_ppo_explained_variance_is_independent_of_reward_scale(reward_scale: float, expected: float) -> None:
+    env = _make_scripted_env((0, (2,), "truncate"), (1, (3,), "terminate"), (2, (), "none"))
+    try:
+        policy = _make_recurrent_nop_policy(env, autoregressive=False)
+        trainer = _make_recurrent_algorithm(env, policy, sequence_length=4)
+        episodes, _, _, _ = collect_steps(env, policy, trainer.rollout_buffer, 12)
+        for episode in episodes:
+            returns = torch.arange(len(episode.returns), dtype=torch.float32) * reward_scale
+            episode.returns.copy_(returns)
+            episode.values.copy_(returns * 0.5)
+        assert trainer.train(episodes)["expl_var"] == pytest.approx(expected)
+    finally:
+        env.close()
+
+
+def test_ppo_rejects_nonfinite_rollout_return_before_changing_critic_or_optimizer() -> None:
+    torch.manual_seed(50)
+    env = _make_scripted_env((0, (2,), "truncate"), (1, (3,), "terminate"), (2, (), "none"))
+    try:
+        policy = _make_recurrent_nop_policy(env, autoregressive=True)
+        trainer = _make_recurrent_algorithm(env, policy, sequence_length=4)
+        episodes, _, _, state = collect_steps(env, policy, trainer.rollout_buffer, 12)
+        trainer.train(episodes)
+        episodes, _, _, _ = collect_steps(env, policy, trainer.rollout_buffer, 12, state)
+        episodes[0].returns[0] = float("nan")
+        policy_before = deepcopy(policy.state_dict())
+        optimizer_before = deepcopy(trainer.optimizer.state_dict())
+
+        with pytest.raises(ValueError, match="PopArt.*finite"):
+            trainer.train(episodes)
+
+        assert trainer.n_total_updates == 1
+        torch.testing.assert_close(policy.state_dict(), policy_before, rtol=0, atol=0)
+        torch.testing.assert_close(trainer.optimizer.state_dict(), optimizer_before, rtol=0, atol=0)
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("autoregressive", [False, True], ids=["independent", "qcx"])

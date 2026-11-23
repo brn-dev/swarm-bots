@@ -132,6 +132,6 @@ video_folder = record_policy(
 )
 ```
 
-Here `trainer` is the result of [training from Python](learning.md#train-a-policy). Create a fresh adapter for each recording and use the policy's device. For a custom callable, pass it directly instead of the adapter.
+Here `trainer` is the result of [training from Python](learning.md#train-a-policy). Create a fresh adapter for each recording. The simulation and the actor can run on different devices. A custom callable can be passed directly.
 
 Both helpers return the output directory after closing the simulator and finishing the video writers. The Python API also accepts scenario configuration objects that cannot be represented by the CLI's JSON options.

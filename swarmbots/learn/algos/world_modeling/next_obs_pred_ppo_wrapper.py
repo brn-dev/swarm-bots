@@ -13,6 +13,8 @@ from swarmbots.learn.algos.ppo.base_ppo_policy import BasePPOPolicy, DelegatingP
 from swarmbots.learn.algos.ppo.ppo_rollout_batch import PPORolloutBatch
 from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamples, PPOSamplerConfig
+from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import RMATPolicyMixin
+from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOSampler, RPPOWMSampler, RPPOWMSamplerConfig
 from swarmbots.learn.algos.world_modeling.base_wm_sampler import BaseWMSampler
 from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import (
     PPOWMBatchSampler,
@@ -20,14 +22,16 @@ from swarmbots.learn.algos.world_modeling.ppo_wm_sampler import (
     PPOWMSamples,
     PPOWMSamplerConfig,
 )
-from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import NextObsPredConfig, NextObsPredMixin
+from swarmbots.learn.algos.world_modeling.next_obs_pred_mixin import (
+    NOP_TARGET_WEIGHT_ALIASES, NextObsPredConfig, NextObsPredMixin,
+)
 from swarmbots.learn.algos.world_modeling.transformer_transition_model import (
     TransformerTransitionModel,
     TransformerTransitionModelConfig,
 )
 from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import build_wm_target_time_mask
 from swarmbots.learn.losses import LossDict, LossMetrics
-from swarmbots.learn.loss_weights import resolve_loss_weight_aliases
+from swarmbots.learn.loss_weights import resolve_loss_weight_aliases, validate_loss_weight
 from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
@@ -75,6 +79,7 @@ class NextObsPredWrapper(
     BasePPOPolicy[PPOWMSamples, PPOWMSamplerConfig],
     NextObsPredMixin,
 ):
+    uses_world_model_targets = True
 
     def __init__(
             self,
@@ -89,8 +94,6 @@ class NextObsPredWrapper(
             raise ValueError(f"local_latent_dim must be >= 1, got {world_model_config.local_latent_dim}")
         if world_model_config.action_dim < 1:
             raise ValueError(f"action_dim must be >= 1, got {world_model_config.action_dim}")
-        if world_model_config.world_model_loss_coef < 0:
-            raise ValueError(f"world_model_loss_coef must be >= 0, got {world_model_config.world_model_loss_coef}")
         if not (0.0 <= world_model_config.transition_model_dropout < 1.0):
             raise ValueError(
                 "transition_model_dropout must be in [0, 1), "
@@ -104,6 +107,10 @@ class NextObsPredWrapper(
     @property
     def action_dist(self) -> HybridActionDistribution:
         return self.policy.action_dist
+
+    @property
+    def rollout_dtype(self) -> torch.dtype:
+        return self.policy.rollout_dtype
 
     def validate_ppo_dropout(self) -> None:
         self.policy.validate_ppo_dropout()
@@ -185,7 +192,7 @@ class NextObsPredWrapper(
         next_obs_pred_kwargs = {
             "local_latents": local_latents,
             "next_local_obs": batch.next_local_obs,
-            "actions": batch.wm_actions,
+            "actions": batch.wm_actions.to(local_latents.dtype),
             "local_obs": batch.local_obs,
             "agent_mask": batch.wm_agent_mask,
             "loss_agent_mask": batch.wm_loss_agent_mask,
@@ -215,10 +222,16 @@ class NextObsPredWrapper(
                 config=config,
                 requires_previous_actions=self.requires_previous_actions(),
             )
-        sampler = self.policy.make_sampler(episodes=episodes, config=config)
-        if not isinstance(sampler, BaseWMSampler):
-            raise ValueError('Policy does not create a WM Sampler!')
-        return sampler
+        make_sampler = self.policy.make_sampler
+        recurrent = isinstance(config, RPPOWMSamplerConfig)
+        if not (recurrent and getattr(make_sampler, "__func__", None) is RMATPolicyMixin.make_sampler):
+            sampler = make_sampler(episodes=episodes, config=config)
+            if isinstance(sampler, BaseWMSampler):
+                return sampler
+            # A custom factory can still delegate to the stock RMAT policy.
+            if not recurrent or type(sampler) is not RPPOSampler:
+                raise ValueError("Policy does not create a WM Sampler!")
+        return RPPOWMSampler(episodes, config, requires_previous_actions=self.requires_previous_actions())
 
     def supports_rollout_batch_sampler(self, config: PPOWMSamplerConfig) -> bool:
         if type(config) is PPOWMSamplerConfig:
@@ -316,14 +329,16 @@ class NextObsPredWrapper(
     def requires_previous_actions(self) -> bool:
         return self.policy.requires_previous_actions()
 
+    def get_loss_weights(self) -> dict[str, float]:
+        return {
+            **self.policy.get_loss_weights(),
+            **{name: getattr(self, name) for name in NOP_TARGET_WEIGHT_ALIASES},
+            "world_model_loss_coef": self.world_model_loss_coef,
+        }
+
     def update_loss_weights(self, **weights: float) -> None:
         resolved, remaining = resolve_loss_weight_aliases(weights, {
-            "scalar_loss_weight": ("scalar_loss_weight", "scalar"),
-            "angle_loss_weight": ("angle_loss_weight", "angle"),
-            "rot6d_loss_weight": ("rot6d_loss_weight", "rot6d"),
-            "binary_loss_weight": ("binary_loss_weight", "binary"),
-            "global_scalar_loss_weight": ("global_scalar_loss_weight", "global_scalar"),
-            "global_rot6d_loss_weight": ("global_rot6d_loss_weight", "global_rot6d"),
+            **NOP_TARGET_WEIGHT_ALIASES,
             "world_model_loss_coef": ("world_model_loss_coef", "wm_loss_coef"),
         })
         self.policy.update_loss_weights(**remaining)
@@ -332,7 +347,7 @@ class NextObsPredWrapper(
 
     def _setup_world_model_from_config(self, world_model_config: NOPWorldModelConfig) -> None:
         next_obs_pred_config = world_model_config.next_obs_pred_config
-        self.world_model_loss_coef = float(world_model_config.world_model_loss_coef)
+        self.world_model_loss_coef = validate_loss_weight("world_model_loss_coef", world_model_config.world_model_loss_coef)
         self._wm_compile_modules = world_model_config.compile_modules
         self._wm_compile_mode = world_model_config.compile_mode
         self._wm_n_agents = int(world_model_config.n_agents)

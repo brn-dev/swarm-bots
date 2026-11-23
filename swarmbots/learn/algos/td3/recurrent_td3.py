@@ -69,7 +69,7 @@ class RecurrentTD3(RecurrentOffPolicyMixin, TD3):
         target_actor_state = self._burn_in_actor_state(batch, target=True)
         critic_state = self._burn_in_critic_state(batch, target=False)
         target_critic_state = self._burn_in_critic_state(batch, target=True)
-        indices, truncation_mask = self._padded_truncation_indices(learning.truncations)
+        indices, truncation_mask = self._padded_truncation_indices(learning)
         learning_actor_outputs = None
         current_actor_state = None
         if self.policy.uses_actor_state_critic_input:
@@ -153,21 +153,9 @@ class RecurrentTD3(RecurrentOffPolicyMixin, TD3):
             global_update_idx=global_update_idx,
         )
         actor_grad_norm = 0.0
-        metrics = dict(
-            critic_loss=critic_loss.detach(),
-            critic_total_loss=critic_total_loss.detach(),
-            target_q=target_q.mean().detach(),
-            current_q1=q1.mean().detach(),
-            current_q2=q2.mean().detach(),
-            actor_updated=float(update_actor),
-            actor_critic_learning_rate=learning_rate,
-            **critic_nop_metrics,
-        )
         if update_actor:
             actor_critic_state = self._burn_in_critic_state(batch, target=False)
-            critic_parameters = self.policy.critic_parameters()
-            self._set_requires_grad(critic_parameters, False)
-            try:
+            with self._frozen_critic():
                 if learning_actor_outputs is None:
                     actions, actor_latents, _state = self.policy.actor_actions_sequence(
                         local_obs=learning.local_obs,
@@ -199,9 +187,19 @@ class RecurrentTD3(RecurrentOffPolicyMixin, TD3):
                     compiled_step=self._actor_optimizer_step,
                     global_update_idx=global_update_idx,
                 )
-            finally:
-                self._set_requires_grad(critic_parameters, True)
-            self.policy.polyak_update_targets(self.tau)
+        self._finish_update(update_targets=update_actor)
+
+        metrics = dict(
+            critic_loss=critic_loss.detach(),
+            critic_total_loss=critic_total_loss.detach(),
+            target_q=target_q.mean().detach(),
+            current_q1=q1.mean().detach(),
+            current_q2=q2.mean().detach(),
+            actor_updated=float(update_actor),
+            actor_critic_learning_rate=learning_rate,
+            **critic_nop_metrics,
+        )
+        if update_actor:
             metrics.update(
                 actor_loss=actor_loss.detach(),
                 actor_total_loss=actor_total_loss.detach(),

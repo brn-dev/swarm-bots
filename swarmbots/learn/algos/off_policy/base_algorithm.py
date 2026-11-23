@@ -1,6 +1,7 @@
 """Shared replay, rollout, optimization scheduling and persistence for off-policy learners."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 import math
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,8 @@ from swarmbots.learn.algos.off_policy.action_noise import (
 from swarmbots.learn.algos.off_policy.normalization import ReplayNormalization
 from swarmbots.learn.algos.off_policy.replay_exposure import resolve_replay_updates
 from swarmbots.learn.base_policy import BasePolicy
-from swarmbots.learn.optimizers import clip_grad_norm_, make_adam, move_adam_state_to_device
+from swarmbots.learn.checkpointing import checkpoint_lazy_parameter_shapes
+from swarmbots.learn.optimizers import clip_grad_norm_, make_adam, move_adam_state_to_device, validate_adam_state
 from swarmbots.learn.algos.off_policy.tensor_ops import (
     build_optimizer_step,
     build_sac_tensor_operations,
@@ -50,7 +52,7 @@ from swarmbots.learn.metrics_logger import SUPPRESS_MISSING_CONSOLE_KEY_WARNINGS
 from swarmbots.learn.metrics_list import MetricsLists
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.summary_statistics import compute_summary_statistics
-from swarmbots.learn.task_episode_metrics import summarize_task_episode_metrics
+from swarmbots.learn.task_episode_metrics import episode_success_metrics, summarize_task_episode_metrics
 from swarmbots.learn.torch_device import as_device
 
 
@@ -103,7 +105,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 f"{type(policy).__name__} requires a recurrent {type(self).__name__} algorithm; "
                 f"plain {type(self).__name__} samples isolated replay transitions."
             )
-        super().__init__(policy, env, learning_rate)
+        super().__init__(policy, env, learning_rate, rollout_warmup_steps_per_env=rollout_warmup_steps_per_env)
 
         self.learning_rate = learning_rate
         self.learning_rate_warmup_updates = int(learning_rate_warmup_updates)
@@ -118,8 +120,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.rollout_steps_per_iteration = (
             env.action_space.n_envs if rollout_steps_per_iteration is None else int(rollout_steps_per_iteration)
         )
-        self.rollout_warmup_steps_per_env = int(rollout_warmup_steps_per_env)
-        self._rollout_warmup_done = self.rollout_warmup_steps_per_env == 0
         self.replay_exposure = float(replay_exposure)
         self.gamma = float(gamma)
         self.tau = float(tau)
@@ -155,6 +155,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.metrics_action_splitters = metrics_action_splitters
         self.agent_action_dim = int(env.action_space.total_agent_action_dim)
         self._rollout_state: OffPolicyRolloutState | None = None
+        self._pending_train_update: int | None = None
 
         self._validate_hyper_parameters()
         self._normalization = ReplayNormalization(env)
@@ -231,7 +232,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         }
 
     def _before_learn_loop(self) -> None:
-        if self._rollout_warmup_done:
+        if self.rollout_warmup_steps_per_env == 0 or self._rollout_warmup_done:
             return
         if (
             self.n_total_timesteps > 0
@@ -248,7 +249,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             f"Running {type(self).__name__} rollout warmup for {self.rollout_warmup_steps_per_env} vector steps "
             f"({warmup_transitions} transitions) without training or replay writes."
         )
-        random_actions = self.n_total_timesteps < self.learning_starts
         with PerformanceTimer() as warmup_timer:
             self._rollout_state = warmup_off_policy_steps(
                 env=self.env,
@@ -256,7 +256,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 n_steps=warmup_transitions,
                 policy=self.policy,
                 rollout_state=None,
-                random_actions=random_actions,
+                random_actions=self._should_collect_random_actions(),
                 deterministic=False,
                 gsde_reset_mode=self.gsde_reset_mode,
                 rollout_device=self.rollout_device,
@@ -270,7 +270,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         episode_success_rate_ema: ExponentialMovingAverage,
         update_ema: bool,
     ) -> tuple[dict[str, Any], int]:
-        random_actions = self.n_total_timesteps < self.learning_starts
+        random_actions = self._should_collect_random_actions()
         with PerformanceTimer() as rollout_timer:
             episode_infos, rollout_metrics, self._rollout_state = collect_off_policy_steps(
                 env=self.env,
@@ -342,7 +342,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         update_timer = PerformanceTimer()
         train_timer = PerformanceTimer().start()
 
-        n_updates = 0
         normalization = self._normalization.snapshot(device=self.train_device)
         for _ in range(gradient_steps):
             with sample_timer:
@@ -355,17 +354,16 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 )
             sample_timings.append(sample_timer.get_duration())
 
-            global_update_idx = self.n_total_updates + n_updates
             if use_cuda_update_timing:
                 update_start_event = torch.cuda.Event(enable_timing=True)
                 update_end_event = torch.cuda.Event(enable_timing=True)
                 update_start_event.record(torch.cuda.current_stream(self.train_device))
-            with update_timer:
+            with update_timer, self._count_train_step():
                 step_metrics, actor_grad_norm, critic_grad_norm = self._train_step(
                     batch,
                     nop_batch=nop_batch,
                     reuse_critic_nop_latents=reuse_critic_nop_latents,
-                    global_update_idx=global_update_idx,
+                    global_update_idx=self.n_total_updates,
                     materialize_metrics=False,
                 )
             if use_cuda_update_timing:
@@ -374,7 +372,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             else:
                 update_timings.append(update_timer.get_duration())
             pending_step_results.append((step_metrics, actor_grad_norm, critic_grad_norm))
-            n_updates += 1
 
         if update_cuda_events:
             update_cuda_events[-1][1].synchronize()
@@ -382,18 +379,18 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 start_event.elapsed_time(end_event) / 1_000.0 for start_event, end_event in update_cuda_events
             )
         train_timer.stop()
-        self.n_total_updates += n_updates
 
         with PerformanceTimer() as metrics_timer:
             for step_metrics, actor_grad_norm, critic_grad_norm in self._materialize_train_step_results(
                 pending_step_results
             ):
                 loss_metrics.add(step_metrics)
-                actor_grad_norms.append(actor_grad_norm)
+                if step_metrics.get("actor_updated", True):
+                    actor_grad_norms.append(actor_grad_norm)
                 critic_grad_norms.append(critic_grad_norm)
             metrics: dict[str, Any] = {
                 **loss_metrics.compute_summary_statistics(),
-                "updates": n_updates,
+                "updates": gradient_steps,
                 "total_updates": self.n_total_updates,
                 "replay_size": len(self.replay_buffer),
                 "actor_grad_norm": compute_summary_statistics(actor_grad_norms, find_max=True, find_min=True),
@@ -414,6 +411,23 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             "metrics_time": metrics_timer.get_duration(),
             "train_time": train_timer.get_duration(),
         }
+
+    @contextmanager
+    def _count_train_step(self) -> Iterator[None]:
+        next_count = self.n_total_updates + 1
+        self._pending_train_update = next_count
+        try:
+            yield
+            # Custom steps may signal completion only by returning successfully.
+            self.n_total_updates = next_count
+        finally:
+            self._pending_train_update = None
+
+    def _finish_update(self, *, update_targets: bool) -> None:
+        if update_targets:
+            self.policy.polyak_update_targets(self.tau)
+        if self._pending_train_update is not None:
+            self.n_total_updates = self._pending_train_update
 
     def _mark_cuda_graph_train_step_begin(self) -> None:
         if self.train_device.type == "cuda":
@@ -540,6 +554,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         logger.warning(f"[Warmup] LR {lr:.3e}")
         return lr
 
+    def _should_collect_random_actions(self) -> bool:
+        return self.n_total_updates == 0 and len(self.replay_buffer) < self.learning_starts
+
     def _should_train(self) -> bool:
         return len(self.replay_buffer) >= self.replay_fill_target
 
@@ -567,7 +584,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
         self.replay_buffer.reset()
         self._rollout_state = None
-        self._rollout_warmup_done = True
         logger.info(
             f"Loaded {type(self).__name__} without replay state; collecting "
             f"{self.replay_fill_target} fresh transitions before training resumes."
@@ -653,8 +669,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 f"rollout_steps_per_iteration must be a multiple of n_envs ({self.env.action_space.n_envs}), "
                 f"got {self.rollout_steps_per_iteration}"
             )
-        if self.rollout_warmup_steps_per_env < 0:
-            raise ValueError(f"rollout_warmup_steps_per_env must be >= 0, got {self.rollout_warmup_steps_per_env}")
         self._resolved_gradient_steps(self.rollout_steps_per_iteration)
         if not (0.0 <= self.gamma <= 1.0):
             raise ValueError(f"gamma must be in [0, 1], got {self.gamma}")
@@ -662,8 +676,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             raise ValueError(f"tau must be in (0, 1], got {self.tau}")
         if self.target_update_interval <= 0:
             raise ValueError(f"target_update_interval must be > 0, got {self.target_update_interval}")
-        if self.max_grad_norm is not None and self.max_grad_norm <= 0:
-            raise ValueError(f"max_grad_norm must be > 0 when set, got {self.max_grad_norm}")
+        if self.max_grad_norm is not None and (not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0):
+            raise ValueError(f"max_grad_norm must be finite and > 0 when set, got {self.max_grad_norm}")
         if self.nop_batch_size <= 0:
             raise ValueError(f"nop_batch_size must be > 0, got {self.nop_batch_size}")
         if self.policy.has_nop_loss() and not self.independent_nop_sampling and self.nop_batch_size != self.batch_size:
@@ -676,10 +690,16 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             reset_mode=self.gsde_reset_mode,
         )
 
-    @staticmethod
-    def _set_requires_grad(parameters: list[torch.nn.Parameter], value: bool) -> None:
-        for parameter in parameters:
-            parameter.requires_grad_(value)
+    @contextmanager
+    def _frozen_critic(self) -> Iterator[None]:
+        trainable = [parameter for parameter in self.policy.critic_parameters() if parameter.requires_grad]
+        try:
+            for parameter in trainable:
+                parameter.requires_grad_(False)
+            yield
+        finally:
+            for parameter in trainable:
+                parameter.requires_grad_(True)
 
     @staticmethod
     def _episode_metrics(episode_infos: list[dict[str, Any]]) -> dict[str, Any]:
@@ -723,9 +743,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     find_max=info_key in ranged_info_keys,
                     make_histogram=15 if make_histograms and info_key in ranged_info_keys else False,
                 )
-            success_values = [float(ep_info["success"]) for ep_info in group_infos if "success" in ep_info]
-            if success_values:
-                metrics[f"{metric_prefix}ep_success_rate"] = 100.0 * sum(success_values) / len(success_values)
+            metrics.update(episode_success_metrics(group_infos, prefix=metric_prefix))
 
         add_episode_group_metrics(
             episode_infos,
@@ -773,6 +791,15 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
     def _move_extra_training_tensors_to_device(self) -> None:
         pass
+
+    def _validate_optimizer_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        validate_scalar_learning_rate(checkpoint["hyper_parameters"]["learning_rate"])
+        state = checkpoint["optimizer_state_dict"]
+        lazy_shapes = checkpoint_lazy_parameter_shapes(
+            self.policy.named_parameters(remove_duplicate=False), checkpoint["policy_state_dict"],
+        )
+        validate_adam_state(state["actor_optimizer"], self.actor_optimizer.param_groups, lazy_shapes=lazy_shapes)
+        validate_adam_state(state["critic_optimizer"], self.critic_optimizer.param_groups, lazy_shapes=lazy_shapes)
 
     def _apply_learning_rate(self, lr: LearningRate) -> None:
         lr = validate_scalar_learning_rate(lr)

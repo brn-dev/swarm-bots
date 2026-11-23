@@ -135,10 +135,7 @@ def inspect_variants(
     errors = []
     for variant in variants:
         print(f"Counting {variant}...", file=sys.stderr, flush=True)
-        options, _ = _variant_options(variant, model_scale=model_scale)
-        options.update(policy_kwargs or {})
-        if use_nop is not None:
-            options["use_nop"] = use_nop
+        options, _ = _variant_options(variant, model_scale=model_scale, policy_kwargs=policy_kwargs, use_nop=use_nop)
         # A mixed sweep retains deterministic presets' continuous action heads.
         if continuous_action_dist is not None and not _is_deterministic_policy_variant(options["policy_variant"]):
             options["continuous_action_dist"] = continuous_action_dist

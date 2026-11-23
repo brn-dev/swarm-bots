@@ -146,20 +146,9 @@ class TD3(OffPolicyAlgorithm):
             global_update_idx=global_update_idx,
         )
         update_actor = self._should_update_actor(global_update_idx)
-        metrics = {
-            "critic_loss": critic_loss.detach(),
-            "critic_total_loss": critic_total_loss.detach(),
-            "target_q": target_q.mean().detach(),
-            "actor_updated": float(update_actor),
-            "actor_critic_learning_rate": learning_rate,
-            **{f"current_q{i + 1}": value.mean().detach() for i, value in enumerate(values)},
-            **critic_nop_metrics,
-        }
         actor_grad_norm = 0.0
         if update_actor:
-            critic_parameters = self.policy.critic_parameters()
-            self._set_requires_grad(critic_parameters, False)
-            try:
+            with self._frozen_critic():
                 actions = self.policy.actor_actions(
                     local_obs=batch.local_obs,
                     global_obs=batch.global_obs,
@@ -180,9 +169,18 @@ class TD3(OffPolicyAlgorithm):
                     compiled_step=self._actor_optimizer_step,
                     global_update_idx=global_update_idx,
                 )
-            finally:
-                self._set_requires_grad(critic_parameters, True)
-            self.policy.polyak_update_targets(self.tau)
+        self._finish_update(update_targets=update_actor)
+
+        metrics = {
+            "critic_loss": critic_loss.detach(),
+            "critic_total_loss": critic_total_loss.detach(),
+            "target_q": target_q.mean().detach(),
+            "actor_updated": float(update_actor),
+            "actor_critic_learning_rate": learning_rate,
+            **{f"current_q{i + 1}": value.mean().detach() for i, value in enumerate(values)},
+            **critic_nop_metrics,
+        }
+        if update_actor:
             metrics.update(
                 actor_loss=actor_loss.detach(), actor_total_loss=actor_total_loss.detach(), q_pi=q_pi.mean().detach(),
                 **actor_nop_metrics,

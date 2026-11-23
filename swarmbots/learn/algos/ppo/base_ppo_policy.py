@@ -20,6 +20,7 @@ PPOSamplerConfigType = TypeVar('PPOSamplerConfigType', bound=PPOSamplerConfig)
 
 
 class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], abc.ABC):
+    rollout_dtype = torch.float32
     action_dist: HybridActionDistribution
     nop_latent_dim: int
     nop_latent_source: str
@@ -194,15 +195,52 @@ class BasePPOPolicy(BasePolicy, Generic[PPOSamplesType, PPOSamplerConfigType], a
         if weights:
             raise ValueError(f'Unknown weights given: {weights}')
 
-    @staticmethod
-    def _policy_actions(actions: torch.Tensor) -> torch.Tensor:
-        if actions.ndim == 3:
-            return actions
+    def _score_rollout_actions(
+            self,
+            latent_pi: torch.Tensor,
+            actions: torch.Tensor,
+            previous_actions: torch.Tensor | None,
+            action_dtypes: dict[torch.dtype, torch.Tensor] | None,
+    ) -> torch.Tensor:
+        if action_dtypes is None:
+            self.action_dist.update_latent_features(latent_pi)
+            return self.action_dist.log_prob(actions, previous_actions=previous_actions)
+
+        # Score the original cells even when the sampler used a wider tensor to hold their values.
+        scored_rows = []
+        scores = []
+        for dtype, mask in action_dtypes.items():
+            rows = mask.reshape(-1).nonzero(as_tuple=True)[0]
+            if rows.numel() == 0:
+                continue
+            self.action_dist.update_latent_features(latent_pi.index_select(0, rows))
+            scores.append(self.action_dist.log_prob(
+                actions.index_select(0, rows).to(dtype),
+                previous_actions=None if previous_actions is None else previous_actions.index_select(0, rows),
+            ))
+            scored_rows.append(rows)
+
+        # PPO applies the full last-minibatch mask when reporting distribution entropy and scale.
+        with torch.no_grad():
+            self.action_dist.update_latent_features(latent_pi)
+        if not scores:
+            return actions.new_zeros(actions.shape[:-1])
+        log_probs = torch.cat(scores)
+        return log_probs.new_zeros(actions.shape[:-1]).index_copy(0, torch.cat(scored_rows), log_probs)
+
+    @classmethod
+    def _policy_actions(cls, actions: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
         if actions.ndim == 4:
-            return actions[:, 0]
-        raise ValueError(
-            f"Expected actions shape (B, N, A) or (B, T, N, A), got {tuple(actions.shape)}"
-        )
+            actions = actions[:, 0]
+        elif actions.ndim != 3:
+            raise ValueError(f"Expected actions shape (B, N, A) or (B, T, N, A), got {tuple(actions.shape)}")
+        return cls._mask_actions(actions, agent_mask)
+
+    @staticmethod
+    def _mask_actions(actions: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
+        if agent_mask is None:
+            return actions
+        return actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
 
 class DelegatingPPOPolicyTemporalStateMixin:
     policy: BasePPOPolicy[Any, Any]

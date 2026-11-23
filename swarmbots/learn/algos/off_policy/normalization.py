@@ -56,11 +56,37 @@ class _ObservationLayout:
     repetitions: int = 1
 
 
+def _observation_parameters(
+    wrapper: TorchFeatureWiseObsNormWrapper, indices: tuple[torch.Tensor, torch.Tensor],
+    *, copy_statistics: bool, repetitions: int = 1,
+) -> NormalizationParameters:
+    device = indices[0].device
+    if wrapper.obs_rms is None:
+        mean = variance = torch.empty(0, device=device, dtype=torch.float64)
+    else:
+        mean = wrapper.obs_rms.mean.to(device=device, copy=copy_statistics)
+        variance = wrapper.obs_rms.var.to(device=device, copy=copy_statistics)
+        if repetitions != 1:
+            mean = mean.repeat(repetitions)
+            variance = variance.repeat(repetitions)
+    return (*indices, mean, variance, wrapper.epsilon)
+
+
 @dataclass(frozen=True)
 class NormalizationSnapshot:
     observations: tuple[tuple[str, NormalizationParameters], ...]
     reward_scale: torch.Tensor | None
     operation: NormalizeTensors
+
+    @classmethod
+    def from_observation_wrapper(
+        cls, wrapper: TorchFeatureWiseObsNormWrapper, *, device: torch.device,
+    ) -> NormalizationSnapshot:
+        indices = wrapper.scalar_indices.to(device), wrapper._quaternion_slices.to(device)
+        parameters = _observation_parameters(wrapper, indices, copy_statistics=True)
+        # Benchmark sweeps vary task widths and lane counts. Keep single-field transforms
+        # out of the learner's compiled multi-field normalization cache.
+        return cls(((wrapper.obs_key, parameters),), None, _normalize_tensors)
 
     def _normalize_fields(self, fields: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         if not self.observations:
@@ -154,7 +180,7 @@ class ReplayNormalization:
             )
         observations = []
         compile_operation = device.type == "cuda"
-        for layout, (scalar_indices, quaternion_slices) in zip(
+        for layout, indices in zip(
             self.observation_layouts, self._indices[device], strict=True,
         ):
             wrapper = layout.wrapper
@@ -162,17 +188,10 @@ class ReplayNormalization:
                 continue
             # A fused pass must respect every participating wrapper's explicit opt-out.
             compile_operation = compile_operation and wrapper._compile_tensor_operations is not False
-            if wrapper.obs_rms is None:
-                mean = variance = torch.empty(0, device=device, dtype=torch.float64)
-            else:
-                mean = wrapper.obs_rms.mean.to(device=device, copy=copy_statistics)
-                variance = wrapper.obs_rms.var.to(device=device, copy=copy_statistics)
-                if layout.repetitions != 1:
-                    mean = mean.repeat(layout.repetitions)
-                    variance = variance.repeat(layout.repetitions)
-            observations.append((wrapper.obs_key, (
-                scalar_indices, quaternion_slices, mean, variance, wrapper._eps,
-            )))
+            parameters = _observation_parameters(
+                wrapper, indices, copy_statistics=copy_statistics, repetitions=layout.repetitions,
+            )
+            observations.append((wrapper.obs_key, parameters))
         reward_scale = None
         if not public_only:
             for wrapper in self.reward_wrappers:

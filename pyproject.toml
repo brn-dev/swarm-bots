@@ -30,6 +30,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "filelock>=3.29.4",
     "gymnasium>=1.1",
     "imageio-ffmpeg>=0.6",
     "loguru>=0.7",

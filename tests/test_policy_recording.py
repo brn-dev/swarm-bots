@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import ModuleType
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+import subprocess
 import sys
 
 import numpy as np
@@ -13,7 +16,9 @@ import torch
 from gymnasium.vector import AutoresetMode
 
 import swarmbots.benchmark.cli as cli
+import swarmbots.benchmark.evaluation as evaluation
 import swarmbots.benchmark.recording as recording
+import swarmbots.learn.checkpoint_recording as checkpoint_recording
 from swarmbots import record_policy
 from swarmbots.learn import as_benchmark_policy, make_training, record_checkpoint
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
@@ -21,6 +26,7 @@ from swarmbots.learn.gsde_reset import (
     GSDEResetMode, GSDEEpisodeResetMode, GSDEIntervalResetMode, GSDEProbabilityResetMode,
 )
 from swarmbots.mjw_env.swarm.mjw_homogeneous_swarm import MJWPreConnectedUnitLocationsConfig
+from swarmbots.utils.torch_utils import seeded_torch_rng
 
 
 class _RecordingEnv:
@@ -68,6 +74,168 @@ class _RecordingEnv:
 
     def close(self) -> None:
         self.closed = True
+
+
+_CUDA = (pytest.mark.cuda, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA"))
+
+
+@pytest.mark.parametrize(("entry", "device", "actor_device"), [
+    *((entry, "cpu", "cpu") for entry in ("evaluate", "record", "checkpoint")),
+    *(pytest.param(entry, "cuda", "cuda", marks=_CUDA) for entry in ("evaluate", "record", "checkpoint")),
+    *(pytest.param(entry, "cpu", "cuda", marks=_CUDA) for entry in ("evaluate", "record")),
+])
+def test_public_policy_runs_isolate_seeded_rng_across_construction_and_rollout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str, device: str, actor_device: str,
+) -> None:
+    draws: list[tuple[float, float]] = []
+    fail_on_step = False
+
+    def draw() -> None:
+        draws.append((torch.rand(()).item(), torch.rand((), device=actor_device).item()))
+
+    def make_env(*args, **kwargs):
+        draw()
+        env = MagicMock(num_envs=1, device=torch.device(device), autoreset_mode=AutoresetMode.SAME_STEP)
+        env.unwrapped = env
+        env.get_settings.return_value = {}
+        observations = {key: torch.zeros(1, device=device) for key in evaluation.POLICY_OBSERVATION_KEYS}
+        dones = torch.ones(1, dtype=torch.bool, device=device)
+        env.reset.return_value = observations, {}
+        env.step.return_value = observations, dones.float(), dones, ~dones, {"success": dones}
+        env.get_video_recording_status.side_effect = [{"active": True}, {"active": False}]
+        env.close.side_effect = draw
+        return env
+
+    def policy(observations, starts):
+        draw()
+        if fail_on_step:
+            raise RuntimeError("rollout failed")
+        return {}
+
+    policy.inference_device = torch.device(actor_device)
+
+    def make_policy_env(*args, **kwargs):
+        env = make_env()
+        actor = torch.nn.Linear(1, 1)
+        actor.gsde_enabled = False
+        return env, actor
+
+    monkeypatch.setattr(evaluation, "make_env", make_env)
+    monkeypatch.setattr(recording, "make_env", make_env)
+    monkeypatch.setattr(checkpoint_recording, "_make_policy_env", make_policy_env)
+    state_dict = torch.nn.Linear(1, 1).state_dict()
+    monkeypatch.setattr(checkpoint_recording, "load_checkpoint", lambda path: {"policy_state_dict": state_dict, "env_state": {}})
+    monkeypatch.setattr(checkpoint_recording, "apply_env_state", lambda *args: None)
+    monkeypatch.setattr(checkpoint_recording, "BenchmarkPolicy", lambda *args, **kwargs: policy)
+
+    def run(seed: int):
+        before_cpu = torch.get_rng_state()
+        before_cuda = torch.cuda.get_rng_state_all() if "cuda" in (device, actor_device) else []
+        draws.clear()
+        common = dict(num_episodes=1, seed=seed, device=device)
+        try:
+            if entry == "evaluate":
+                evaluation.evaluate_policy(policy, "SwarmBots-WallEasy-v0", **common)
+            elif entry == "record":
+                record_policy(policy, "SwarmBots-WallEasy-v0", video_folder=tmp_path, **common)
+            else:
+                record_checkpoint("policy.pt", "SwarmBots-WallEasy-v0", "ppo", video_folder=tmp_path, **common)
+        finally:
+            assert torch.equal(torch.get_rng_state(), before_cpu)
+            for index, previous in enumerate(before_cuda):
+                assert torch.equal(torch.cuda.get_rng_state(index), previous)
+        return list(draws)
+
+    expected = run(123)
+    assert len(expected) == 3  # Construction, stochastic policy, and cleanup.
+    draw()
+    assert run(123) == expected
+    assert run(321) != expected
+    fail_on_step = True
+    with pytest.raises(RuntimeError, match="rollout failed"):
+        run(123)
+    assert draws == expected
+
+
+def _check_seeded_run_before_cuda_initialization(device: str) -> None:
+    assert not torch.cuda.is_initialized()
+    torch.manual_seed(41)
+    torch.cuda.manual_seed(47)
+    with seeded_torch_rng(53, "cpu"):
+        torch.manual_seed(59)
+    assert not torch.cuda.is_initialized()
+    if not torch.cuda.is_available():
+        return
+
+    with seeded_torch_rng(61, device):
+        if device == "cpu":
+            torch.manual_seed(67)
+        expected = torch.Generator(device="cuda").manual_seed(67 if device == "cpu" else 61)
+        torch.testing.assert_close(
+            torch.rand(3, device="cuda"), torch.rand(3, device="cuda", generator=expected), atol=0, rtol=0,
+        )
+
+    for index in range(torch.cuda.device_count()):
+        cuda_device = torch.device("cuda", index)
+        expected_seed = 47 if index == torch.cuda.current_device() else 41
+        expected = torch.Generator(device=cuda_device).manual_seed(expected_seed)
+        torch.testing.assert_close(
+            torch.rand(3, device=cuda_device), torch.rand(3, device=cuda_device, generator=expected), atol=0, rtol=0,
+        )
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_seeded_runs_preserve_pending_cuda_seeds(device: str) -> None:
+    # CUDA initialization is irreversible within a process shared with other tests.
+    subprocess.run([
+        sys.executable, "-c", "from tests.test_policy_recording import _check_seeded_run_before_cuda_initialization; "
+        f"_check_seeded_run_before_cuda_initialization({device!r})",
+    ], check=True, timeout=90)
+
+
+@pytest.mark.cuda
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA")
+def test_failed_cpu_seeded_run_restores_initialized_cuda_generators() -> None:
+    before_cpu = torch.get_rng_state()
+    before_cuda = torch.cuda.get_rng_state_all()
+    with pytest.raises(RuntimeError, match="policy failed"), seeded_torch_rng(71, "cpu"):
+        torch.manual_seed(73)
+        torch.rand(3)
+        raise RuntimeError("policy failed")
+
+    torch.testing.assert_close(torch.get_rng_state(), before_cpu)
+    for actual, expected in zip(torch.cuda.get_rng_state_all(), before_cuda, strict=True):
+        torch.testing.assert_close(actual, expected)
+
+
+def test_overlapping_seeded_runs_preserve_both_streams_and_the_callers_rng() -> None:
+    caller_state = torch.get_rng_state()
+    attempting = Event()
+    entered = Event()
+    finished_first_draw = Event()
+
+    def second_run() -> torch.Tensor:
+        attempting.set()
+        with seeded_torch_rng(321, "cpu"):
+            entered.set()
+            assert finished_first_draw.wait(timeout=10)
+            return torch.rand(4)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            with seeded_torch_rng(123, "cpu"):
+                second = pool.submit(second_run)
+                assert attempting.wait(timeout=10)
+                # Give an unprotected caller time to reseed between the first seed and its draw.
+                entered.wait(timeout=0.2)
+                first_draw = torch.rand(4)
+        finally:
+            finished_first_draw.set()
+        second_draw = second.result(timeout=10)
+
+    assert torch.equal(torch.get_rng_state(), caller_state)
+    for draw, seed in ((first_draw, 123), (second_draw, 321)):
+        torch.testing.assert_close(draw, torch.rand(4, generator=torch.Generator().manual_seed(seed)))
 
 
 def test_recording_uses_reset_observations_and_resets_policy_state_for_each_done_lane(
@@ -372,6 +540,30 @@ def test_record_command_leaves_custom_factory_noise_configuration_to_the_factory
         cli.main([
             "record", "SwarmBots-WallEasy-v0", "--policy", "unused:factory", "--gsde-reset-interval", "3",
         ])
+
+
+def test_record_command_isolates_factory_module_initialization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = ModuleType("seeded_recording_policy")
+    draws = []
+
+    def import_policy(name: str) -> ModuleType:
+        draws.append(torch.rand(2))
+        return module
+
+    def factory(**kwargs: Any) -> object:
+        draws.append(torch.rand(2))
+        return object()
+
+    module.factory = factory
+    monkeypatch.setattr(cli.importlib, "import_module", import_policy)
+    monkeypatch.setattr(recording, "record_policy", lambda *args, **kwargs: tmp_path)
+    state = torch.get_rng_state()
+    cli.main(["record", "SwarmBots-Bridge-v0", "--policy", "seeded_recording_policy:factory",
+              "--output", str(tmp_path), "--device", "cpu", "--seed", "11"])
+    assert torch.equal(state, torch.get_rng_state())
+    expected = torch.rand(2, generator=torch.Generator().manual_seed(11))
+    torch.testing.assert_close(draws[0], expected)
+    torch.testing.assert_close(draws[1], expected)
 
 
 def test_record_command_loads_custom_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

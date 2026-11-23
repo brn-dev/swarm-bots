@@ -13,6 +13,41 @@ from swarmbots.learn.scheduling.schedulers import (
 
 
 class SchedulerTests(unittest.TestCase):
+    def test_scheduler_does_not_apply_saved_values_before_its_state_can_be_copied(self) -> None:
+        class Uncopyable:
+            def __deepcopy__(self, memo: dict[int, object]) -> object:
+                raise ValueError("scheduler state cannot be copied")
+
+        values = {"gamma": 0.99}
+
+        def apply(value: float) -> None:
+            values["gamma"] = value
+
+        manager = SchedulerManager([ScheduledHyperParameter(
+            "gamma", LinearScheduler(ScheduleUnit.ITERATIONS, 10, 0.99, 0.9),
+            lambda: values["gamma"], apply,
+        )])
+        previous = manager.state_dict()
+        with self.assertRaisesRegex(ValueError, "cannot be copied"):
+            manager.load_state_dict([
+                {"name": "gamma", "enabled": False, "value": 0.95, "state": {"buffer": Uncopyable()}},
+            ])
+        self.assertEqual(manager.state_dict(), previous)
+
+    def test_small_schedules_apply_each_change_and_finish_at_zero(self) -> None:
+        for scheduler_cls in (LinearScheduler, ExponentialScheduler, CosineScheduler):
+            with self.subTest(scheduler=scheduler_cls.__name__):
+                start = 5e-9
+                scheduler = scheduler_cls(ScheduleUnit.ITERATIONS, duration=4, start_value=start, final_value=0.)
+                value = start
+                for iteration in range(1, 5):
+                    result = scheduler(value, {}, iteration, 0, 0, {})
+                    self.assertIsNotNone(result["new_value"])
+                    self.assertLess(result["new_value"], value)
+                    value = result["new_value"]
+                self.assertEqual(value, 0.)
+                self.assertIsNone(scheduler(value, {}, 5, 0, 0, {})["new_value"])
+
     def test_linear_scheduler_uses_selected_unit_and_holds_when_value_is_unchanged(self) -> None:
         scheduler = LinearScheduler(
             unit=ScheduleUnit.TIMESTEPS,

@@ -1,3 +1,4 @@
+from functools import partial
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -16,8 +17,11 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
 from swarmbots.learn.algos.r_mat.r_mat_ind_policy import RMATIndPolicy, RMATIndPolicyConfig
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
+from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv as SwarmTestEnv
 from tests.test_same_step_pipeline import _ConstantValuePolicy, _ValueOnlyBootstrapPolicy, _make_scripted_env
 
@@ -128,6 +132,59 @@ def test_collectors_only_bootstrap_truncations_and_unfinished_rollout_boundary(
         env.close()
 
 
+def _rollout_policy(env: BaseLearnEnvWrapper, recurrent: bool) -> PPOPolicy | RMATIndPolicy:
+    continuous = SquashedDiagGaussianConfig(std=0.5, std_learnable=False)
+    if recurrent:
+        return RMATIndPolicy(env, RMATIndPolicyConfig(
+            encoder_config=RMATEncoderConfig(d_model=8, nhead=2, num_layers=1, dim_feedforward=16),
+            continuous_config=continuous,
+        ))
+    return PPOPolicy(env, PPOPolicyConfig(
+        actor_config=PPOActorConfig(hidden_dims=[8], latent_pi_dim_per_agent=8), continuous_config=continuous,
+    ))
+
+
+@pytest.mark.parametrize("recurrent", [False, True])
+def test_scheduled_discounts_determine_rollout_returns_before_and_after_load(
+    recurrent: bool, tmp_path: Path,
+) -> None:
+    env = _make_scripted_env((0, (2,), "truncate"))
+    try:
+        policy = _rollout_policy(env, recurrent)
+        trainer = PPO(policy, env, rollout_mode=StepsRolloutMode(2), train_device="cpu", rollout_device="cpu")
+        gamma, gae_lambda = 0.5, 0.25
+        trainer.scheduler_manager = SchedulerManager([
+            ScheduledHyperParameter(
+                name, LinearScheduler(ScheduleUnit.ITERATIONS, 1, getattr(trainer, name), target),
+                partial(getattr, trainer, name), partial(setattr, trainer, name),
+            )
+            for name, target in (("gamma", gamma), ("gae_lambda", gae_lambda))
+        ])
+        trainer.scheduler_manager.step(n_iterations=1, n_model_updates=1, n_timesteps=2, metrics={})
+
+        def check_returns() -> None:
+            if recurrent:
+                episodes, *_ = collect_steps(env, policy, trainer.rollout_buffer, 2)
+                episode, = episodes
+                returns, next_value, final_value = episode.returns, episode.values[1], episode.final_value
+            else:
+                batch, *_ = collect_step_rollout_batch(env, policy, trainer.rollout_buffer, 2)
+                returns, next_value, final_value = batch.returns[0], batch.values[0, 1], batch.bootstrap_values[0, 1]
+            # The environment rewards these two steps with 1 and 2, then truncates.
+            last_return = 2 + gamma * final_value
+            first_return = 1 + gamma * ((1 - gae_lambda) * next_value + gae_lambda * last_return)
+            torch.testing.assert_close(returns, torch.stack((first_return, last_return)))
+
+        check_returns()
+        checkpoint = tmp_path / "discounts.pt"
+        trainer.save(checkpoint, optimizer_state_dict=trainer._get_optimizer_state_dict())
+        trainer.gamma, trainer.gae_lambda = 1.0, 1.0
+        trainer.load(checkpoint)
+        check_returns()
+    finally:
+        env.close()
+
+
 @pytest.mark.parametrize("recurrent", [False, True])
 @pytest.mark.parametrize("device", DEVICES)
 def test_ppo_load_restarts_collector_with_restored_normalization(
@@ -139,13 +196,7 @@ def test_ppo_load_restarts_collector_with_restored_normalization(
         )), obs_key="local_obs", scalar_feature_indices=[0], quaternion_indices=[], compile_tensor_operations=False,
     )
     env.set_device(device)
-    continuous = SquashedDiagGaussianConfig(std=0.5, std_learnable=False)
-    policy = RMATIndPolicy(env, RMATIndPolicyConfig(
-        encoder_config=RMATEncoderConfig(d_model=8, nhead=2, num_layers=1, dim_feedforward=16),
-        continuous_config=continuous,
-    )) if recurrent else PPOPolicy(env, PPOPolicyConfig(
-        actor_config=PPOActorConfig(hidden_dims=[8], latent_pi_dim_per_agent=8), continuous_config=continuous,
-    ))
+    policy = _rollout_policy(env, recurrent)
     trainer = PPO(
         policy, env, rollout_mode=StepsRolloutMode(2), sampler_config=PPOSamplerConfig(batch_size=1),
         train_device=device, rollout_device=device,

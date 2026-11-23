@@ -1,6 +1,7 @@
 import csv
 import gzip
 import json
+import os
 import tempfile
 import unittest
 from collections.abc import Iterator
@@ -14,11 +15,13 @@ import torch
 from loguru import logger
 
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
+from swarmbots.learn.algos.off_policy.base_algorithm import OffPolicyAlgorithm
 from swarmbots.learn.base_policy import BasePolicy
 from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.logging_levels import LOGGING_LEVELS
-from swarmbots.learn.metrics_logger import MetricsLogger, mean_std, rate, summed
+from swarmbots.learn.metrics_logger import MetricsLogger, RetryableMetricWrite, mean_std, rate, summed
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.utils.atomic_file import staged_output
 
 
 @contextmanager
@@ -338,10 +341,12 @@ class MetricsLoggerTests(unittest.TestCase):
                         "ep_rew_ema": 12.0,
                         "best_ep_rew_ema": 14.0,
                         "ep_success_rate": 50.0,
+                        "ep_success_rate__n": 4,
                         "ep_success_rate_ema": 40.0,
                         "scenario/easy/ep_rew": compute_summary_statistics([2.0, 4.0]),
                         "scenario/easy/ep_success_rate": 75.0,
-                        "scenario/easy/episodes": 2,
+                        "scenario/easy/ep_success_rate__n": 4,
+                        "scenario/easy/episodes": 4,
                         "critic_loss": compute_summary_statistics([1.0, 2.0]),
                         "clip_frac": compute_summary_statistics([0.1, 0.2]),
                         "expl_var": mean_std(0.75),
@@ -392,7 +397,7 @@ class MetricsLoggerTests(unittest.TestCase):
                             "ep_rew__mean", "ep_rew__std", "ep_rew__n", "ep_rew_ema",
                             "best_ep_rew_ema", "ep_success_rate", "ep_success_rate_ema",
                             "scenario/easy/ep_rew__mean", "scenario/easy/ep_success_rate",
-                            "scenario/easy/episodes",
+                            "ep_success_rate__n", "scenario/easy/ep_success_rate__n", "scenario/easy/episodes",
                         ):
                             self.assertIn(key, saved)
                         self.assertEqual("detailed_diagnostic" in saved, persistence_level == "full")
@@ -644,6 +649,31 @@ class MetricsLoggerTests(unittest.TestCase):
             self.assertEqual([row["iteration"] for row in rows], ["2", "3"])
             self.assertEqual([row["total_updates"] for row in rows], ["2", "3"])
 
+    def test_buffered_success_uses_only_episodes_with_reported_outcomes(self) -> None:
+        iterations = iter([
+            [{"scenario_name": "wall", "success": False}] * 3,
+            [{"scenario_name": "wall"}, {"scenario_name": "plane"}],
+            [{"scenario_name": "wall", "success": True}, {"scenario_name": "plane", "success": True}],
+        ])
+
+        def add_episode_metrics(algo: BaseAlgorithm, metrics: dict[str, Any], steps: int) -> None:
+            metrics.update(OffPolicyAlgorithm._episode_metrics(next(iterations)))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            algo = _DummyAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
+            algo.learn(
+                max_total_timesteps=3, run_dir=tmp_dir, logging_buffer_size=3,
+                post_iteration_hooks=[add_episode_metrics], enable_command_prompt=False,
+            )
+            with (Path(tmp_dir) / "log.csv").open(newline="", encoding="utf-8") as log_file:
+                row = next(csv.DictReader(log_file, delimiter=";"))
+        self.assertEqual(float(row["ep_success_rate"]), 40.0)
+        self.assertEqual(int(row["ep_success_rate__n"]), 5)
+        self.assertEqual(float(row["scenario/wall/ep_success_rate"]), 25.0)
+        self.assertEqual(int(row["scenario/wall/episodes"]), 5)
+        self.assertEqual(float(row["scenario/plane/ep_success_rate"]), 100.0)
+        self.assertEqual(int(row["scenario/plane/episodes"]), 2)
+
     def test_learn_clears_active_state_when_metrics_worker_fails(self) -> None:
         algo = _DummyAlgorithm(policy=_DummyPolicy(), env=_DummyEnv(), learning_rate=1e-3)
 
@@ -688,6 +718,146 @@ class MetricsLoggerTests(unittest.TestCase):
 
             self.assertIn("timesteps;value;timestamp", contents)
             self.assertIn("12;3.5;", contents)
+
+    def test_interrupted_csv_schema_expansion_preserves_history_and_allows_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            metrics = MetricsLogger(log_dir=Path(tmp_dir))
+            try:
+                metrics._log_to_csv({"step": 1})
+                path = Path(tmp_dir) / "log.csv"
+                original = path.read_bytes()
+                with mock.patch.object(csv.DictWriter, "writerows", side_effect=OSError("out of space")):
+                    with self.assertRaises(OSError):
+                        metrics._log_to_csv({"step": 2, "loss": 0.5})
+                self.assertEqual(original, path.read_bytes())
+                metrics._log_to_csv({"step": 2, "loss": 0.5})
+            finally:
+                metrics.close()
+            with path.open(newline="", encoding="utf-8") as source:
+                self.assertEqual(list(csv.DictReader(source, delimiter=";")),
+                                 [{"step": "1", "loss": ""}, {"step": "2", "loss": "0.5"}])
+
+    def test_retryable_csv_schema_write_acknowledges_publication_before_cleanup(self) -> None:
+        @contextmanager
+        def fail_cleanup(path: Path) -> Iterator[Path]:
+            with staged_output(path) as staging:
+                yield staging
+            raise OSError("staging cleanup failed")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_dir = Path(tmp_dir)
+            metrics = MetricsLogger(log_dir=log_dir)
+            try:
+                metrics.log({"timesteps": 1})
+                metrics.flush()
+                write = RetryableMetricWrite({"timesteps": 2, "eval_return": 0.5})
+                with mock.patch("swarmbots.learn.metrics_logger.staged_output", side_effect=fail_cleanup):
+                    with self.assertRaisesRegex(OSError, "staging cleanup failed"):
+                        metrics.publish_retryable(write)
+                metrics.publish_retryable(write)
+            finally:
+                metrics.close()
+
+            with (log_dir / "log.csv").open(newline="", encoding="utf-8") as source:
+                rows = list(csv.DictReader(source, delimiter=";"))
+            self.assertEqual([row["timesteps"] for row in rows], ["1", "2"])
+            self.assertEqual([row["eval_return"] for row in rows], ["", "0.5"])
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows file sharing")
+    def test_csv_schema_expands_for_evaluation_and_worker_with_open_reader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log_dir = Path(tmp_dir)
+            metrics = MetricsLogger(log_dir=log_dir)
+            try:
+                metrics.log({"timesteps": 1})
+                metrics.flush()
+                with (log_dir / "log.csv").open(newline="", encoding="utf-8") as reader:
+                    self.assertIn("timesteps", reader.readline())
+                    metrics.publish_retryable(RetryableMetricWrite({"timesteps": 2, "eval_return": 0.5}))
+                    metrics.log({"timesteps": 3, "loss": 0.25})
+                    metrics.flush()
+                    reader.seek(0)
+                    rows = list(csv.DictReader(reader, delimiter=";"))
+                self.assertEqual([row["timesteps"] for row in rows], ["1", "2", "3"])
+                self.assertEqual([row["eval_return"] for row in rows], ["", "0.5", ""])
+                self.assertEqual([row["loss"] for row in rows], ["", "", "0.25"])
+                self.assertEqual(list(log_dir.glob(".swarmbots-csv-*.backup")), [])
+            finally:
+                metrics.close()
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows file sharing")
+    def test_interrupted_in_place_csv_schema_write_recovers_on_retry(self) -> None:
+        for failures in (1, 2):
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as tmp_dir:
+                log_dir = Path(tmp_dir)
+                metrics = MetricsLogger(log_dir=log_dir)
+                path = log_dir / "log.csv"
+                overwrite = metrics._overwrite_csv
+                failures_remaining = failures
+
+                def interrupt_overwrite(source: Path) -> None:
+                    nonlocal failures_remaining
+                    if failures_remaining:
+                        failures_remaining -= 1
+                        with path.open("r+b") as destination:
+                            destination.write(b"corrupt partial schema")
+                        raise OSError("interrupted CSV rewrite")
+                    overwrite(source)
+
+                try:
+                    metrics.log({"timesteps": 1, "value": 42})
+                    metrics.flush()
+                    original = path.read_bytes()
+                    write = RetryableMetricWrite({"timesteps": 2, "eval_return": 0.5})
+                    with path.open("rb") as reader:
+                        self.assertTrue(reader.read(1))
+                        with mock.patch.object(metrics, "_overwrite_csv", side_effect=interrupt_overwrite):
+                            with self.assertRaises(OSError):
+                                metrics.publish_retryable(write)
+                        self.assertFalse(write.csv_written)
+                        if failures == 1:
+                            self.assertEqual(path.read_bytes(), original)
+                        else:
+                            # A new logger can recover the original log even when rollback was interrupted.
+                            metrics.close()
+                            metrics = MetricsLogger(log_dir=log_dir)
+                        metrics.publish_retryable(write)
+                        self.assertTrue(write.csv_written)
+
+                    with path.open(newline="", encoding="utf-8") as source:
+                        rows = list(csv.DictReader(source, delimiter=";"))
+                    self.assertEqual([row["timesteps"] for row in rows], ["1", "2"])
+                    self.assertEqual([row["value"] for row in rows], ["42", ""])
+                    self.assertEqual([row["eval_return"] for row in rows], ["", "0.5"])
+                    self.assertEqual(list(log_dir.glob(".swarmbots-csv-*.backup")), [])
+                finally:
+                    metrics.close()
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows file sharing recovery files")
+    def test_compress_persisted_log_recovers_pending_schema_backup(self) -> None:
+        for missing_csv in (False, True):
+            with self.subTest(missing_csv=missing_csv), tempfile.TemporaryDirectory() as tmp_dir:
+                log_dir = Path(tmp_dir)
+                metrics = MetricsLogger(log_dir=log_dir)
+                metrics.log({"timesteps": 1, "value": 42})
+                metrics.close()
+                path = log_dir / "log.csv"
+                original = path.read_bytes()
+                backup = metrics._csv_schema_backup
+                assert backup is not None
+                backup.write_bytes(original)
+                if missing_csv:
+                    path.unlink()
+                else:
+                    path.write_bytes(b"corrupt partial schema")
+
+                compressed = metrics.compress_persisted_log()
+
+                self.assertEqual(compressed, log_dir / "log.csv.gz")
+                assert compressed is not None
+                self.assertEqual(gzip.decompress(compressed.read_bytes()), original)
+                self.assertFalse(path.exists())
+                self.assertFalse(backup.exists())
 
     def test_csv_schema_expands_when_new_metrics_appear(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -27,6 +27,7 @@ from swarmbots.mjw_env.scenarios.mjw_scenario_presets import (
     hard_wall,
     medium_partially_observable_wall,
     medium_wall,
+    mixed_wall,
 )
 
 ScenarioFactory = Callable[..., BaseMJWScenario]
@@ -57,6 +58,12 @@ _SPECS = (
     BenchmarkSpec("SwarmBots-WallEasy-v0", "Fixed 0.2 m wall traversal.", "obstacle", easy_wall, maturity="beta"),
     BenchmarkSpec("SwarmBots-WallMedium-v0", "Fixed 0.3 m wall traversal.", "obstacle", medium_wall, maturity="beta"),
     BenchmarkSpec("SwarmBots-WallHard-v0", "Fixed 0.4 m wall traversal.", "obstacle", hard_wall, maturity="beta"),
+    BenchmarkSpec(
+        "SwarmBots-WallMixed-v0",
+        "Wall traversal with a 50/50 mix of 0.3 m and 0.4 m heights across episodes.",
+        "obstacle",
+        mixed_wall,
+    ),
     BenchmarkSpec(
         "SwarmBots-POWallEasy-v0",
         "Connected locomotion over a randomized hidden 0.25 m wall.",

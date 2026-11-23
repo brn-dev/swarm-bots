@@ -1,8 +1,13 @@
 import unittest
+import os
+from copy import deepcopy
+from functools import partial
+from pathlib import Path
+from stat import S_IMODE
+from tempfile import TemporaryDirectory
 from typing import Any
-from unittest.mock import patch
-
 import torch
+import pytest
 from gymnasium import spaces
 
 from swarmbots.learn.checkpointing import (
@@ -12,10 +17,14 @@ from swarmbots.learn.checkpointing import (
     move_env_to_device,
 )
 from swarmbots.learn.algos.base_algorithm import BaseAlgorithm
+from swarmbots.learn.algos.ppo.ppo import PPO, StepsRolloutMode
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
 from swarmbots.learn.env_wrappers.torch_normalize_reward_wrapper import TorchNormalizeRewardWrapper
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
+from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager
 from swarmbots.learn.torch_running_mean_std import TorchRunningMeanStd
+from tests.test_base_algorithm_lifecycle import _Policy
+from tests.test_ppo_parameter_lr_multipliers import _DummyEnv, _DummyPolicy, _make_ppo
 
 
 class _DummyTorchEnv:
@@ -75,9 +84,237 @@ def _set_rms(rms: TorchRunningMeanStd, *, offset: float) -> None:
     rms.count = torch.tensor(offset + 100.0, dtype=rms.count.dtype, device=rms.count.device)
 
 
+@pytest.mark.parametrize(("source_dtype", "target_dtype", "value", "valid"), [
+    (torch.float8_e4m3fn, torch.float8_e4m3fn, 7.0, True),
+    (torch.float32, torch.float8_e4m3fn, 512.0, False),
+    (torch.float64, torch.float64, 1e80, True),
+])
+def test_checkpoint_validates_frozen_parameter_in_destination_precision(
+    tmp_path: Path, source_dtype: torch.dtype, target_dtype: torch.dtype, value: float, valid: bool,
+) -> None:
+    source_policy, target_policy = _Policy(), _Policy()
+    source_policy.frozen_weight = torch.nn.Parameter(
+        torch.tensor([value], dtype=source_dtype), requires_grad=False,
+    )
+    target_policy.frozen_weight = torch.nn.Parameter(
+        torch.tensor([1.0], dtype=target_dtype), requires_grad=False,
+    )
+    source = _CheckpointLoadAlgorithm(policy=source_policy, env=object(), learning_rate=1e-3)
+    target = _CheckpointLoadAlgorithm(policy=target_policy, env=object(), learning_rate=1e-3)
+    path = tmp_path / "frozen.pt"
+    source.save(path)
+
+    if valid:
+        target.load(path, restore_optimizer_state=False)
+        assert target_policy.frozen_weight.dtype == target_dtype
+        assert target_policy.frozen_weight.double().item() == value
+    else:
+        with pytest.raises(ValueError, match="Non-finite checkpoint parameter frozen_weight"):
+            target.load(path, restore_optimizer_state=False)
+        assert target_policy.frozen_weight.double().item() == 1.0
+
+
+def test_checkpoint_round_trips_module_extra_state_and_identifies_retry_candidate(tmp_path: Path) -> None:
+    class ModuleWithMetadata(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.metadata: dict[str, Any] = {}
+
+        def get_extra_state(self) -> dict[str, Any]:
+            return self.metadata
+
+        def set_extra_state(self, state: dict[str, Any]) -> None:
+            self.metadata = state
+
+    policy = _Policy()
+    policy.custom = ModuleWithMetadata()
+    trainer = _CheckpointLoadAlgorithm(policy=policy, env=object(), learning_rate=1e-3)
+    policy.custom.metadata = {"mode": "sample", "levels": torch.tensor([0.25, 0.75])}
+    digest = trainer._current_best_candidate()
+    assert digest is not None
+    path = tmp_path / "model.pt"
+    trainer.save(path)
+    policy.custom.metadata = {"mode": "fixed"}
+    assert trainer._current_best_candidate() != digest
+    trainer.load(path)
+    assert policy.custom.metadata["mode"] == "sample"
+    torch.testing.assert_close(policy.custom.metadata["levels"], torch.tensor([0.25, 0.75]))
+    assert trainer._current_best_candidate() == digest
+
+
+class _LazyEncoderPolicy(_DummyPolicy):
+    def __init__(self) -> None:
+        super().__init__()
+        self.shared = torch.nn.Sequential(torch.nn.LazyLinear(3), torch.nn.LazyBatchNorm1d())
+
+    def num_parameters(self, learnable_only: bool = True) -> int:
+        # PPO requests the declared model budget before the encoder receives its first three-feature input.
+        encoder_parameters = 3 * 3 + 3 + 2 * 3
+        return encoder_parameters + sum(
+            param.numel() for name, param in self.named_parameters() if not name.startswith("shared.")
+        )
+
+
+def _make_lazy_ppo() -> PPO:
+    policy = _LazyEncoderPolicy()
+    return PPO(policy, _DummyEnv(), rollout_mode=StepsRolloutMode(2), train_device="cpu", rollout_device="cpu")
+
+
+def _step_lazy_encoder(trainer: PPO) -> None:
+    batch = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+    trainer.policy.shared(batch).square().mean().backward()
+    trainer.optimizer.step()
+    trainer.optimizer.zero_grad(set_to_none=True)
+
+
+def test_lazy_ppo_restores_parameters_buffers_and_resumes_adam(tmp_path: Path) -> None:
+    source = _make_lazy_ppo()
+    path = tmp_path / "lazy.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    target = _make_lazy_ppo()
+    weight = target.policy.shared[0].weight
+    target.load(path)
+    assert torch.nn.parameter.is_lazy(weight)
+    assert target._current_best_candidate() == source._current_best_candidate() is not None
+
+    _step_lazy_encoder(source)
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    target.load(path)
+    assert target.policy.shared[0].weight is weight and weight in target.optimizer.state
+    torch.testing.assert_close(target.policy.state_dict(), source.policy.state_dict())
+    torch.testing.assert_close(target.optimizer.state_dict(), source.optimizer.state_dict())
+    for trainer in (source, target):
+        _step_lazy_encoder(trainer)
+    torch.testing.assert_close(target.policy.state_dict(), source.policy.state_dict(), rtol=0, atol=0)
+    torch.testing.assert_close(target.optimizer.state_dict(), source.optimizer.state_dict(), rtol=0, atol=0)
+
+
+def test_lazy_ppo_rejects_wrong_adam_shape_before_materialization(tmp_path: Path) -> None:
+    source = _make_lazy_ppo()
+    _step_lazy_encoder(source)
+    state = source._get_optimizer_state_dict()
+    slots = next(iter(state["state"].values()))
+    slots["exp_avg"] = torch.ones(1)
+    path = tmp_path / "bad.pt"
+    source.save(path, optimizer_state_dict=state)
+    target = _make_lazy_ppo()
+    with pytest.raises(ValueError, match="Invalid checkpoint Adam moment exp_avg"):
+        target.load(path)
+    assert torch.nn.parameter.is_lazy(target.policy.shared[0].weight)
+    assert torch.nn.parameter.is_lazy(target.policy.shared[1].running_mean)
+    assert not target.optimizer.state
+
+
+def test_rejected_extra_state_keeps_lazy_encoder_uninitialized(tmp_path: Path) -> None:
+    class Versioned(torch.nn.Module):
+        def get_extra_state(self) -> int:
+            return 1
+
+        def set_extra_state(self, state: int) -> None:
+            if state != 1:
+                raise ValueError("Unsupported version")
+
+    source, target = _make_lazy_ppo(), _make_lazy_ppo()
+    source.policy.versioned = Versioned()
+    target.policy.versioned = Versioned()
+    weight = target.policy.shared[0].weight
+    batch_norm = target.policy.shared[1]
+    _step_lazy_encoder(source)
+    path = tmp_path / "versioned_lazy.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    checkpoint = torch.load(path, weights_only=False)
+    checkpoint["policy_state_dict"]["versioned._extra_state"] = 2
+    torch.save(checkpoint, path)
+    with pytest.raises(ValueError, match="Unsupported version"):
+        target.load(path)
+    assert target.policy.shared[0].weight is weight and torch.nn.parameter.is_lazy(weight)
+    assert torch.nn.parameter.is_lazy(batch_norm.running_mean) and batch_norm.num_features == 0
+    assert target.policy.shared[0].in_features == 0
+    assert not target.optimizer.state
+    _step_lazy_encoder(target)
+    assert weight in target.optimizer.state
+
+
+def test_checkpoint_publishes_near_filename_limit(tmp_path: Path) -> None:
+    path = tmp_path / ("x" * 247 + ".pt")
+    sidecar = path.with_name(path.name + ".json")
+    path.touch()
+    sidecar.touch()
+    trainer = _CheckpointLoadAlgorithm(policy=_Policy(), env=object(), learning_rate=1e-3)
+    trainer.save(path)
+    trainer.load(path)
+    assert sidecar.stat().st_size > 0
+
+
+def test_rejected_module_extra_state_restores_policy_and_schedulers(tmp_path: Path) -> None:
+    class VersionedModule(torch.nn.Module):
+        def __init__(self, version: int) -> None:
+            super().__init__()
+            self.register_buffer("schema", torch.tensor(version))
+            self.metadata = {"version": version}
+
+        def get_extra_state(self) -> dict[str, int]:
+            return self.metadata
+
+        def set_extra_state(self, state: dict[str, int]) -> None:
+            self.metadata.update(state)
+            if self.metadata["version"] != self.schema.item():
+                raise ValueError("Metadata version does not match the loaded schema")
+
+    source, _ = _make_ppo()
+    target, _ = _make_ppo()
+    for trainer, version in ((source, 2), (target, 1)):
+        trainer.policy.custom = VersionedModule(version)
+        trainer.gamma = 0.4 * version
+        trainer.n_total_timesteps = 10 * version
+        trainer.scheduler_manager = SchedulerManager([ScheduledHyperParameter(
+            name="gamma", scheduler=None, get_value=partial(getattr, trainer, "gamma"),
+            apply=partial(setattr, trainer, "gamma"), state={"version": version}, enabled=version == 2,
+        )])
+
+    path = tmp_path / "versioned.pt"
+    source.save(path, optimizer_state_dict=source._get_optimizer_state_dict())
+    checkpoint = torch.load(path, weights_only=False)
+    checkpoint["policy_state_dict"]["custom._extra_state"]["version"] = 3
+    bad_path = tmp_path / "rejected.pt"
+    torch.save(checkpoint, bad_path)
+    previous_policy = deepcopy(target.policy.state_dict())
+    previous_schedule = target.scheduler_manager.state_dict()
+
+    with pytest.raises(ValueError, match="loaded schema"):
+        target.load(bad_path)
+    torch.testing.assert_close(target.policy.state_dict(), previous_policy)
+    assert target.scheduler_manager.state_dict() == previous_schedule
+    assert target.n_total_timesteps == 10
+
+    target.load(path)
+    torch.testing.assert_close(target.policy.state_dict(), source.policy.state_dict())
+    assert target.scheduler_manager.state_dict() == source.scheduler_manager.state_dict()
+    assert target.n_total_timesteps == 20
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_checkpoint_publication_respects_creation_and_existing_modes(tmp_path: Path) -> None:
+    trainer = _CheckpointLoadAlgorithm(policy=_Policy(), env=object(), learning_rate=1e-3)
+    path = tmp_path / "model.pt"
+    sidecar = path.with_suffix(".pt.json")
+    control = tmp_path / "ordinary"
+    control.touch()
+    trainer.save(path)
+    assert S_IMODE(path.stat().st_mode) == S_IMODE(sidecar.stat().st_mode) == S_IMODE(control.stat().st_mode)
+    path.chmod(0o660)
+    sidecar.chmod(0o640)
+    trainer.save(path)
+    assert S_IMODE(path.stat().st_mode) == 0o660
+    assert S_IMODE(sidecar.stat().st_mode) == 0o640
+
+
 class CheckpointEnvStateTests(unittest.TestCase):
     def test_load_aligns_compiled_checkpoint_keys_to_uncompiled_policy(self) -> None:
-        policy = torch.nn.Linear(3, 2)
+        policy = _Policy()
+        policy.register_buffer("bias", torch.ones(2))
+        with torch.no_grad():
+            policy.weight.fill_(3.0)
         expected_state = {
             key: value.detach().clone()
             for key, value in policy.state_dict().items()
@@ -93,19 +330,23 @@ class CheckpointEnvStateTests(unittest.TestCase):
         algorithm = _CheckpointLoadAlgorithm(policy=policy, env=object(), learning_rate=1e-3)
         checkpoint = {
             "policy_state_dict": compiled_state,
+            "policy_loss_weights": {},
             "algorithm_state_dict": {},
+            "rollout_warmup_done": False,
+            "pending_best_digest": None,
             "n_total_iterations": 7,
             "n_total_updates": 11,
             "n_total_timesteps": 100_000_768,
             "best_return_ema": None,
             "env_state": [],
+            "episode_return_ema": algorithm._episode_return_ema.state_dict(),
+            "episode_success_rate_ema": algorithm._episode_success_rate_ema.state_dict(),
         }
 
-        with patch(
-            "swarmbots.learn.algos.base_algorithm.load_checkpoint",
-            return_value=checkpoint,
-        ):
-            algorithm.load("unused.pt")
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "compiled.pt"
+            torch.save(checkpoint, path)
+            algorithm.load(path)
 
         for key, value in policy.state_dict().items():
             self.assertTrue(torch.equal(value, expected_state[key]))
@@ -166,6 +407,18 @@ class CheckpointEnvStateTests(unittest.TestCase):
         self.assertTrue(torch.equal(restored.return_rms.mean, captured_mean))
         self.assertTrue(torch.equal(restored.return_rms.var, captured_var))
         self.assertTrue(torch.equal(restored.return_rms.count, captured_count))
+
+    def test_rejected_inner_stats_preserve_all_wrappers(self) -> None:
+        reward = TorchNormalizeRewardWrapper(_DummyTorchEnv())
+        wrapper = TorchFeatureWiseObsNormWrapper(reward, obs_key="local_obs", scalar_feature_indices=[0],
+                                                  quaternion_indices=[])
+        states = capture_env_state(wrapper)
+        original = wrapper.obs_rms.mean.clone()
+        states[0]["obs_rms"].mean.fill_(9)
+        states[1]["return_rms"].count = torch.ones(3)
+        with self.assertRaisesRegex(ValueError, "count shape"):
+            apply_env_state(wrapper, states)
+        torch.testing.assert_close(wrapper.obs_rms.mean, original)
 
     def test_apply_env_state_rejects_obs_key_mismatch_and_missing_wrapper(self) -> None:
         wrapper = TorchFeatureWiseObsNormWrapper(

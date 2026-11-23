@@ -19,7 +19,7 @@ from swarmbots.learn.nn_components.activations import ActivationFactory
 from swarmbots.learn.nn_components.feed_forward import MLP
 from swarmbots.learn.nn_components.nn_init import make_init_linear_orthogonal
 from swarmbots.learn.serialization_utils import serialize_dataclass, serialize_value
-from swarmbots.learn.loss_weights import resolve_loss_weight_aliases
+from swarmbots.learn.loss_weights import resolve_loss_weight_aliases, validate_loss_weight
 
 
 class SACNOPLatentSource(Enum):
@@ -102,8 +102,6 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             raise ValueError(f"source_latent_dim must be > 0, got {source_latent_dim}")
         if action_dim <= 0:
             raise ValueError(f"action_dim must be > 0, got {action_dim}")
-        if config.nop_loss_coef < 0:
-            raise ValueError(f"nop_loss_coef must be >= 0, got {config.nop_loss_coef}")
         if config.nop_latent_dim is not None and config.nop_latent_dim <= 0:
             raise ValueError(f"nop_latent_dim must be > 0 when set, got {config.nop_latent_dim}")
         if not _has_next_obs_pred_targets(config.next_obs_pred_config):
@@ -112,7 +110,7 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
             )
 
         self.name = name
-        self.nop_loss_coef = float(config.nop_loss_coef)
+        self.nop_loss_coef = validate_loss_weight("nop_loss_coef", config.nop_loss_coef)
         self.n_agents = int(n_agents)
         self.source_latent_dim = int(source_latent_dim)
         self.action_dim = int(action_dim)
@@ -367,6 +365,13 @@ class SACNOPModule(nn.Module, NextObsPredMixin):
         if scalar_loss_name == "smooth_l1":
             return nn.SmoothL1Loss(reduction="none")
         raise ValueError(f"Unknown scalar_loss {scalar_loss_name!r}")
+
+
+def get_nop_loss_weights(actor_nop: SACNOPModule | None, critic_nop: SACNOPModule | None) -> dict[str, float]:
+    return {
+        f"{branch}_nop_loss_coef": module.nop_loss_coef
+        for branch, module in (("actor", actor_nop), ("critic", critic_nop)) if module is not None
+    }
 
 
 def update_nop_loss_weights(

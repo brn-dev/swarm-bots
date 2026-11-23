@@ -19,7 +19,7 @@ The eight-task core suite is exposed as `swarmbots.CORE_BENCHMARK_IDS`:
 | `SwarmBots-PayloadStep-v0` | Payload transport over a step |
 | `SwarmBots-MultiPayloadGoal-v0` | Multiple payloads delivered to assigned goals |
 
-The full 17-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. The [scenario catalog](scenarios.md) lists all tasks and success conditions. Scores are reported per task. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
+The full 18-task suite is exposed as `swarmbots.ALL_BENCHMARK_IDS`. The [scenario catalog](scenarios.md) lists all tasks and success conditions. Scores are reported per task. Reward scales differ between tasks, so an unnormalized average return across the suite is not meaningful.
 
 ## Evaluation
 
@@ -46,6 +46,8 @@ result = evaluate_policy(
     action_mode="deterministic",
 )
 ```
+
+The evaluation seed controls the environment and Torch policy draws on the CPU and on the CUDA devices used by the simulator and the included actor adapter. A custom callable that draws on another CUDA device can declare it with an `inference_device` attribute. Evaluation and recording restore the default CPU and CUDA generators when the call ends, including seeds queued before CUDA initialization. Seeded evaluation and recording calls from threads in one process run in sequence because they share the default CPU generator. Use separate processes to run them in parallel or alongside training that draws from the default generators.
 
 The evaluator accepts at most one episode per lane and returns episodes in lane order. It rejects `num_episodes > num_envs`. Smaller runs are useful for development but are not canonical protocol runs. Completed lanes still simulate while remaining lanes finish; their later rewards, successes, and episodes are ignored.
 

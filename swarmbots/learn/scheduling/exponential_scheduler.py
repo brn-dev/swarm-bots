@@ -59,10 +59,11 @@ class ExponentialScheduler(ChainableScheduler):
             state: dict[str, Any],
             metrics: dict[str, Any],
     ) -> ScheduleResult:
-        if self.duration <= 0:
+        if self.duration <= 0 or progress >= 1.0:
             new_value = self.final_value
+        elif progress <= 0.0:
+            new_value = self.start_value
         else:
-            progress = min(progress, 1.0)
             if math.isclose(self.base, 1.0):
                 interpolation = progress
             else:
@@ -70,6 +71,6 @@ class ExponentialScheduler(ChainableScheduler):
 
             new_value = self.start_value + (self.final_value - self.start_value) * interpolation
 
-        if abs(new_value - old_value) < 1e-8:
+        if new_value == old_value:
             return {"new_value": None, "event": self.name_prefix + "hold"}
         return {"new_value": new_value, "event": self.name_prefix + "exponential"}

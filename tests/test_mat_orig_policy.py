@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -8,7 +9,9 @@ import torch.nn as nn
 from gymnasium import spaces
 
 from swarmbots.learn.action_dists.bernoulli_action_dist import BernoulliConfig
+from swarmbots.learn.action_dists.hybrid_action_dist import ContinuousActionDistConfig
 from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMagnitudeBetaConfig
+from swarmbots.learn.action_dists.squashed_diag_gaussian_action_dist import SquashedDiagGaussianConfig
 from swarmbots.learn.algos.mat import MATEncoderConfig, MLPConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_decoder import MATOrigDecoder, MATOrigDecoderConfig
 from swarmbots.learn.algos.mat_orig.mat_orig_policy import MATOrigPolicy, MATOrigPolicyConfig
@@ -61,6 +64,7 @@ def _make_policy(
         encoder_d_model: int = 16,
         decoder_d_model: int = 16,
         compile_modules: bool = False,
+        continuous_config: ContinuousActionDistConfig = SignMagnitudeBetaConfig(),
 ) -> MATOrigPolicy:
     return MATOrigPolicy(
         env=_DummyMATOrigEnv(),
@@ -79,11 +83,71 @@ def _make_policy(
                 num_layers=1,
                 latent_pi_dim=decoder_d_model,
             ),
-            continuous_config=SignMagnitudeBetaConfig(),
+            continuous_config=continuous_config,
             bernoulli_config=BernoulliConfig(initial_prob=0.5),
             compile_modules=compile_modules,
         ),
     )
+
+
+@pytest.mark.parametrize(("dtype", "rollout_dtype"), [
+    (torch.float16, torch.float32),
+    (torch.bfloat16, torch.float32),
+    (torch.float64, torch.float32),
+    (torch.float32, torch.float16),
+    (torch.float32, torch.bfloat16),
+])
+def test_native_inference_and_ppo_actions_replay_the_same_prefix(
+        dtype: torch.dtype, rollout_dtype: torch.dtype,
+) -> None:
+    torch.manual_seed(41)
+    policy = _make_policy(continuous_config=SquashedDiagGaussianConfig(std=0.3, std_learnable=False)).to(dtype)
+    policy.rollout_dtype = rollout_dtype
+    env = _DummyMATOrigEnv
+    observations = dict(
+        local_obs=torch.randn(2, env.n_agents, env.local_obs_dim, dtype=dtype),
+        global_obs=torch.randn(2, env.global_obs_dim, dtype=dtype),
+        hidden_local_vars=torch.randn(2, env.n_agents, env.hidden_local_vars_dim, dtype=dtype),
+        hidden_global_vars=torch.randn(2, env.hidden_global_vars_dim, dtype=dtype),
+        agent_mask=None,
+        previous_actions=None,
+    )
+    with torch.no_grad():
+        assert policy.act(**observations).dtype == dtype
+        actions, log_probs, _ = policy(**observations)
+        replay_log_probs, *_ = policy.evaluate_actions(SimpleNamespace(**observations, actions=actions))
+    assert actions.dtype == rollout_dtype
+    torch.testing.assert_close(replay_log_probs, log_probs, rtol=0, atol=1e-6)
+
+
+@pytest.mark.parametrize("action_dtype", [torch.float16, torch.float32, torch.float64])
+def test_rollout_preserves_wide_score_independently_of_legacy_action_dtype(action_dtype: torch.dtype) -> None:
+    policy = _make_policy()
+    env = _DummyMATOrigEnv
+    action_value, score_value = 0.1234567890123, -0.9876543210987
+
+    def sample(
+            latent_pi: torch.Tensor,
+            deterministic: bool = False,
+            agent: int | None = None,
+            previous_actions: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return (
+            latent_pi.new_full((*latent_pi.shape[:-1], policy.agent_action_dim), action_value, dtype=action_dtype),
+            latent_pi.new_full(latent_pi.shape[:-1], score_value, dtype=torch.float64),
+        )
+
+    with patch.object(policy.action_dist, "get_on_policy_actions_with_log_probs", sample), torch.no_grad():
+        actions, scores, _ = policy(
+            torch.randn(2, env.n_agents, env.local_obs_dim),
+            torch.randn(2, env.global_obs_dim),
+            torch.randn(2, env.n_agents, env.hidden_local_vars_dim),
+            torch.randn(2, env.hidden_global_vars_dim),
+        )
+    assert actions.dtype == action_dtype
+    assert scores.dtype == torch.float64
+    torch.testing.assert_close(actions, torch.full_like(actions, action_value), atol=0, rtol=0)
+    torch.testing.assert_close(scores, torch.full_like(scores, score_value), atol=0, rtol=0)
 
 
 def test_build_shifted_actions_uses_previous_agent_actions_and_masks_invalid_agents() -> None:

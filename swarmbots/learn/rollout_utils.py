@@ -1,3 +1,4 @@
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,10 +53,9 @@ def collect_rollout_step_metadata(
         if "final_obs" in infos and "_final_obs" in infos else None
     )
     if source is None and final_obs_mask is None:
-        has_dones, has_truncations = torch.stack((dones, truncations & ~terminations)).any(dim=1).tolist()
-        if has_dones:
+        if dones.any():
             raise ValueError(_FINAL_OBS_REQUIRED_MESSAGE)
-        return RolloutStepMetadata([], has_truncations, dones.numel() > 0, None)
+        return RolloutStepMetadata([], False, dones.numel() > 0, None)
     # Bootstrap decisions, episode indices and mask validation share one device transfer.
     dones_cpu, truncations_cpu, episode_mask_cpu, final_obs_mask_cpu = torch.stack((
         dones, truncations & ~terminations, episode_mask, dones if final_obs_mask is None else final_obs_mask,
@@ -97,30 +97,37 @@ def append_episode_infos(
         completed_indices = step_metadata.completed_indices
     if not completed_indices:
         return
+    scenario_columns = {
+        key: info_source.get(key, infos.get(key))
+        for key in ("scenario_id", "scenario_name")
+        if info_source.get(key, infos.get(key)) is not None
+    }
+    episode_infos.extend(iter_episode_rows(episode_stats, completed_indices, extra_columns=scenario_columns))
+
+
+def iter_episode_rows(
+        episode_stats: Mapping[str, Any], indices: list[int], *, extra_columns: Mapping[str, Any] | None = None,
+) -> Iterator[dict[str, Any]]:
     statistic_names = tuple(key for key in episode_stats if not key.startswith("_"))
     columns = {key: episode_stats[key] for key in statistic_names}
     for key in statistic_names:
         mask_key = f"_{key}"
         if episode_stats.get(mask_key) is not None:
             columns[mask_key] = episode_stats[mask_key]
-    scenario_columns = {
-        key: info_source.get(key, infos.get(key))
-        for key in ("scenario_id", "scenario_name")
-        if info_source.get(key, infos.get(key)) is not None
-    }
-    columns.update(scenario_columns)
-    completed_columns = _episode_columns_to_cpu(columns, completed_indices)
+    extra_columns = {} if extra_columns is None else extra_columns
+    columns.update(extra_columns)
+    completed_columns = _episode_columns_to_cpu(columns, indices)
 
-    for row_idx in range(len(completed_indices)):
+    for row_idx in range(len(indices)):
         episode_info = {}
         for key in statistic_names:
             value_mask = completed_columns.get(f"_{key}")
             if value_mask is not None and not bool(to_python_episode_stat(value_mask[row_idx])):
                 continue
             episode_info[key] = to_python_episode_stat(completed_columns[key][row_idx])
-        for key in scenario_columns:
+        for key in extra_columns:
             episode_info[key] = to_python_episode_stat(completed_columns[key][row_idx])
-        episode_infos.append(episode_info)
+        yield episode_info
 
 
 def _episode_columns_to_cpu(columns: dict[str, Any], indices: list[int]) -> dict[str, Any]:
@@ -144,7 +151,7 @@ def _episode_columns_to_cpu(columns: dict[str, Any], indices: list[int]) -> dict
         for key, values in fields:
             completed = packed[offset:offset + values.numel()].reshape(values.shape)
             completed_columns[key] = (
-                completed.flatten().tolist() if values.numel() == len(indices) else completed.numpy()
+                completed.flatten().tolist() if values.numel() == len(indices) else completed
             )
             offset += values.numel()
     return completed_columns
@@ -202,22 +209,31 @@ def extract_terminal_obs(
         next_obs: dict[str, torch.Tensor],
         infos: dict[str, Any],
         dones: torch.Tensor,
+        completed_indices: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor] | None:
-    if not torch.any(dones):
+    """Snapshot all-done rows in environment order, or a strict subset in completed-index order."""
+    if completed_indices is None:
+        completed_indices = torch.nonzero(dones, as_tuple=True)[0]
+        if completed_indices.numel():
+            _validated_final_obs_mask(infos=infos, dones=dones)
+    if not completed_indices.numel():
         return None
 
-    final_obs_mask = _validated_final_obs_mask(infos=infos, dones=dones)
     expected_obs_keys = set(next_obs)
     final_obs_value = infos["final_obs"]
+    all_lanes_done = completed_indices.numel() == dones.numel()
     if isinstance(final_obs_value, dict):
         final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_value)
         _validate_final_obs(final_obs=final_obs, expected_obs=next_obs, batched=True)
-        return {key: final_obs[key][final_obs_mask] for key in expected_obs_keys}
+        if all_lanes_done:
+            return {key: final_obs[key].clone() for key in expected_obs_keys}
+        return {key: final_obs[key].index_select(0, completed_indices) for key in expected_obs_keys}
 
     final_obs_entries = np.asarray(final_obs_value, dtype=object).reshape(-1)
     terminal_obs: dict[str, list[torch.Tensor]] = {key: [] for key in expected_obs_keys}
 
-    for env_idx in torch.nonzero(final_obs_mask, as_tuple=False).flatten().tolist():
+    source_lanes = range(dones.numel()) if all_lanes_done else completed_indices.tolist()
+    for env_idx in source_lanes:
         final_obs = _final_obs_to_torch(env=env, final_obs=final_obs_entries[env_idx])
         _validate_final_obs(final_obs=final_obs, expected_obs=next_obs)
         for key in expected_obs_keys:
@@ -261,20 +277,24 @@ def _validate_final_obs(
     missing_keys = expected_obs.keys() - final_obs.keys()
     if missing_keys:
         raise ValueError(f"Expected final_obs to contain observation keys {sorted(missing_keys)}.")
-    if batched:
-        for key, value in expected_obs.items():
-            if final_obs[key].shape != value.shape:
-                raise ValueError(
-                    f"Expected final_obs[{key!r}] shape {tuple(value.shape)}, got {tuple(final_obs[key].shape)}."
-                )
+    for key, value in expected_obs.items():
+        expected_shape = value.shape if batched else value.shape[1:]
+        if final_obs[key].shape != expected_shape:
+            raise ValueError(
+                f"Expected final_obs[{key!r}] shape {tuple(expected_shape)}, got {tuple(final_obs[key].shape)}."
+            )
 
 
 def to_python_episode_stat(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
         if value.numel() == 1:
             return value.item()
-        return value.detach().cpu().numpy()
-    if isinstance(value, np.ndarray) and value.size == 1:
+        host_value = value.detach().cpu()
+        if host_value.is_floating_point() and host_value.dtype not in (torch.float16, torch.float32, torch.float64):
+            # NumPy lacks native bfloat16 and float8 dtypes. Float32 represents their values exactly.
+            host_value = host_value.float()
+        return host_value.numpy()
+    if isinstance(value, (np.generic, np.ndarray)) and value.size == 1:
         return value.item()
     return value
 

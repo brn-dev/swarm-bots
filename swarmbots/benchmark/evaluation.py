@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import closing
 from dataclasses import dataclass, field
 import statistics
 from typing import Any, Literal, Protocol
 
 import torch
+from gymnasium.vector import AutoresetMode
 
 from swarmbots.benchmark.registry import get_benchmark_spec, make_env
 from swarmbots.benchmark.metadata import runtime_metadata, serialize_settings
+from swarmbots.utils.torch_utils import seeded_torch_rng
 
 PROTOCOL_VERSION = "0.1"
 POLICY_OBSERVATION_KEYS = ("local_obs", "global_obs", "agent_mask")
@@ -91,6 +94,7 @@ def evaluate_policy(
 
     Action mode describes the caller's policy; it does not change its behavior.
     Use separate seeded calls for more samples instead of recycling early-finishing lanes.
+    The seed controls Torch draws on CPU and the evaluation device for this call.
     """
     if num_episodes <= 0:
         raise ValueError(f"Expected num_episodes > 0, got {num_episodes}")
@@ -102,16 +106,18 @@ def evaluate_policy(
         raise ValueError(f"Unknown action_mode: {action_mode!r}")
 
     spec = get_benchmark_spec(benchmark_id)
-    env = make_env(
-        benchmark_id,
-        num_envs=min(num_envs, num_episodes),
-        device=device,
-        seed=seed,
-        episode_length=episode_length,
-        scenario_kwargs=scenario_kwargs,
-        **dict(env_kwargs or {}),
-    )
-    try:
+    with (
+        seeded_torch_rng(seed, device, getattr(policy, "inference_device", None)),
+        closing(make_env(
+            benchmark_id,
+            num_envs=min(num_envs, num_episodes),
+            device=device,
+            seed=seed,
+            episode_length=episode_length,
+            scenario_kwargs=scenario_kwargs,
+            **dict(env_kwargs or {}),
+        )) as env,
+    ):
         canonical_scenario = not scenario_kwargs and not env_kwargs and episode_length in (None, spec.episode_length)
         metadata = serialize_settings({
             "runtime": runtime_metadata(env.device),
@@ -136,9 +142,10 @@ def evaluate_policy(
         running_successes = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
         episode_starts = torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
         completed = torch.zeros(env.num_envs, device=env.device, dtype=torch.bool)
+        next_step_autoreset = env.autoreset_mode is AutoresetMode.NEXT_STEP
 
         with torch.inference_mode():
-            while not bool(completed.all()):
+            while True:
                 actions = policy(policy_observation(observations), episode_starts)
                 observations, rewards, terminations, truncations, infos = env.step(dict(actions))
                 dones = terminations | truncations
@@ -147,9 +154,11 @@ def evaluate_policy(
                 if spec.supports_success_metric:
                     running_successes |= infos["success"].to(dtype=torch.bool) & ~completed
                 completed |= dones
+                if bool(completed.all()):
+                    break
+                if next_step_autoreset and bool(dones.any()):
+                    observations, _ = env.reset(options={"reset_mask": dones})
                 episode_starts = dones
-    finally:
-        env.close()
 
     return EvaluationResult(
         benchmark_id=benchmark_id,

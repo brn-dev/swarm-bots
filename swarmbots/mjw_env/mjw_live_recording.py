@@ -4,6 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import imageio_ffmpeg
@@ -12,6 +13,7 @@ import numpy as np
 from loguru import logger
 
 from swarmbots.mjw_env.scenarios.base_mjw_scenario import BaseMJWScenario, MJWRecordingCameraConfig
+from swarmbots.utils.atomic_file import atomic_output
 from swarmbots.utils.recording_overlay import draw_accumulated_reward
 from swarmbots.utils.recording_resolution import ensure_mujoco_offscreen_framebuffer
 
@@ -60,16 +62,20 @@ def _write_video_file(*, frames: list[np.ndarray], output_path: Path, fps: int) 
     height, width = frames[0].shape[:2]
     # 4:2:0 requires even dimensions; 4:4:4 preserves odd-sized recordings.
     pixel_format = "yuv420p" if width % 2 == 0 and height % 2 == 0 else "yuv444p"
-    writer = imageio_ffmpeg.write_frames(
-        str(output_path), (width, height), fps=fps, codec="libx264", pix_fmt_out=pixel_format,
-        quality=None, macro_block_size=1, ffmpeg_log_level="error",
-    )
-    try:
-        next(writer)
-        for frame in frames:
-            writer.send(np.ascontiguousarray(frame, dtype=np.uint8))
-    finally:
-        writer.close()
+    with atomic_output(output_path) as staging:
+        command = [
+            imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(fps), "-i", "pipe:0",
+            "-c:v", "libx264", "-pix_fmt", pixel_format, "-f", "mp4", str(staging),
+        ]
+        with subprocess.Popen(
+            command, stdin=subprocess.PIPE, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ) as encoder:
+            assert encoder.stdin is not None
+            for frame in frames:
+                encoder.stdin.write(np.ascontiguousarray(frame, dtype=np.uint8))
+        if encoder.returncode:
+            raise subprocess.CalledProcessError(encoder.returncode, command)
 
 
 class MJWLiveEpisodeRecorder:

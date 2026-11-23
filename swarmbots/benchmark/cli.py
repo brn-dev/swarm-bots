@@ -13,7 +13,7 @@ import torch
 
 from swarmbots.benchmark.registry import get_benchmark_spec, list_benchmarks, make_env
 from swarmbots.utils.recording_resolution import DEFAULT_RECORDING_HEIGHT, DEFAULT_RECORDING_WIDTH
-from swarmbots.utils.torch_utils import resolve_torch_device
+from swarmbots.utils.torch_utils import resolve_torch_device, seeded_torch_rng
 
 
 def _random_actions(env: Any, generator: torch.Generator) -> dict[str, torch.Tensor]:
@@ -174,14 +174,15 @@ def _record_command(args: argparse.Namespace) -> None:
         from swarmbots.benchmark.recording import record_policy
 
         module_name, factory_name = args.policy.split(":", maxsplit=1)
-        factory = getattr(importlib.import_module(module_name), factory_name)
-        torch.manual_seed(args.seed)
-        policy = factory(
-            benchmark_id=args.benchmark_id,
-            device=device,
-            seed=args.seed,
-            deterministic=not args.stochastic,
-        )
+        with seeded_torch_rng(args.seed, device):
+            factory = getattr(importlib.import_module(module_name), factory_name)
+        with seeded_torch_rng(args.seed, device):
+            policy = factory(
+                benchmark_id=args.benchmark_id,
+                device=device,
+                seed=args.seed,
+                deterministic=not args.stochastic,
+            )
         record_policy(policy, args.benchmark_id, **options)
     print(f"Saved {args.episodes} episode recordings to {video_folder}")
 

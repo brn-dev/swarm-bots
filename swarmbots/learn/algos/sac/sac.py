@@ -24,7 +24,7 @@ from swarmbots.learn.gsde_reset import (
     GSDEResetMode,
 )
 from swarmbots.learn.metrics_list import materialize_scalar_metrics
-from swarmbots.learn.optimizers import make_adam
+from swarmbots.learn.optimizers import make_adam, validate_adam_state
 
 
 from swarmbots.learn.algos.off_policy.base_algorithm import (
@@ -83,7 +83,7 @@ class SAC(OffPolicyAlgorithm):
     ) -> None:
         self.ent_coef = ent_coef
         self.ent_coef_learning_rate = None if ent_coef_learning_rate is None else float(ent_coef_learning_rate)
-        self.target_entropy = target_entropy
+        self._target_entropy_setting = target_entropy
         self.actor_action_samples = actor_action_samples
         self.target_action_samples = target_action_samples
         super().__init__(
@@ -234,17 +234,13 @@ class SAC(OffPolicyAlgorithm):
         actor_grad_norm = 0.0
         actor_nop_metrics = {}
         if update_actor:
-            critic_parameters = self.policy.critic_parameters()
-            self._set_requires_grad(critic_parameters, False)
-            try:
+            with self._frozen_critic():
                 q1_pi, q2_pi, actor_loss = self._actor_forward_phase(
                     batch,
                     actions_pi,
                     log_prob_pi_mean,
                     ent_coef,
                 )
-            finally:
-                self._set_requires_grad(critic_parameters, True)
 
             if skip_multi_step_nop_loss:
                 actor_nop_loss, actor_nop_metrics = None, {}
@@ -261,8 +257,7 @@ class SAC(OffPolicyAlgorithm):
                 global_update_idx=global_update_idx,
             )
 
-        if global_update_idx % self.target_update_interval == 0:
-            self.policy.polyak_update_targets(self.tau)
+        self._finish_update(update_targets=global_update_idx % self.target_update_interval == 0)
         self.policy.after_optimizer_step()
 
         metrics = {
@@ -390,11 +385,9 @@ class SAC(OffPolicyAlgorithm):
                 suffix_name="initial_value",
                 default=1.0,
             )
-            if not math.isfinite(init_value) or init_value <= 0:
-                raise ValueError(f"Initial entropy coefficient must be finite and > 0, got {init_value}")
-            self.log_ent_coef = torch.log(
-                torch.ones((), device=self.train_device, dtype=torch.float32) * init_value
-            ).requires_grad_(True)
+            log_coefficient = torch.tensor(init_value, dtype=torch.float32, device=self.train_device).log()
+            self._validate_log_entropy_coefficient(log_coefficient)
+            self.log_ent_coef = log_coefficient.requires_grad_(True)
             self.ent_coef_optimizer = make_adam(
                 [self.log_ent_coef],
                 lr=self._resolved_ent_coef_learning_rate(),
@@ -407,8 +400,14 @@ class SAC(OffPolicyAlgorithm):
         self.ent_coef_tensor = torch.tensor(ent_coef, device=self.train_device, dtype=torch.float32)
 
     @staticmethod
+    def _validate_log_entropy_coefficient(log_coefficient: torch.Tensor) -> None:
+        coefficient = log_coefficient.exp().item()
+        if not math.isfinite(coefficient) or coefficient <= 0:
+            raise ValueError("Automatic entropy coefficient must be finite and > 0 in float32")
+
+    @staticmethod
     def _validate_fixed_entropy_coefficient(ent_coef: float) -> None:
-        if not math.isfinite(ent_coef) or ent_coef < 0:
+        if not math.isfinite(ent_coef) or not 0 <= ent_coef <= torch.finfo(torch.float32).max:
             raise ValueError(f"ent_coef must be finite and nonnegative, got {ent_coef}")
 
     def _update_entropy_coefficient(
@@ -445,24 +444,25 @@ class SAC(OffPolicyAlgorithm):
         dtype: torch.dtype,
         device: torch.device,
     ) -> torch.Tensor:
-        if isinstance(self.target_entropy, str):
-            auto_scale = self._target_entropy_auto_scale()
-            target_entropy_per_agent = -auto_scale * float(self.agent_action_dim)
-            return torch.full(batch.rewards.shape, target_entropy_per_agent, dtype=dtype, device=device)
+        return torch.full(batch.rewards.shape, self._target_entropy_per_agent, dtype=dtype, device=device)
 
-        return torch.full(batch.rewards.shape, float(self.target_entropy), dtype=dtype, device=device)
+    @property
+    def target_entropy(self) -> float | str:
+        return self._target_entropy_setting
 
-    def _target_entropy_auto_scale(self) -> float:
-        assert isinstance(self.target_entropy, str)
-        scale = self._parse_auto_value(
-            self.target_entropy,
-            parameter_name="target_entropy",
-            suffix_name="scale",
-            default=1.0,
-        )
-        if scale <= 0.0:
-            raise ValueError(f"target_entropy auto scale must be > 0, got {scale}")
-        return scale
+    @target_entropy.setter
+    def target_entropy(self, value: float | str) -> None:
+        if isinstance(value, str):
+            scale = self._parse_auto_value(value, parameter_name="target_entropy", suffix_name="scale", default=1.0)
+            if not math.isfinite(scale) or scale <= 0:
+                raise ValueError(f"target_entropy auto scale must be finite and > 0, got {scale}")
+            resolved = -scale * self.agent_action_dim
+        else:
+            resolved = float(value)
+        if not math.isfinite(resolved) or abs(resolved) > torch.finfo(torch.float32).max:
+            raise ValueError(f"target_entropy must resolve to a finite float32 value, got {resolved}")
+        self._target_entropy_per_agent = resolved
+        self._target_entropy_setting = value
 
     @staticmethod
     def _parse_auto_value(
@@ -478,7 +478,10 @@ class SAC(OffPolicyAlgorithm):
         for separator in ("_", "*"):
             prefix = f"auto{separator}"
             if normalized_value.startswith(prefix):
-                return float(normalized_value.removeprefix(prefix))
+                try:
+                    return float(normalized_value.removeprefix(prefix))
+                except ValueError as error:
+                    raise ValueError(f"Invalid {parameter_name} {suffix_name} in {value!r}") from error
         raise ValueError(f"{parameter_name} string must be 'auto', 'auto_{suffix_name}', or 'auto*{suffix_name}'")
 
     def _mean_agent_log_probs(
@@ -521,10 +524,11 @@ class SAC(OffPolicyAlgorithm):
         ent_coef_tensor = state_dict["ent_coef_tensor"]
         if (log_ent_coef is None) == (ent_coef_tensor is None):
             raise ValueError("SAC checkpoints require exactly one automatic or fixed entropy coefficient")
+        value = log_ent_coef if log_ent_coef is not None else ent_coef_tensor
+        if not isinstance(value, torch.Tensor) or value.ndim != 0 or value.dtype != torch.float32:
+            raise ValueError("Checkpoint entropy coefficient must be a scalar float32 tensor")
         if log_ent_coef is not None:
-            coefficient = log_ent_coef.exp().item()
-            if not math.isfinite(coefficient) or coefficient <= 0:
-                raise ValueError("Saved automatic entropy coefficient must be finite and > 0")
+            self._validate_log_entropy_coefficient(log_ent_coef)
         else:
             self._validate_fixed_entropy_coefficient(ent_coef_tensor.item())
 
@@ -547,6 +551,16 @@ class SAC(OffPolicyAlgorithm):
             self.ent_coef_tensor = ent_coef_tensor.to(self.train_device).detach().clone()
             self.ent_coef = float(self.ent_coef_tensor.item())
         self._rebuild_optimizer_steps()
+
+    def _validate_optimizer_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        super()._validate_optimizer_checkpoint(checkpoint)
+        log_coef = checkpoint["algorithm_state_dict"]["log_ent_coef"]
+        state = checkpoint["optimizer_state_dict"]["ent_coef_optimizer"]
+        if (state is None) != (log_coef is None):
+            raise ValueError("Checkpoint entropy optimizer does not match the saved SAC entropy mode")
+        if state is not None:
+            group = {**self.actor_optimizer.defaults, "params": [log_coef]}
+            validate_adam_state(state, [group])
 
     def _get_optimizer_state_dict(self) -> dict[str, Any]:
         return {
@@ -594,6 +608,7 @@ class SAC(OffPolicyAlgorithm):
 
     def _validate_hyper_parameters(self) -> None:
         super()._validate_hyper_parameters()
+        self.target_entropy = self._target_entropy_setting
         validate_action_sampling(
             actor_action_samples=self.actor_action_samples,
             target_action_samples=self.target_action_samples,
@@ -601,8 +616,10 @@ class SAC(OffPolicyAlgorithm):
         if max(self.actor_action_samples, self.target_action_samples) > 1:
             if self.policy.gsde_enabled:
                 raise ValueError("Multi-sample SAC does not support temporally correlated gSDE noise.")
-        if self.ent_coef_learning_rate is not None and self.ent_coef_learning_rate <= 0.0:
-            raise ValueError(f"ent_coef_learning_rate must be > 0 when set, got {self.ent_coef_learning_rate}")
+        if self.ent_coef_learning_rate is not None and (
+            not math.isfinite(self.ent_coef_learning_rate) or self.ent_coef_learning_rate <= 0.0
+        ):
+            raise ValueError(f"ent_coef_learning_rate must be finite and > 0 when set, got {self.ent_coef_learning_rate}")
 
     def _setup_extra_optimizers(self) -> None:
         self.log_ent_coef: torch.Tensor | None = None

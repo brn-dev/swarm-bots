@@ -243,10 +243,11 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         latent_pi = self.actor_head(augmented_observations).contiguous()
         if return_log_probs:
-            actions, log_probs = self.action_dist.get_on_policy_actions_with_log_probs(
+            actions, log_probs = self.action_dist._get_on_policy_actions_for_storage(
                 latent_pi,
                 deterministic=deterministic,
                 previous_actions=previous_actions,
+                storage_dtype=self.rollout_dtype,
             )
             return self._mask_actions(actions, agent_mask), self._mask_log_probs(log_probs, agent_mask)
 
@@ -261,8 +262,9 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             batch: PPOSamples,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
-        actions = self._policy_actions(batch.actions)
-        if self.action_dist.compile_friendly:
+        actions = self._policy_actions(batch.actions, batch.agent_mask)
+        action_dtypes = getattr(batch, "action_dtypes", None)
+        if action_dtypes is None and self.action_dist.compile_friendly:
             log_probs, values, critic_observations = self._evaluate_actions_core(
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
@@ -280,8 +282,7 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 hidden_global_vars=batch.hidden_global_vars,
                 agent_mask=batch.agent_mask,
             )
-            self.action_dist.update_latent_features(latent_pi)
-            log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
+            log_probs = self._score_rollout_actions(latent_pi, actions, batch.previous_actions, action_dtypes)
             log_probs = self._mask_log_probs(log_probs, batch.agent_mask)
 
         return log_probs, values, {}, {}, critic_observations
@@ -487,12 +488,6 @@ class MATIndPolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             fullgraph=False,
             dynamic=False,
         )
-
-    @staticmethod
-    def _mask_actions(actions: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:
-        if agent_mask is None:
-            return actions
-        return actions.masked_fill(~agent_mask.unsqueeze(-1), 0.0)
 
     @staticmethod
     def _mask_log_probs(log_probs: torch.Tensor, agent_mask: torch.Tensor | None) -> torch.Tensor:

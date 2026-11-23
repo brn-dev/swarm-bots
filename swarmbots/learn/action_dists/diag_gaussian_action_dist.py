@@ -6,7 +6,7 @@ import torch.distributions as torchdist
 from torch import nn
 
 from swarmbots.learn.action_dists.action_dist import ActionNetInitialization
-from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist
+from swarmbots.learn.action_dists.continuous_action_dist import ContinuousActionDist, gaussian_scale
 from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
@@ -26,6 +26,7 @@ class DiagGaussianActionDist(ContinuousActionDist):
             action_net_initialization=action_net_initialization,
         )
         self.std_learnable = std_learnable
+        self._unbounded_log_scale = True
 
         self.log_stds = nn.Parameter(
             torch.ones((self.action_dim,)) * math.log(std),
@@ -47,32 +48,14 @@ class DiagGaussianActionDist(ContinuousActionDist):
             self.log_stds += math.log(multiplier)
 
     def update_distribution_params(self, means: torch.Tensor, log_stds: torch.Tensor) -> Self:
-        self.distribution = torchdist.Normal(
-            loc=means,
-            scale=torch.exp(log_stds),
-            validate_args=False,
-        )
-        return self
-
-    def sample(
-            self,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        return self.distribution.sample()
-
-    def rsample(
-            self,
-            agent: int | None = None,
-            previous_actions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        return self.distribution.rsample()
-
-    def mode(self, previous_actions: torch.Tensor | None = None) -> torch.Tensor:
-        return self.distribution.mean
+        # AOTAutograd materializes tangents for the retained Normal; a broadcast view has overlapping storage.
+        # Squashed likelihoods use the bound log scale until the next update. Unbounded draws only need its dtype.
+        self._distribution_log_scale = log_stds.clone() if self.squash_output else log_stds.view_as(log_stds)
+        scale = gaussian_scale(log_stds).expand_as(means).contiguous()
+        return self._bind_gaussian(means, scale)
 
     def get_hyper_parameters(self) -> dict[str, Any]:
-        std_tensor = torch.exp(self.log_stds.detach())
+        std_tensor = gaussian_scale(self.log_stds.detach())
         if std_tensor.numel() == 1:
             std_value: float | list[float] = float(std_tensor.item())
         else:

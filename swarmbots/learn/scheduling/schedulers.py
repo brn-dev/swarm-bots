@@ -1,9 +1,10 @@
 from dataclasses import dataclass, field
 from copy import deepcopy
 from enum import Enum
+import math
 from typing import Any, NotRequired, Optional, Protocol, TypedDict
 
-from swarmbots.learn.serialization_utils import serialize_fn
+from swarmbots.learn.serialization_utils import bound_accessor_receiver, serialize_fn
 
 
 class ScheduleResult(TypedDict):
@@ -78,12 +79,27 @@ class SchedulerManager:
         if [item["name"] for item in state_dict] != names:
             raise ValueError("Checkpoint schedulers must match the configured scheduler names and order")
 
+        for saved in state_dict:
+            if type(saved["enabled"]) is not bool or not isinstance(saved["state"], dict) or not math.isfinite(saved["value"]):
+                raise ValueError("Invalid checkpoint scheduler state")
+
     def load_state_dict(self, state_dict: list[dict[str, Any]]) -> None:
         self.validate_state_dict(state_dict)
-        for item, saved in zip(self.scheduled_hyper_parameters, state_dict, strict=True):
+        staged_states = [deepcopy(saved["state"]) for saved in state_dict]
+        # Custom callbacks can reject a value even when the serialized state is well-formed.
+        previous_values = [float(item.get_value()) for item in self.scheduled_hyper_parameters]
+        attempted = 0
+        try:
+            for item, saved in zip(self.scheduled_hyper_parameters, state_dict, strict=True):
+                attempted += 1
+                item.apply(saved["value"])
+        except Exception:
+            for index in reversed(range(attempted)):
+                self.scheduled_hyper_parameters[index].apply(previous_values[index])
+            raise
+        for item, saved, state in zip(self.scheduled_hyper_parameters, state_dict, staged_states, strict=True):
             item.enabled = saved["enabled"]
-            item.state = deepcopy(saved["state"])
-            item.apply(saved["value"])
+            item.state = state
 
     def step(
             self,
@@ -140,17 +156,34 @@ class SchedulerManager:
 
         return step_results
 
-    def serialize(self) -> list[dict[str, Any]]:
+    def serialize(self, *, for_checkpoint_match: bool = False) -> list[dict[str, Any]]:
         return [
             {
                 "name": scheduled.name,
                 "enabled": scheduled.enabled,
-                "scheduler": serialize_fn(scheduled.scheduler),
-                "get_value": serialize_fn(scheduled.get_value),
-                "apply": serialize_fn(scheduled.apply),
+                "scheduler": serialize_fn(scheduled.scheduler, for_checkpoint_match=for_checkpoint_match),
+                "get_value": serialize_fn(
+                    scheduled.get_value, for_checkpoint_match=for_checkpoint_match,
+                    include_receiver_config=not for_checkpoint_match,
+                ),
+                "apply": serialize_fn(
+                    scheduled.apply, for_checkpoint_match=for_checkpoint_match,
+                    include_receiver_config=not for_checkpoint_match,
+                ),
             }
             for scheduled in self.scheduled_hyper_parameters
         ]
+
+    def checkpoint_configuration(self) -> list[dict[str, Any]]:
+        configuration = self.serialize(for_checkpoint_match=True)
+        for scheduled, entry in zip(self.scheduled_hyper_parameters, configuration, strict=True):
+            del entry["enabled"]
+            getter_receiver = bound_accessor_receiver(scheduled.get_value)
+            applier_receiver = bound_accessor_receiver(scheduled.apply)
+            if getter_receiver is not None and applier_receiver is not None:
+                entry["shared_receiver"] = getter_receiver is applier_receiver
+        return configuration
+
 
 class ScheduleUnit(Enum):
     ITERATIONS = 1

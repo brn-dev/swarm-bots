@@ -7,11 +7,13 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeSegment
-from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSampler, RPPOWMSamplerConfig
+from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPOEpisodeAccumulator, PPOEpisodeSegment
+from swarmbots.learn.algos.r_mat.r_mat_policy_mixin import RMATPolicyMixin
+from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOSampler, RPPOWMSampler, RPPOWMSamplerConfig
+from swarmbots.learn.algos.world_modeling.next_obs_pred_ppo_wrapper import NOPWorldModelConfig, NextObsPredWrapper
 from swarmbots.learn.algos.world_modeling.wm_sampler_helper import (
     WMEpisodeWindows,
-    build_wm_episode_windows,
+    build_wm_episode_windows_batch,
     reset_wm_window_helper_compile_cache,
 )
 from swarmbots.learn.algos.world_modeling.wm_recurrent_batch import (
@@ -99,6 +101,121 @@ def _make_episode(
     )
 
 
+@pytest.mark.parametrize("config_subclass", [False, True])
+@pytest.mark.parametrize("factory_kind", ["stock", "custom", "delegated"])
+def test_recurrent_nop_preserves_custom_sampler_factory(config_subclass: bool, factory_kind: str) -> None:
+    class CustomConfig(RPPOWMSamplerConfig):
+        pass
+
+    class CustomSampler(RPPOWMSampler):
+        pass
+
+    class RecurrentPolicy(RMATPolicyMixin, torch.nn.Module):
+        def requires_previous_actions(self) -> bool:
+            return True
+
+    seen_configs: list[RPPOWMSamplerConfig] = []
+
+    class CustomPolicy(RecurrentPolicy):
+        def make_sampler(
+                self, episodes: list[PPOEpisodeSegment], config: RPPOWMSamplerConfig,
+        ) -> RPPOSampler:
+            seen_configs.append(config)
+            if factory_kind == "delegated":
+                return super().make_sampler(episodes, config)
+            return CustomSampler(episodes, config, requires_previous_actions=self.requires_previous_actions())
+
+    config_type = CustomConfig if config_subclass else RPPOWMSamplerConfig
+    config = config_type(batch_size=1, num_next_steps=2, sequence_length=2)
+    policy = RecurrentPolicy() if factory_kind == "stock" else CustomPolicy()
+    wrapper = NextObsPredWrapper(policy, world_model_config=NOPWorldModelConfig(
+        n_agents=2, local_latent_dim=4, action_dim=2,
+        d_model_transition_model=4, nhead_transition_model=1, dim_feedforward_transition_model=8,
+    ))
+    episodes = [_make_episode(num_steps=2)]
+    sampler = wrapper.make_sampler(episodes, config)
+
+    assert type(sampler) is (CustomSampler if factory_kind == "custom" else RPPOWMSampler)
+    assert seen_configs == ([] if factory_kind == "stock" else [config])
+    batch = next(sampler.sample())
+    torch.testing.assert_close(batch.wm_actions[:, 0, 0], episodes[0].actions[None, 0])
+    torch.testing.assert_close(batch.previous_actions[:, 0], episodes[0].initial_previous_actions[None])
+
+
+def test_recurrent_wm_preserves_window_precision_across_episode_lengths() -> None:
+    short = _make_episode(num_steps=1, rollout_env_idx=0)
+    long = _make_episode(num_steps=2, rollout_env_idx=1, step_offset=2)
+    episodes = [
+        replace(
+            short, actions=short.actions.half(), local_obs=short.local_obs.half(),
+            final_local_obs=short.final_local_obs.half(), global_obs=short.global_obs.bfloat16(),
+            final_global_obs=short.final_global_obs.bfloat16(),
+        ),
+        replace(long, final_local_obs=long.final_local_obs.double() + 0.123456789),
+    ]
+    config = RPPOWMSamplerConfig(batch_size=2, num_next_steps=2, sequence_length=2)
+    sampler = RPPOWMSampler(episodes, config)
+    assert sampler.wm_actions.dtype == torch.float32
+    assert sampler.next_local_obs.dtype == torch.float64
+    assert sampler.next_global_obs.dtype == torch.float32
+    batch = next(sampler.sample())
+    torch.testing.assert_close(batch.action_dtypes[torch.float16], torch.tensor([[True, False], [False, False]]))
+    torch.testing.assert_close(batch.action_dtypes[torch.float32], torch.tensor([[False, False], [True, True]]))
+    for lane, episode in enumerate(episodes):
+        n_steps = episode.actions.shape[0]
+        expected = build_wm_episode_windows_batch([episode], num_next_steps=config.num_next_steps)
+        for actual, values in (
+            (sampler.wm_actions, expected.multi_step_actions),
+            (sampler.next_local_obs, expected.next_local_obs),
+            (sampler.next_global_obs, expected.next_global_obs),
+        ):
+            torch.testing.assert_close(actual[lane:lane + 1, :n_steps], values.to(actual.dtype), rtol=0, atol=0)
+
+
+def test_recurrent_rollout_keeps_mixed_action_precision_and_boundary_conditioning() -> None:
+    accumulator = PPOEpisodeAccumulator(
+        n_envs=2, max_episode_length=3, n_agents=1, agent_obs_shape=(1,), global_obs_shape=(0,),
+        hidden_local_vars_shape=(0,), hidden_global_vars_shape=(0,), n_agent_actions=1, has_agent_mask=False,
+        storage_device="cpu", storage_dtype=torch.float32,
+    )
+    obs = dict(
+        local_obs=torch.zeros(2, 1, 1), global_obs=torch.zeros(2, 0),
+        hidden_local_vars=torch.zeros(2, 1, 0), hidden_global_vars=torch.zeros(2, 0),
+    )
+    values = torch.zeros(2)
+    precise = 0.5 + 2 ** -27
+    previous_actions = torch.full((2, 1, 1), precise, dtype=torch.float64)
+    episode_starts = torch.zeros(2, dtype=torch.bool)
+    episodes = []
+    for step, (dtype, value) in enumerate(((torch.float32, 1.), (torch.float64, precise), (torch.float16, 0.25))):
+        actions = torch.full((2, 1, 1), value, dtype=dtype)
+        dones = torch.tensor([step == 2, step != 1])
+        episodes.extend(accumulator.add(
+            **obs, agent_mask=None, actions=actions, rewards=values, log_probs=actions.squeeze(-1), values=values,
+            previous_actions=previous_actions, episode_start_mask=episode_starts,
+            temporal_state=torch.zeros(2, 1), rollout_step_idx=step, bootstrap_obs=obs,
+            bootstrap_values=values, dones=dones,
+        ))
+        previous_actions = actions.masked_fill(dones[:, None, None], 0.)
+        episode_starts = dones
+
+    for episode in episodes:
+        episode.compute_gae(gamma=0.99, gae_lambda=0.95)
+    sampler = RPPOSampler(
+        episodes, RPPOWMSamplerConfig(batch_size=2, num_next_steps=1, sequence_length=4),
+        requires_previous_actions=True,
+    )
+    batch = next(sampler.sample())
+    for dtype, step in ((torch.float32, 0), (torch.float64, 1), (torch.float16, 2)):
+        expected = torch.zeros(2, 4, dtype=torch.bool)
+        expected[:, step] = True
+        torch.testing.assert_close(batch.action_dtypes[dtype], expected)
+    torch.testing.assert_close(batch.actions[:, 1, 0, 0], torch.full((2,), precise, dtype=torch.float64), rtol=0, atol=0)
+    torch.testing.assert_close(batch.log_probs[:, 1, 0], torch.full((2,), precise, dtype=torch.float64), rtol=0, atol=0)
+    previous = torch.tensor([[precise, 1., precise, 0.], [precise, 0., precise, 0.]], dtype=torch.float64)
+    torch.testing.assert_close(batch.previous_actions[..., 0, 0], previous, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("with_agent_mask", [False, True])
 def test_recurrent_wm_rows_own_reusable_compiled_window_outputs(with_agent_mask: bool) -> None:
     episodes = [
@@ -113,10 +230,11 @@ def test_recurrent_wm_rows_own_reusable_compiled_window_outputs(with_agent_mask:
     storage: WMEpisodeWindows | None = None
 
     def reusable_windows(
-        episode: PPOEpisodeSegment, *, num_next_steps: int, compile_modules: bool, compile_mode: str,
+        group: list[PPOEpisodeSegment], *, num_next_steps: int, compile_modules: bool, compile_mode: str,
     ) -> WMEpisodeWindows:
         nonlocal storage
-        result = build_wm_episode_windows(episode, num_next_steps=num_next_steps)
+        assert len(group) == 2
+        result = build_wm_episode_windows_batch(group, num_next_steps=num_next_steps)
         if storage is None:
             storage = result
         else:
@@ -128,12 +246,19 @@ def test_recurrent_wm_rows_own_reusable_compiled_window_outputs(with_agent_mask:
 
     with (
         patch("swarmbots.learn.algos.r_mat.r_ppo_wm_sampler.ensure_wm_window_helper_compile_available"),
-        patch("swarmbots.learn.algos.r_mat.r_ppo_wm_sampler.build_wm_episode_windows", side_effect=reusable_windows),
+        patch("swarmbots.learn.algos.r_mat.r_ppo_wm_sampler.build_wm_episode_windows_batch", side_effect=reusable_windows) as build_windows,
     ):
         actual = RPPOWMSampler(
             episodes=episodes,
             config=replace(config, compile_wm_window_helper=True, wm_window_helper_compile_mode="reduce-overhead"),
         )
+        build_windows.assert_called_once()
+        # Reusing the captured output storage must not overwrite the packed row.
+        assert storage is not None
+        for field in fields(WMEpisodeWindows):
+            value = getattr(storage, field.name)
+            if value is not None:
+                value.zero_()
     for name in ("wm_actions", "next_local_obs", "next_global_obs", "wm_target_time_mask",
                  "wm_agent_mask", "wm_loss_agent_mask"):
         torch.testing.assert_close(getattr(actual, name), getattr(expected, name), rtol=0, atol=0)

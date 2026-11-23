@@ -15,6 +15,11 @@ CUDA = pytest.param("cuda", marks=[
 ])
 
 
+def test_zero_gsde_variance_floor_would_make_zero_features_degenerate() -> None:
+    with pytest.raises(ValueError, match="epsilon must be finite and positive"):
+        GSDEActionDist(2, 1, base_std=0.5, epsilon=0.0)
+
+
 @pytest.mark.cuda
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("mask_layout", ["agent", "environment", "empty", "strided"])
@@ -26,7 +31,7 @@ def test_cuda_masked_noise_resets_preserve_other_agents_without_host_reads(
     dist = GSDEActionDist(latent_dim=latent_dim, action_dim=action_dim, base_std=.5).cuda()
     dist.reset_noise((128, 5))
     if mask_layout == "strided":
-        dist.set_temporal_correlation_state(torch.randn(128, 5, latent_dim, action_dim * 2, device="cuda")[..., ::2])
+        dist.set_temporal_correlation_state(torch.randn(128, 5, latent_dim + 1, action_dim * 2, device="cuda")[..., ::2])
     mask = torch.arange(128 * 5, device="cuda").reshape(128, 5) % 6 == 0
     if mask_layout == "environment":
         mask = mask[:, 0]
@@ -74,7 +79,7 @@ def test_cuda_masked_noise_follows_the_current_stream() -> None:
     dist.reset_noise((128, 5))
     stream = torch.cuda.Stream()
     with torch.cuda.stream(stream), torch.no_grad():
-        dist.set_temporal_correlation_state(torch.zeros(128, 5, 7, 3, device="cuda"))
+        dist.set_temporal_correlation_state(torch.zeros_like(dist.get_temporal_correlation_state()))
         mask = torch.arange(128 * 5, device="cuda").reshape(128, 5) % 6 == 0
         dist.reset_noise_masked(mask)
         snapshot = dist.get_temporal_correlation_state().clone()
@@ -220,7 +225,7 @@ def test_cuda_fallback_temporary_storage_scales_with_selected_rows(selected_rows
         torch.cuda.synchronize()
         extra = torch.cuda.max_memory_allocated() - baseline
     # Allow allocator rounding and the mask reduction, but exclude full-batch temporaries.
-    assert extra <= selected_rows * 256 * 8 * noise.element_size() + 65536
+    assert extra <= selected_rows * noise[0, 0].numel() * noise.element_size() + 65536
     assert dist.get_temporal_correlation_state() is noise
 
 
@@ -237,7 +242,7 @@ def test_gsde_sampling_and_likelihood_gradients_stay_on_device(
     ).to(device)
     # Bounded features and noise keep float32 tanh inversion away from saturation.
     latent_pi = torch.linspace(-0.5, 0.5, 24, device=device).reshape(2, 3, 4).requires_grad_()
-    dist.set_temporal_correlation_state(torch.linspace(-1.0, 1.0, 48, device=device).reshape(2, 3, 4, 2))
+    dist.set_temporal_correlation_state(torch.linspace(-1.0, 1.0, 60, device=device).reshape(2, 3, 5, 2))
 
     with (
         patch.object(torch.Tensor, "__bool__", side_effect=AssertionError("sampling must stay on device")),
@@ -271,6 +276,15 @@ def test_gsde_std_metrics_follow_the_sampling_clamp(
 
 
 class GSDEActionDistTests(unittest.TestCase):
+    def test_sample_variance_matches_likelihood_for_zero_and_small_features(self) -> None:
+        torch.manual_seed(83)
+        dist = GSDEActionDist(2, 1, 0.5)
+        dist.reset_noise((12000, 2))
+        features = torch.tensor([[0., 0.], [0.001, -0.002]]).expand(12000, 2, 2)
+        dist.update_latent_features(features)
+        residuals = (dist.sample() - dist.distribution.mean) / dist.distribution.stddev
+        torch.testing.assert_close(residuals.std(dim=0), torch.ones(2, 1), atol=0.03, rtol=0)
+
     def test_squashed_gsde_labels_underlying_normal_entropy(self) -> None:
         unsquashed_dist = GSDEActionDist(latent_dim=2, action_dim=3, base_std=0.75)
         squashed_dist = GSDEActionDist(latent_dim=2, action_dim=3, base_std=0.75, squash_output=True)
@@ -316,7 +330,7 @@ class GSDEActionDistTests(unittest.TestCase):
         dist.reset_on_ep_start(torch.tensor([True, False], dtype=torch.bool))
 
         self.assertEqual(tuple(dist._exploration_batch_shape), (2, 3))
-        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 3, 2, 1))
+        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 3, 3, 1))
         self.assertFalse(torch.equal(dist._exploration_noise[0], original_noise[0]))
         self.assertTrue(torch.equal(dist._exploration_noise[1], original_noise[1]))
 
@@ -369,7 +383,7 @@ class GSDEActionDistTests(unittest.TestCase):
         dist.reset_on_ep_start(torch.tensor([True, False], dtype=torch.bool))
 
         self.assertEqual(tuple(dist._exploration_batch_shape), (2,))
-        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 2, 1))
+        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 3, 1))
 
     def test_agent_mask_reinitializes_noise_to_agent_batch_shape(self) -> None:
         dist = GSDEActionDist(
@@ -382,7 +396,7 @@ class GSDEActionDistTests(unittest.TestCase):
         dist.reset_noise_masked(torch.zeros((2, 3), dtype=torch.bool))
 
         self.assertEqual(tuple(dist._exploration_batch_shape), (2, 3))
-        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 3, 2, 1))
+        self.assertEqual(tuple(dist._exploration_noise.shape), (2, 3, 3, 1))
 
     def test_step_reset_with_batch_shape_replaces_all_noise(self) -> None:
         torch.manual_seed(1234)
@@ -485,7 +499,8 @@ class GSDEActionDistTests(unittest.TestCase):
             dist.log_stds.fill_(math.log(0.5))
         scaled_actions = dist.update_latent_features(latent_pi).sample()
 
-        self.assertTrue(torch.allclose(scaled_actions, original_actions * 0.5))
+        floor_noise = math.sqrt(dist.epsilon)
+        torch.testing.assert_close(scaled_actions, (original_actions - floor_noise) * 0.5 + floor_noise)
 
     def test_ppo_log_prob_evaluation_does_not_depend_on_current_noise(self) -> None:
         dist = GSDEActionDist(

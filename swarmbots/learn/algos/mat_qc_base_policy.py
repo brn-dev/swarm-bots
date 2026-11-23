@@ -396,11 +396,12 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
 
             previous_action_i = None if previous_actions is None else previous_actions[:, i:i + 1, :]
             if return_log_probs:
-                action, log_prob = self.action_dist.get_on_policy_actions_with_log_probs(
+                action, log_prob = self.action_dist._get_on_policy_actions_for_storage(
                     latent_pi,
                     deterministic,
                     agent=sample_agent_idx,
                     previous_actions=previous_action_i,
+                    storage_dtype=self.rollout_dtype,
                 )
                 log_probs_list.append(log_prob)
             else:
@@ -462,8 +463,9 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
             batch: PPOSamples,
             action_splitter: ActionMetricsSplitterInput = None,
     ) -> tuple[torch.Tensor, torch.Tensor, LossDict, LossMetrics, torch.Tensor]:
-        actions = self._policy_actions(batch.actions)
-        if self.action_dist.compile_friendly:
+        actions = self._policy_actions(batch.actions, batch.agent_mask)
+        action_dtypes = getattr(batch, "action_dtypes", None)
+        if action_dtypes is None and self.action_dist.compile_friendly:
             log_probs, values, critic_observations = self._evaluate_actions_core(
                 local_obs=batch.local_obs,
                 global_obs=batch.global_obs,
@@ -482,8 +484,7 @@ class MATQCBasePolicy(BasePPOPolicy[PPOSamples, PPOSamplerConfig]):
                 agent_mask=batch.agent_mask,
                 actions=actions,
             )
-            self.action_dist.update_latent_features(latent_pi)
-            log_probs = self.action_dist.log_prob(actions, previous_actions=batch.previous_actions)
+            log_probs = self._score_rollout_actions(latent_pi, actions, batch.previous_actions, action_dtypes)
         return log_probs, values, {}, {}, critic_observations
 
     @policy_inference_step

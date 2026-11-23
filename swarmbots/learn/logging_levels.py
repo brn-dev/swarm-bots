@@ -57,7 +57,7 @@ MINIMAL_CONSOLE_KEYS: tuple[FormattedConsoleMetric, ...] = (
 )
 CONTEXT_METRIC_KEYS = frozenset({"timestamp", "learn_start", "episodes"})
 RETURN_SUCCESS_METRIC_KEYS = (
-    frozenset(key for key, _format, _alias in RETURN_SUCCESS_CONSOLE_KEYS) | CONTEXT_METRIC_KEYS
+    frozenset(key for key, _format, _alias in RETURN_SUCCESS_CONSOLE_KEYS) | CONTEXT_METRIC_KEYS | {"ep_success_rate__n"}
 )
 MINIMAL_METRIC_KEYS = frozenset(key for key, _format, _alias in MINIMAL_CONSOLE_KEYS) | RETURN_SUCCESS_METRIC_KEYS
 

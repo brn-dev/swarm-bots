@@ -89,7 +89,9 @@ class RMATQCXPolicy(RMATPolicyMixin, MATQCXPolicy):
             if batch.previous_actions is None
             else batch.previous_actions.reshape(flat_batch_size, n_agents, self.agent_action_dim)
         )
-        flat_actions = batch.actions.reshape(flat_batch_size, n_agents, self.agent_action_dim)
+        flat_actions = self._mask_actions(
+            batch.actions.reshape(flat_batch_size, n_agents, self.agent_action_dim), flat_loss_agent_mask,
+        )
 
         query_tokens = self._encode_query_tokens(flat_augmented_observations)
         memory_tokens = self._encode_memory_tokens(flat_augmented_observations)
@@ -108,8 +110,9 @@ class RMATQCXPolicy(RMATPolicyMixin, MATQCXPolicy):
         )
         latent_pi = self.actor_head(self.actor_head_input_norm(decoder_output)).contiguous()
 
-        self.action_dist.update_latent_features(latent_pi)
-        flat_log_probs = self.action_dist.log_prob(flat_actions, previous_actions=flat_previous_actions)
+        flat_log_probs = self._score_rollout_actions(
+            latent_pi, flat_actions, flat_previous_actions, getattr(batch, "action_dtypes", None),
+        )
         flat_log_probs = flat_log_probs.masked_fill(~flat_loss_agent_mask, 0.0)
 
         flat_critic_observations = critic_observations.reshape(

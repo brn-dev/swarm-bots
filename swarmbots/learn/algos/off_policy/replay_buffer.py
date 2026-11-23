@@ -397,18 +397,22 @@ class OffPolicyReplayBuffer:
             truncations: torch.Tensor,
             next_obs: dict[str, torch.Tensor],
             terminal_obs: dict[str, torch.Tensor] | None = None,
+            completed_indices: torch.Tensor | None = None,
             previous_actions: MaybeTensor = None,
             episode_start_mask: torch.Tensor | None = None,
             temporal_state: Any = None,
             next_temporal_state: Any = None,
             copy_current_obs: bool | None = None,
+            _completed_indices_validated: bool = False,
     ) -> None:
         """
         Append one full vector-env step from a continuous stream.
 
         After the stream is initialized, the current obs for this transition is the previous appended next_obs/reset
         obs. In that normal streaming case, this method ignores obs for storage and does not copy it into replay again.
-        terminal_obs may either be full vector-env observations or rows packed in done-env order.
+        Full-vector terminal_obs is always in environment order, including when every lane is done.
+        For a strict subset, packed terminal rows follow completed_indices, or ascending lane order
+        when the caller omits those indices. Supplied indices must contain each completed lane once.
         """
         slot = self._write_slot
         for observations in (obs, next_obs):
@@ -418,16 +422,24 @@ class OffPolicyReplayBuffer:
                     "A swarm must contain at least one active agent",
                 )
         dones = torch.logical_or(terminations, truncations)
-        done_env_indices = torch.nonzero(dones, as_tuple=False).flatten()
-        if len(done_env_indices) > 0 and terminal_obs is not None and terminal_obs.get("agent_mask") is not None:
-            terminal_agent_mask = terminal_obs["agent_mask"]
-            source_indices = self._terminal_obs_source_indices(
+        if completed_indices is not None and _completed_indices_validated:
+            done_env_indices = completed_indices
+        else:
+            done_env_indices = torch.nonzero(dones, as_tuple=True)[0]
+            if completed_indices is not None:
+                if completed_indices.ndim != 1 or completed_indices.dtype not in (torch.int32, torch.int64):
+                    raise ValueError("completed_indices must be a one-dimensional integer tensor")
+                supplied = completed_indices.to(done_env_indices)
+                if not torch.equal(supplied.sort().values, done_env_indices):
+                    raise ValueError("completed_indices must contain each completed lane exactly once")
+                done_env_indices = supplied
+        terminal_rows = None
+        if done_env_indices.numel():
+            if terminal_obs is None:
+                raise ValueError("terminal_obs is required for done transitions under SAME_STEP autoreset.")
+            terminal_rows = self._prepare_terminal_rows(
                 terminal_obs=terminal_obs,
                 done_env_indices=done_env_indices,
-            ).to(device=terminal_agent_mask.device)
-            torch._assert_async(
-                terminal_agent_mask[source_indices].any(dim=-1).all(),
-                "A swarm must contain at least one active agent",
             )
         should_copy_current_obs = not self._has_current_obs if copy_current_obs is None else copy_current_obs
         storage_episode_start_mask: torch.Tensor | None = None
@@ -438,8 +450,6 @@ class OffPolicyReplayBuffer:
             else:
                 storage_episode_start_mask = episode_start_mask.to(device=self.storage_device, dtype=torch.bool)
 
-        if len(done_env_indices) > 0 and terminal_obs is None:
-            raise ValueError("terminal_obs is required for done transitions under SAME_STEP autoreset.")
         if not should_copy_current_obs and not self._has_current_obs:
             raise ValueError("copy_current_obs=False requires the current observation slot to be initialized.")
         if copy_current_obs is True and self._has_current_obs:
@@ -460,13 +470,11 @@ class OffPolicyReplayBuffer:
         self._copy_obs_rows_at_slots_(obs=next_obs, obs_slots=next_obs_slots)
         self._obs_write_slots = self._advance_obs_slots(self._obs_write_slots)
 
-        if len(done_env_indices) > 0:
-            assert terminal_obs is not None
-            storage_done_env_indices = done_env_indices.to(device=self.storage_device)
+        if terminal_rows is not None:
             self._store_terminal_obs_at_slot_(
                 slot=slot,
-                terminal_obs=terminal_obs,
-                done_env_indices=storage_done_env_indices,
+                terminal_rows=terminal_rows,
+                done_env_indices=done_env_indices,
             )
 
         self._current_obs_slots = next_obs_slots
@@ -746,58 +754,15 @@ class OffPolicyReplayBuffer:
             self,
             *,
             slot: int,
-            terminal_obs: dict[str, torch.Tensor],
+            terminal_rows: dict[str, torch.Tensor],
             done_env_indices: torch.Tensor,
     ) -> None:
-        source_env_indices = self._terminal_obs_source_indices(
-            terminal_obs=terminal_obs,
-            done_env_indices=done_env_indices,
-        )
-        terminal_rows = {
-            "local_obs": self._select_obs_rows_for_storage(
-                terminal_obs["local_obs"],
-                source_env_indices,
-                dtype=self.storage_dtype,
-            ),
-            "global_obs": self._select_obs_rows_for_storage(
-                terminal_obs["global_obs"],
-                source_env_indices,
-                dtype=self.storage_dtype,
-            ),
-            "hidden_local_vars": self._select_obs_rows_for_storage(
-                terminal_obs["hidden_local_vars"],
-                source_env_indices,
-                dtype=self.storage_dtype,
-            ),
-            "hidden_global_vars": self._select_obs_rows_for_storage(
-                terminal_obs["hidden_global_vars"],
-                source_env_indices,
-                dtype=self.storage_dtype,
-            ),
-        }
-        if self.scenario_ids is not None:
-            scenario_ids = terminal_obs.get("scenario_id", None)
-            if scenario_ids is None:
-                raise ValueError(
-                    "terminal_obs must include scenario_id because this replay buffer stores scenario IDs."
-                )
-            terminal_rows["scenario_id"] = self._select_obs_rows_for_storage(
-                scenario_ids,
-                source_env_indices,
-                dtype=torch.long,
-            )
-        if self.agent_mask is not None:
-            agent_mask = terminal_obs.get("agent_mask", None)
-            if agent_mask is None:
-                raise ValueError("terminal_obs must include agent_mask because this replay buffer stores agent_mask.")
-            terminal_rows["agent_mask"] = self._select_obs_rows_for_storage(
-                agent_mask,
-                source_env_indices,
-                dtype=torch.bool,
-            )
-
-        terminal_slots = self._allocate_terminal_obs_slots(int(done_env_indices.numel()))
-        self._terminal_obs_indices[done_env_indices, slot] = terminal_slots
+        done_count = done_env_indices.numel()
+        terminal_slots = self._allocate_terminal_obs_slots(done_count)
+        if done_count == self.n_envs:
+            self._terminal_obs_indices[:, slot] = terminal_slots
+        else:
+            self._terminal_obs_indices[done_env_indices.to(self.storage_device), slot] = terminal_slots
         self._transition_slot_has_terminal_obs[slot] = True
         self._terminal_local_obs[terminal_slots] = terminal_rows["local_obs"]
         self._terminal_global_obs[terminal_slots] = terminal_rows["global_obs"]
@@ -841,32 +806,58 @@ class OffPolicyReplayBuffer:
         if self._terminal_agent_mask is not None:
             self._terminal_agent_mask = grow(self._terminal_agent_mask)
 
-    def _terminal_obs_source_indices(
+    def _prepare_terminal_rows(
             self,
             *,
             terminal_obs: dict[str, torch.Tensor],
             done_env_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        terminal_batch_size = int(terminal_obs["local_obs"].shape[0])
+    ) -> dict[str, torch.Tensor]:
+        local_obs = terminal_obs.get("local_obs")
+        if local_obs is None or local_obs.ndim == 0:
+            raise ValueError("terminal_obs must include local_obs with a leading dimension for environment rows.")
+        terminal_batch_size = local_obs.shape[0]
         done_count = int(done_env_indices.numel())
-        if terminal_batch_size == self.n_envs:
-            return done_env_indices
-        if terminal_batch_size == done_count:
-            return torch.arange(done_count, dtype=torch.long, device=self.storage_device)
-        raise ValueError(
-            "terminal_obs must be either full vector-env observations or rows packed in done-env order; "
-            f"got leading dimension {terminal_batch_size} for {done_count} done envs across {self.n_envs} envs."
-        )
+        if terminal_batch_size not in (done_count, self.n_envs):
+            raise ValueError(
+                "terminal_obs must be either full vector-env observations or rows packed in done-env order; "
+                f"got leading dimension {terminal_batch_size} for {done_count} done envs across {self.n_envs} envs."
+            )
+        source_indices = None if terminal_batch_size == done_count else done_env_indices
+        terminal_rows = {}
+        for key, storage in (
+            ("local_obs", self._terminal_local_obs),
+            ("global_obs", self._terminal_global_obs),
+            ("hidden_local_vars", self._terminal_hidden_local_vars),
+            ("hidden_global_vars", self._terminal_hidden_global_vars),
+            ("scenario_id", self._terminal_scenario_ids),
+            ("agent_mask", self._terminal_agent_mask),
+        ):
+            if storage is None:
+                continue
+            value = terminal_obs.get(key)
+            if value is None:
+                raise ValueError(f"terminal_obs must include {key} because this replay buffer stores it.")
+            expected_shape = (terminal_batch_size, *storage.shape[1:])
+            if value.shape != expected_shape:
+                raise ValueError(f"Expected terminal_obs[{key!r}] shape {expected_shape}, got {tuple(value.shape)}.")
+            terminal_rows[key] = self._select_obs_rows_for_storage(value, source_indices, dtype=storage.dtype)
+        agent_mask = terminal_rows.get("agent_mask")
+        if agent_mask is None and terminal_obs.get("agent_mask") is not None:
+            agent_mask = self._select_obs_rows_for_storage(terminal_obs["agent_mask"], source_indices, dtype=torch.bool)
+        if agent_mask is not None:
+            torch._assert_async(agent_mask.any(dim=-1).all(), "A swarm must contain at least one active agent")
+        return terminal_rows
 
     def _select_obs_rows_for_storage(
             self,
             tensor: torch.Tensor,
-            source_env_indices: torch.Tensor,
+            source_env_indices: torch.Tensor | None,
             *,
             dtype: torch.dtype,
     ) -> torch.Tensor:
-        source_env_indices = source_env_indices.to(device=tensor.device, dtype=torch.long)
-        return tensor[source_env_indices].to(device=self.storage_device, dtype=dtype)
+        if source_env_indices is not None:
+            tensor = tensor.index_select(0, source_env_indices.to(device=tensor.device, dtype=torch.long))
+        return tensor.to(device=self.storage_device, dtype=dtype)
 
     def _fetch_indices(self, indices: torch.Tensor) -> OffPolicyReplayBatch:
         (

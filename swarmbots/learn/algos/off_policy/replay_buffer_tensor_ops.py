@@ -171,6 +171,10 @@ def _episode_segment_indices(
     ).reshape(-1)
 
 
+def truncation_bootstrap_mask(terminations: torch.Tensor, truncations: torch.Tensor) -> torch.Tensor:
+    return truncations & ~terminations
+
+
 def _episode_segment_candidate_mask(
         logical_positions: torch.Tensor,
         logical_transition_slot_offset: torch.Tensor,
@@ -211,7 +215,9 @@ def _episode_segment_candidate_mask(
         )
         valid &= ends_before_final_transition == 0
     if max_train_truncations is not None:
-        logical_truncations = truncations[:, transition_slots_by_logical]
+        logical_truncations = truncation_bootstrap_mask(
+            terminations[:, transition_slots_by_logical], truncations[:, transition_slots_by_logical],
+        )
         truncation_prefix_sum = torch.cat((
             torch.zeros((truncations.shape[0], 1), dtype=torch.long, device=truncations.device),
             logical_truncations.to(dtype=torch.long).cumsum(dim=1),

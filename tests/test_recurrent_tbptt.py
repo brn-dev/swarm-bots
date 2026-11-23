@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 import torch
 from gymnasium.vector import AutoresetMode, SyncVectorEnv
@@ -574,6 +576,7 @@ def test_rmat_rollout_and_training_use_env_major_tbptt_rows(
             ),
         )
         batch = next(sampler.sample())
+        assert not hasattr(batch, "wm_actions")
         log_probs, values, _, _ = policy.evaluate_actions(batch)
 
         assert batch.local_obs.shape[:2] == (2, 4)
@@ -588,5 +591,55 @@ def test_rmat_rollout_and_training_use_env_major_tbptt_rows(
         )
         assert log_probs.shape == (2, 4, 2)
         assert values.shape == (2, 4)
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize(("policy_cls", "policy_config_cls"), [
+    (RMATQCXPolicy, RMATQCXPolicyConfig),
+    (RMATIndPolicy, RMATIndPolicyConfig),
+])
+def test_rmat_replays_mixed_precision_rollout_with_unchanged_likelihood(
+    policy_cls: type[RMATQCXPolicy | RMATIndPolicy],
+    policy_config_cls: type[RMATQCXPolicyConfig | RMATIndPolicyConfig],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vector_env = SyncVectorEnv(
+        [lambda limit=limit: _TestingSwarmBotsEnv(2, 3, 2, 1, 1, max_steps=limit) for limit in (2, 5)],
+        autoreset_mode=AutoresetMode.SAME_STEP,
+    )
+    env = SwarmBotsLearnEnvWrapper(vector_env)
+    try:
+        policy = policy_cls(env, policy_config_cls(
+            encoder_config=RMATEncoderConfig(d_model=8, nhead=2, num_layers=1, dim_feedforward=16),
+            continuous_config=SquashedDiagGaussianConfig(std=0.1, std_learnable=True),
+        ))
+        with torch.no_grad():
+            actuator_head = policy.action_dist.distributions[0].action_net
+            actuator_head.weight.zero_()
+            actuator_head.bias.fill_(9.15)  # This saturates in FP32 but not FP64.
+
+        emitted_dtypes = iter((torch.float32, torch.float64, torch.float32))
+        original_forward = policy.forward_with_temporal_state
+
+        def draw(**kwargs: Any) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, Any]:
+            policy.rollout_dtype = next(emitted_dtypes)
+            return original_forward(**kwargs, deterministic=True)
+
+        monkeypatch.setattr(policy, "forward_with_temporal_state", draw)
+        buffer = PPORolloutBuffer(
+            max_episode_length=3, observation_space=env.observation_space, action_space=env.action_space,
+            gamma=0.99, gae_lambda=0.95, rollout_device="cpu", train_device="cpu",
+        )
+        episodes, *_ = collect_steps(env, policy, buffer, n_steps=6)
+        sampler = policy.make_sampler(episodes, RPPOWMSamplerConfig(batch_size=2, sequence_length=4, num_next_steps=1))
+        batch = next(sampler.sample())
+        assert batch.time_mask.any() and not batch.time_mask.all()
+        assert (batch.actions[batch.time_mask][..., 0] == 1).any()
+        assert (batch.actions[batch.time_mask][..., 0] < 1).any()
+        scores, *_ = policy.evaluate_actions(batch)
+        torch.testing.assert_close(scores, batch.log_probs, rtol=1e-6, atol=1e-6, check_dtype=False)
+        scores.sum().backward()
+        assert actuator_head.bias.grad is not None and torch.isfinite(actuator_head.bias.grad).all()
     finally:
         env.close()

@@ -14,12 +14,14 @@ from swarmbots.learn.gsde_reset import (
 from swarmbots.learn.performance_timer import PerformanceTimer
 from swarmbots.learn.rollout_utils import (
     append_episode_infos,
+    collect_rollout_step_metadata,
     extract_terminal_obs,
     initial_previous_actions,
     sample_random_actions,
     snapshot_obs,
 )
 from swarmbots.learn.summary_statistics import compute_summary_statistics
+from swarmbots.learn.task_episode_metrics import episode_success_metrics
 from swarmbots.learn.temporal_state import move_temporal_state
 from swarmbots.learn.torch_device import as_device
 
@@ -123,7 +125,7 @@ def _build_rollout_metrics(
         episode_infos: list[dict[str, Any]],
         transitions_collected: int,
 ) -> dict[str, Any]:
-    metrics = {
+    return {
         "env_reset_time": env_reset_time,
         "to_rollout_device_time": to_rollout_device_time,
         "reset_noise_time": compute_summary_statistics(timers.reset_noise_timings),
@@ -135,11 +137,8 @@ def _build_rollout_metrics(
         "buffer_add_time": compute_summary_statistics(timers.buffer_add_timings),
         "total_buffer_add_time": sum(timers.buffer_add_timings),
         "transitions_collected": transitions_collected,
+        **episode_success_metrics(episode_infos),
     }
-    success_values = [float(ep_info["success"]) for ep_info in episode_infos if "success" in ep_info]
-    if success_values:
-        metrics["ep_success_rate"] = 100.0 * (sum(success_values) / len(success_values))
-    return metrics
 
 
 @torch.no_grad()
@@ -258,6 +257,8 @@ def collect_off_policy_steps(
     episode_infos: list[dict[str, Any]] = []
     timers = _init_rollout_timers()
 
+    add_transition = replay_buffer.add
+    uses_builtin_add = getattr(add_transition, "__func__", None) is OffPolicyReplayBuffer.add
     transitions_collected = 0
     rollout_action_metrics_batches: list[torch.Tensor] = []
     while transitions_collected < n_steps:
@@ -337,12 +338,11 @@ def collect_off_policy_steps(
         timers.env_step_timings.append(timers.env_step_timer.get_duration())
 
         dones = torch.logical_or(terminations, truncations)
-        append_episode_infos(episode_infos=episode_infos, infos=infos, dones=dones)
-        terminal_obs = extract_terminal_obs(
-            env=env,
-            next_obs=next_obs,
-            infos=infos,
-            dones=dones,
+        step_metadata = collect_rollout_step_metadata(
+            infos=infos, dones=dones, terminations=terminations, truncations=truncations,
+        )
+        append_episode_infos(
+            episode_infos=episode_infos, infos=infos, dones=dones, step_metadata=step_metadata,
         )
 
         rollout_next_previous_actions: torch.Tensor | None = None
@@ -354,7 +354,22 @@ def collect_off_policy_steps(
 
         if _store_transitions:
             with timers.buffer_add_timer:
-                replay_buffer.add(
+                completed_lanes = step_metadata.completed_indices
+                gather_tensor_rows = (
+                    0 < len(completed_lanes) < dones.numel() and isinstance(infos.get("final_obs"), dict)
+                )
+                completed_indices = torch.tensor(
+                    completed_lanes, dtype=torch.long, device=dones.device if gather_tensor_rows else "cpu",
+                )
+                terminal_obs = extract_terminal_obs(
+                    env=env, next_obs=next_obs, infos=infos, dones=dones, completed_indices=completed_indices,
+                )
+                # Only the built-in buffer understands the collector's validated lane hint.
+                completion_hint = (
+                    {"completed_indices": completed_indices, "_completed_indices_validated": True}
+                    if uses_builtin_add else {}
+                )
+                add_transition(
                     obs=obs_for_step,
                     actions=actions.detach(),
                     rewards=rewards,
@@ -367,6 +382,7 @@ def collect_off_policy_steps(
                     temporal_state=temporal_state,
                     next_temporal_state=next_temporal_state,
                     copy_current_obs=current_obs_needs_copy,
+                    **completion_hint,
                 )
             timers.buffer_add_timings.append(timers.buffer_add_timer.get_duration())
 

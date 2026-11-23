@@ -26,11 +26,11 @@ Actors may be centralized or decentralized; their access to other agents' public
 
 ## Task suite
 
-There are **17 registered tasks**, with eight forming the core evaluation suite. Names below expand to `SwarmBots-<name>-v0`.
+There are **18 registered tasks**, with eight forming the core evaluation suite. Names below expand to `SwarmBots-<name>-v0`.
 
 | Task family | Names | Challenge |
 | --- | --- | --- |
-| Wall traversal | `WallEasy`, `WallMedium`, `WallHard` | Whole-swarm traversal over a fixed wall |
+| Wall traversal | `WallEasy`, `WallMedium`, `WallHard`, `WallMixed` | Whole-swarm traversal over a fixed wall or a wall with a sampled height |
 | Partially observed walls | `POWallEasy`, `POWallMedium`, `POWallHard` | Traversal over a randomized hidden wall |
 | Exploration | `FindOpening` | Hidden-passage discovery and traversal |
 | Bridge traversal | `Bridge` | Crossing a narrow movable bridge |

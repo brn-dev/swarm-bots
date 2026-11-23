@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from contextlib import ExitStack
 import math
 from typing import Any
 from unittest.mock import patch
@@ -402,6 +403,46 @@ def test_completed_milestones_survive_simulation_failure(sequence_env: MJWSwarmB
     assert info["goal_1_reached"][0]
     assert not info["goal_2_reached"][0]
     assert runtime.completed_goals[0] == 0
+
+
+@pytest.mark.integration
+def test_sequence_progress_only_counts_sequence_episodes_in_mixed_training() -> None:
+    from swarmbots.learn.env_wrappers.multi_scenario_vector_env import MultiScenarioVectorEnv
+    from swarmbots.learn.presets.policy_factory import wrap_vec_env
+    from swarmbots.learn.rollout_utils import append_episode_infos
+    from swarmbots.learn.training import _observation_indices
+
+    wall = "SwarmBots-WallMedium-v0"
+    env_options = dict(num_envs=1, device="cpu", episode_length=1, compile_tensor_operations=False)
+    scenario_options = dict(
+        reset_settle_time=0., compile_reward_kernel=False,
+        unit_start_locations=MJWPreConnectedUnitLocationsConfig(2, pool_seeds=(42000,)),
+    )
+    with ExitStack() as cleanup:
+        wall_env = make_env(wall, scenario_kwargs=scenario_options, **env_options)
+        cleanup.callback(wall_env.close)
+        sequence_env = make_env(TASK, scenario_kwargs={**scenario_options, "goal_hold_time": 0.}, **env_options)
+        cleanup.callback(sequence_env.close)
+        env = wrap_vec_env(
+            vector_env=MultiScenarioVectorEnv({wall: wall_env, TASK: sequence_env}),
+            obs_indices=_observation_indices(sequence_env), gamma=.995,
+            use_popart=True, rollout_device=torch.device("cpu"),
+        )
+        cleanup.callback(env.close)
+        env.reset(seed=7)
+        runtime = sequence_env._scenario_runtime
+        _place_payload(runtime, runtime.goal_sequence[:, 0])
+        _reward_step(sequence_env)
+        actions = torch.zeros((env.num_envs, env.n_agents, env.action_space.total_agent_action_dim))
+        _, _, terminated, truncated, info = env.step(actions)
+        episodes = []
+        append_episode_infos(episode_infos=episodes, infos=info, dones=terminated | truncated)
+
+    assert [episode["scenario_name"] for episode in episodes] == [wall, TASK]
+    assert not any(key.startswith("task/") for key in episodes[0])
+    assert {key: value for key, value in episodes[1].items() if key.startswith("task/")} == {
+        "task/goals_completed": 1., "task/goal_1_reached": 1., "task/goal_2_reached": 0., "task/goal_3_reached": 0.,
+    }
 
 
 @pytest.mark.integration

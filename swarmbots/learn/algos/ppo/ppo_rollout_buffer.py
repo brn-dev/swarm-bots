@@ -1,9 +1,11 @@
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Optional, Iterator
 
 import torch
 from gymnasium import spaces
 
+from swarmbots.learn.algos.ppo.ppo_scalar_frames import ScalarFrames
 from swarmbots.learn.hybrid_action_space import VectorHybridActionSpace
 from swarmbots.learn.temporal_state import (
     clone_detach_temporal_state,
@@ -14,6 +16,39 @@ from swarmbots.learn.temporal_state import (
 from swarmbots.learn.torch_device import as_device
 
 MaybeTensor = Optional[torch.Tensor]
+
+
+def empty_with_dtype(storage: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    """Reuse empty rollout storage when the next policy emits the same precision."""
+    return storage if storage.dtype == dtype else torch.empty_like(storage, dtype=dtype)
+
+
+def promote_storage_dtype(storage: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    return storage.to(dtype=torch.promote_types(storage.dtype, dtype))
+
+
+def combine_action_dtype_masks(
+        sources: Iterable[tuple[torch.Tensor, dict[torch.dtype, torch.Tensor] | None]],
+        storage_dtype: torch.dtype,
+        *,
+        combine: Callable[[list[torch.Tensor]], torch.Tensor],
+) -> dict[torch.dtype, torch.Tensor] | None:
+    sources = tuple(sources)
+    if all(masks is None and actions.dtype == storage_dtype for actions, masks in sources):
+        return None
+    dtypes = dict.fromkeys(
+        dtype for actions, masks in sources for dtype in ((actions.dtype,) if masks is None else masks)
+    )
+    result = {}
+    for dtype in dtypes:
+        parts = []
+        for actions, masks in sources:
+            mask = None if masks is None else masks.get(dtype)
+            if mask is None:
+                mask = actions.new_full(actions.shape[:-2], masks is None and actions.dtype == dtype, dtype=torch.bool)
+            parts.append(mask)
+        result[dtype] = combine(parts)
+    return result
 
 
 def _compute_episode_advantages(
@@ -68,6 +103,8 @@ class PPOEpisodeSegment:
     initial_temporal_state: Any = None
     rollout_env_idx: int | None = None
     rollout_start_step: int = 0
+    scalar_frames: dict[str, ScalarFrames] | None = None
+    action_dtypes: dict[torch.dtype, torch.Tensor] | None = None
 
     def compute_gae(self, gamma: float, gae_lambda: float) -> None:
         assert self.rewards is not None
@@ -97,6 +134,7 @@ class PPOEpisodeAccumulator:
             storage_dtype: torch.dtype
     ):
         self.max_episode_length = max_episode_length
+        self._first_step = True
         self.local_obs = torch.zeros(
             (n_envs, max_episode_length, n_agents, *agent_obs_shape),
             dtype=storage_dtype, device=storage_device
@@ -121,6 +159,8 @@ class PPOEpisodeAccumulator:
             (n_envs, max_episode_length, n_agents, n_agent_actions),
             dtype=storage_dtype, device=storage_device
         )
+        self._action_dtype_codes: torch.Tensor | None = None
+        self._action_dtype_ids: dict[torch.dtype, int] = {}
         self.log_probs = torch.zeros(
             (n_envs, max_episode_length, n_agents),
             dtype=storage_dtype, device=storage_device
@@ -169,14 +209,34 @@ class PPOEpisodeAccumulator:
             bootstrap_values: torch.Tensor,
             dones: torch.Tensor,
     ) -> Iterator[PPOEpisodeSegment]:
+        if self._first_step:
+            self.actions = empty_with_dtype(self.actions, actions.dtype)
+            previous_dtype = actions.dtype if previous_actions is None else previous_actions.dtype
+            self.initial_previous_actions = empty_with_dtype(self.initial_previous_actions, previous_dtype)
+            self.log_probs = empty_with_dtype(self.log_probs, log_probs.dtype)
+            self._first_step = False
+        elif self.actions.dtype != actions.dtype:
+            if self._action_dtype_codes is None:
+                self._action_dtype_codes = self.actions.new_zeros(self.actions.shape[:2], dtype=torch.uint8)
+                self._action_dtype_ids[self.actions.dtype] = 0
+            self.actions = promote_storage_dtype(self.actions, actions.dtype)
+        if self.log_probs.dtype != log_probs.dtype:
+            self.log_probs = promote_storage_dtype(self.log_probs, log_probs.dtype)
+            log_probs = log_probs.to(self.log_probs.dtype)
         env_indices = torch.arange(self.step.shape[0], device=self.step.device)
         step_indices = self.step
         new_episode_env_indices = torch.where(step_indices == 0)[0]
         if len(new_episode_env_indices) > 0:
             if previous_actions is None:
-                self.initial_previous_actions[new_episode_env_indices].zero_()
+                self.initial_previous_actions[new_episode_env_indices] = 0
             else:
-                self.initial_previous_actions[new_episode_env_indices] = previous_actions[new_episode_env_indices]
+                if self.initial_previous_actions.dtype != previous_actions.dtype:
+                    self.initial_previous_actions = promote_storage_dtype(
+                        self.initial_previous_actions, previous_actions.dtype,
+                    )
+                self.initial_previous_actions[new_episode_env_indices] = previous_actions[new_episode_env_indices].to(
+                    self.initial_previous_actions.dtype,
+                )
             self.is_true_episode_start[new_episode_env_indices] = episode_start_mask[new_episode_env_indices]
             self.rollout_start_steps[new_episode_env_indices] = rollout_step_idx
             if self.initial_temporal_state is None:
@@ -188,16 +248,22 @@ class PPOEpisodeAccumulator:
                     new_episode_env_indices,
                 )
 
-        self.local_obs[env_indices, step_indices] = local_obs
-        self.global_obs[env_indices, step_indices] = global_obs
-        self.hidden_local_vars[env_indices, step_indices] = hidden_local_vars
-        self.hidden_global_vars[env_indices, step_indices] = hidden_global_vars
+        # Tensor-index assignment requires matching dtypes, unlike a rectangular slice copy.
+        storage_dtype = self.local_obs.dtype
+        self.local_obs[env_indices, step_indices] = local_obs.to(storage_dtype)
+        self.global_obs[env_indices, step_indices] = global_obs.to(storage_dtype)
+        self.hidden_local_vars[env_indices, step_indices] = hidden_local_vars.to(storage_dtype)
+        self.hidden_global_vars[env_indices, step_indices] = hidden_global_vars.to(storage_dtype)
         if agent_mask is not None:
             self.agent_mask[env_indices, step_indices] = agent_mask
+        if self._action_dtype_codes is not None:
+            code = self._action_dtype_ids.setdefault(actions.dtype, len(self._action_dtype_ids))
+            self._action_dtype_codes[env_indices, step_indices] = code
+            actions = actions.to(self.actions.dtype)
         self.actions[env_indices, step_indices] = actions
-        self.rewards[env_indices, step_indices] = rewards
+        self.rewards[env_indices, step_indices] = rewards.to(storage_dtype)
         self.log_probs[env_indices, step_indices] = log_probs
-        self.values[env_indices, step_indices] = values
+        self.values[env_indices, step_indices] = values.to(storage_dtype)
 
         self.step += 1
 
@@ -261,6 +327,9 @@ class PPOEpisodeAccumulator:
             ),
             rollout_env_idx=env,
             rollout_start_step=metadata.rollout_start_step,
+            action_dtypes=None if self._action_dtype_codes is None else {
+                dtype: self._action_dtype_codes[env, :step] == code for dtype, code in self._action_dtype_ids.items()
+            },
         )
 
     def _episode_metadata(
@@ -276,6 +345,9 @@ class PPOEpisodeAccumulator:
         ]
 
     def reset(self) -> None:
+        self._first_step = True
+        self._action_dtype_codes = None
+        self._action_dtype_ids.clear()
         self.initial_previous_actions.zero_()
         self.is_true_episode_start.zero_()
         self.step[:] = 0
@@ -328,20 +400,26 @@ class PPORolloutBuffer:
         self.train_device = as_device(train_device)
         self.train_dtype = train_dtype
 
-        self.episodes = list()
-        self.accumulator = PPOEpisodeAccumulator(
-            n_envs=self.n_envs,
-            max_episode_length=self.max_episode_length,
-            n_agents=self.n_agents,
-            agent_obs_shape=self.agent_obs_shape,
-            global_obs_shape=self.global_obs_shape,
-            hidden_local_vars_shape=self.hidden_local_vars_shape,
-            hidden_global_vars_shape=self.hidden_global_vars_shape,
-            n_agent_actions=self.n_agent_actions,
-            has_agent_mask=self.has_agent_mask,
-            storage_device=self.rollout_device,
-            storage_dtype=self.rollout_dtype,
-        )
+        self.episodes: list[PPOEpisodeSegment] = []
+        self._accumulator: PPOEpisodeAccumulator | None = None
+
+    @property
+    def accumulator(self) -> PPOEpisodeAccumulator:
+        if self._accumulator is None:
+            self._accumulator = PPOEpisodeAccumulator(
+                n_envs=self.n_envs,
+                max_episode_length=self.max_episode_length,
+                n_agents=self.n_agents,
+                agent_obs_shape=self.agent_obs_shape,
+                global_obs_shape=self.global_obs_shape,
+                hidden_local_vars_shape=self.hidden_local_vars_shape,
+                hidden_global_vars_shape=self.hidden_global_vars_shape,
+                n_agent_actions=self.n_agent_actions,
+                has_agent_mask=self.has_agent_mask,
+                storage_device=self.rollout_device,
+                storage_dtype=self.rollout_dtype,
+            )
+        return self._accumulator
 
     def add(
             self,
@@ -385,7 +463,8 @@ class PPORolloutBuffer:
             self.episodes.append(new_ep)
 
     def reset(self) -> None:
-        self.accumulator.reset()
+        if self._accumulator is not None:
+            self._accumulator.reset()
         self.episodes = []
 
     def get_completed_episodes(self) -> list[PPOEpisodeSegment]:
@@ -442,9 +521,9 @@ class PPORolloutBuffer:
                 hidden_local_vars=ep.hidden_local_vars.to(device=self.train_device, dtype=self.train_dtype),
                 hidden_global_vars=ep.hidden_global_vars.to(device=self.train_device, dtype=self.train_dtype),
                 agent_mask=None if ep.agent_mask is None else ep.agent_mask.to(device=self.train_device),
-                actions=ep.actions.to(device=self.train_device, dtype=self.train_dtype),
+                actions=ep.actions.to(device=self.train_device),
                 rewards=ep.rewards.to(device=self.train_device, dtype=self.train_dtype),
-                log_probs=ep.log_probs.to(device=self.train_device, dtype=self.train_dtype),
+                log_probs=ep.log_probs.to(device=self.train_device),
                 values=ep.values.to(device=self.train_device, dtype=self.train_dtype),
                 final_local_obs=ep.final_local_obs.to(device=self.train_device, dtype=self.train_dtype),
                 final_global_obs=ep.final_global_obs.to(device=self.train_device, dtype=self.train_dtype),
@@ -454,7 +533,7 @@ class PPORolloutBuffer:
                 final_value=ep.final_value.to(device=self.train_device, dtype=self.train_dtype),
                 initial_previous_actions=(
                     None if ep.initial_previous_actions is None
-                    else ep.initial_previous_actions.to(device=self.train_device, dtype=self.train_dtype)
+                    else ep.initial_previous_actions.to(device=self.train_device)
                 ),
                 is_true_episode_start=ep.is_true_episode_start,
                 returns=ep.returns.to(device=self.train_device, dtype=self.train_dtype),
@@ -466,6 +545,9 @@ class PPORolloutBuffer:
                 ),
                 rollout_env_idx=ep.rollout_env_idx,
                 rollout_start_step=ep.rollout_start_step,
+                action_dtypes=None if ep.action_dtypes is None else {
+                    dtype: mask.to(self.train_device) for dtype, mask in ep.action_dtypes.items()
+                },
             )
             for ep in episodes
         ]
