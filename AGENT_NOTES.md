@@ -12,6 +12,8 @@ Put repository navigation, implementation invariants, compiler workarounds, test
 
 `CHANGELOG.md` records concise user-visible changes and compatibility consequences. Group unreleased changes by topic and describe the final behavior. Keep each item to one or two short sentences about the capability, workflow, or compatibility impact; link to a focused guide for task constants, formulas, configuration examples, or API details. Do not append review transcripts, test inventories, internal refactors, serialization edge-case inventories, or successive revisions of the same design. Preserve important maintenance findings in the relevant agent reference instead; Git retains implementation history.
 
+Consolidate related fixes into existing changelog entries instead of adding one entry per regression. A dtype, tensor-ownership rule, failure/retry sequence, or validation branch belongs in source, tests, or maintenance notes unless it changes how a researcher configures, resumes, or interprets an experiment. Detailed public references should explain the supported behavior without reproducing the regression-test matrix.
+
 Prefer reader-neutral, subject-focused prose and active voice. Avoid unnecessary imperatives or framing every capability around what the reader can or should do; do not substitute passive voice mechanically. Reader-directed language fits tutorials and procedures. Keep exact dimensions/defaults in their focused references or source rather than duplicating them in overviews.
 
 ## Navigation

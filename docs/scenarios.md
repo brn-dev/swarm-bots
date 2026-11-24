@@ -82,7 +82,7 @@ Scenario constructors accept keyword overrides through `make_scenario(..., **sce
 
 `hidden_local_vars` and `hidden_global_vars` are explicitly privileged. They support centralized critics, auxiliary losses, and diagnostics, but using them as actor inputs invalidates a benchmark result. The official evaluator removes both keys before invoking a policy.
 
-For every scenario, `hidden_global_vars[..., 0]` is the raw active-agent count, equal to the sum of `agent_mask` over agent slots. The environment prepends this float32 value; scenario-specific hidden global fields follow from index 1. Learning wrappers leave the count unnormalized. It remains valid in terminal observations, including simulation failures.
+`hidden_global_vars[..., 0]` is the unnormalized active-agent count, equal to the sum of `agent_mask`. Scenario-specific privileged global fields follow from index 1.
 
 For the default four-limb, eight-hinge robot, each agent's `local_obs` has 71 float32 features, concatenated in this order (Python slice notation):
 
@@ -109,7 +109,17 @@ Shared task features in `global_obs` are positions in world coordinates unless s
 | PayloadPlane, PayloadStep | Payload position `(x, y, z)`, followed by its six-dimensional orientation |
 | DualPayloadPlane | Two consecutive payload position/orientation records |
 | PayloadGoal, MultiPayloadGoal | One 12-feature record per payload slot: active flag, position (3), orientation (6), goal `(x, y)`; PayloadGoal has exactly one active slot |
-| PayloadGoalSequence | One payload/current-goal record (12), the ordered route coordinates (6), active-goal one-hot indicator (3), and hold completion fraction (1); 22 public features by default. Optional features append in this order: `include_goal_delta_obs` adds world-frame XY displacement `current_goal_xy - payload_xy`; `include_payload_velocity_obs` adds payload world-frame linear XY velocity in m/s; `include_goal_inside_obs` adds a binary inside-current-goal flag. Each vector adds two values, and the flag adds one; enabling all gives 27. Vector magnitudes are retained and participate in observation normalization and NOP. The flag stays raw, like the stage one-hot. All three options default to `False`. |
+| PayloadGoalSequence | Payload/current-goal record (12), full route coordinates (6), active-goal one-hot (3), and hold completion fraction (1): 22 features by default |
+
+PayloadGoalSequence optionally appends these features in the order shown. All options default to `False`; enabling all gives 27 public features.
+
+| Option | Appended features |
+| --- | --- |
+| `include_goal_delta_obs` | World-frame XY displacement `current_goal_xy - payload_xy` (2) |
+| `include_payload_velocity_obs` | Payload world-frame linear XY velocity in m/s (2) |
+| `include_goal_inside_obs` | Binary inside-current-goal flag (1) |
+
+Vectors participate in normalization and NOP; the inside flag and stage one-hot remain raw.
 
 Inactive MultiPayloadGoal records have zero positions/goals and identity orientation. These payload masks are separate from `agent_mask`. `env.single_observation_space` and `env.single_action_space` describe the selected task; the corresponding spaces without `single_` include the world dimension.
 
@@ -135,31 +145,49 @@ For wall tasks with a forward boost, approaching the wall earns extra forward pr
 
 Rewards measure task progress and task-specific outcomes. Connection topology contributes no direct reward or penalty; connections affect the swarm's physical behavior. Historical reward and physics changes are recorded in the [changelog](../CHANGELOG.md) and can make scores from different revisions incomparable.
 
-PayloadGoal uses one box payload and samples a new goal each episode on a noisy arc centred on the payload's spawn position before physics settling. The default `goal_arc_radius` is 3 m and `goal_arc_degrees` is 120°: a uniform angle from −60° to +60° around world +Y, the swarm-to-payload spawn direction. Independent zero-mean Gaussian offsets with `goal_noise_std=0.15` m are added to X and Y. For angle `theta`, the sampled goal is `payload_spawn_xy + 3 * (sin(theta), cos(theta)) + noise_xy`. The noise is unbounded and can put goals slightly beyond the nominal arc; no clipping or rejection changes its distribution. The goal stays fixed until the next reset. Settling can shift the payload relative to the sampled arc. The payload starts one metre ahead of the swarm; their shared starting translation varies by ±0.25 m in X and Y. Success uses a 0.35 m goal radius. Configure `goal_arc_radius`, `goal_arc_degrees` and `goal_noise_std` through scenario overrides; `goal_rect` applies to MultiPayloadGoal.
+## Payload delivery tasks
 
-PayloadGoal adds an approach reward to payload-to-goal progress and success. In the horizontal plane, its pushing-zone centre is `payload_xy - payload_radius * unit(goal_xy - payload_xy)`: one payload radius behind the payload relative to its current goal. When the centres coincide, the zone is centred on the payload. The approach potential is the negative mean distance of active agent roots outside this zone, with a default zone radius of 1.25 m to accommodate a five-unit group. Its reward is `progress_reward_weight * towards_payload_reward_weight * (gamma * potential_next - potential_previous)`, using `potential_reward_discount_factor` as gamma and default approach weight 1.0. The zone moves with the payload and rotates with the goal direction. Reset initializes the potential from the actual settled state; remaining inside the zone produces no occupancy bonus. The broad circle also includes some positions on the goal side, so this term encourages proximity with a rearward bias rather than enforcing a strict pushing direction. Set `towards_payload_reward_weight=0.0` for an approach-shaping ablation. MultiPayloadGoal retains its existing rewards without this approach term.
+### PayloadGoal
 
-PayloadGoalSequence samples its entire route at reset. Its first leg is uniformly 0.9–1.1 m long with a ±5° turn from the starting forward direction. The second and third legs are each uniformly 1–2 m long, with turns uniformly within ±45° and ±90°, respectively, relative to the preceding segment. A shared yaw sampled uniformly over a full turn rotates the initial swarm positions/orientations, payload position/orientation, and route together about the swarm's starting position. The shared starting translation still varies by ±0.25 m in X and Y. Route points remain fixed through settling and the episode. `goal_distance_ranges` and `goal_turn_arc_degrees` configure the route; each minimum leg length must exceed twice `goal_radius`, preventing adjacent goal regions from overlapping. The registered task has three goals; matched tuples support other fixed sequence lengths as custom variants.
+PayloadGoal delivers one box payload to a goal sampled before physics settling and held fixed for the episode. Its default goal distribution is a 3 m arc spanning 120° around world +Y, with independent, unbounded Gaussian XY noise of standard deviation 0.15 m. Settling can shift the payload relative to this arc. The payload starts one metre ahead of the swarm, with a shared XY translation sampled within ±0.25 m; success uses a 0.35 m goal radius.
 
-The sequence task accepts the payload centre within 0.15 m of `(goal_x, goal_y, payload_radius)`, without inflating this tolerance by the payload's size. A goal completes only after the centre remains inside for `goal_hold_time=0.5` s at control-step resolution. The first inside observation starts the timer; the default 30 ms control period requires 18 consecutive inside observations spanning 0.51 s. Hold completion progress is the number of consecutive inside observations divided by 18, distinguishing first entry from an unstarted hold; it is not a literal elapsed-time fraction. Leaving the region resets the hold. Passing through a later goal early has no effect. Intermediate completion advances the target without resetting the physical scene, and only final completion terminates successfully. The 1,000-step limit provides 30 s for the route and holds.
+`goal_arc_radius`, `goal_arc_degrees`, and `goal_noise_std` configure the distribution. Approach shaping encourages the swarm to gather near a pushing reference point behind the payload; the [approach options](#approach-reward-options) apply to both single-payload delivery tasks.
 
-The optional inside-goal flag uses this same 3D centre tolerance, including at reset. It describes the target shown in the observation: immediately after a waypoint completes it refers to the next goal, and on final completion it still refers to the final point. Being inside alone does not mean the required hold has completed.
+### PayloadGoalSequence
 
-Forward and approach shaping use the currently active goal, with the same default weights 10 and 1 as PayloadGoal. The first two completions each add a one-time `waypoint_reward=2`; final completion adds `success_reward=5`. Both shaping potentials are reinitialized against the new goal after scoring the transition, so changing targets creates no reward jump. The public current-goal coordinates update immediately. The one-hot indicator becomes all zero on final completion, while current-goal coordinates retain the final point and hold fraction is 1. `info["current_goal_index"]` is zero-based, with `num_goals` denoting a completed sequence; `goals_completed` and `goal_1_reached` through `goal_3_reached` report partial progress. Included learners persist their episode summaries as `ep_task_goals_completed` and `ep_task_goal_<n>_reached`; reach means are fractions of completed episodes, including timeouts. These metrics distinguish mastery of the easy first leg from full delivery. Stage indicators remain raw actor inputs; continuous geometry and hold progress participate in normalization and NOP.
+PayloadGoalSequence requires three ordered deliveries within 1,000 control steps (30 s). The full route is sampled at reset, rotated with the starting assembly by a uniformly sampled yaw, and held fixed through settling and the episode.
 
-Frozen evaluations prefix these progress metrics with `eval_stochastic_` or `eval_deterministic_`. In mixed-scenario training, each summary counts only episodes from scenarios that report that metric.
+| Leg | Uniform distance | Uniform turn relative to the preceding direction |
+| --- | --- | --- |
+| First | 0.9–1.1 m | ±5° from the starting forward direction |
+| Second | 1–2 m | ±45° |
+| Third | 1–2 m | ±90° |
 
-`goal_hold_reward_fraction` optionally distributes part of each goal's existing completion bonus across its hold, with a default of zero. For fraction `f`, bonus `B`, and confirmed hold-time fraction `h`, `hold_progress` rewards `f * B * (h_next - h_previous)` and completion pays the remaining `(1 - f) * B`, all scaled by `progress_reward_weight`. First entry starts the clock and earns no hold credit when a positive hold time is required. Leaving before completion reverses the accumulated credit; repeated entries alone earn nothing. Completed holds retain their total bonus of 2, 2, and 5 under the default weights. For example, `goal_hold_reward_fraction=0.5` distributes half of each bonus across the confirmed intervals and pays half at completion. An unfinished hold at episode timeout can retain partial credit; it never counts as a reached goal. This reward changes timing and discounted returns, so record the fraction when comparing experiments. The velocity option and hold fraction are exported in scenario settings; neither changes the goal tolerance or completion rule.
+`goal_distance_ranges` and `goal_turn_arc_degrees` configure matched sequences of distances and turns; custom routes require each minimum leg length to exceed twice `goal_radius`.
 
-MultiPayloadGoal samples assignments that allow all active payloads to occupy their goals without overlap in their reset orientation. Its `goal_rect` bounds payload centres, rather than their full shapes. Custom rectangles must accommodate the maximum possible active count; invalid configurations fail during construction.
+A goal completes after the payload centre remains within 0.15 m of `(goal_x, goal_y, payload_radius)` for `goal_hold_time=0.5` s. At the default 30 ms control period this requires 18 consecutive inside observations spanning 0.51 s. The public hold fraction counts those observations divided by 18, rather than literal elapsed time. Leaving resets the hold; reaching later goals early has no effect. Intermediate completion changes the target without resetting the scene; only the final goal terminates successfully.
 
-Payload reset spacing accounts for shape and radius. `payload_spawn_margin` is the requested minimum centre spacing; the resolved `payload_spawn_spacing` may be larger to avoid overlap. Both values are recorded in settings.
+Forward and approach shaping follow the current goal, with default weights 10 and 1. Intermediate goals have `waypoint_reward=2` and final completion has `success_reward=5`. Target changes do not introduce shaping-reward jumps. On final completion, goal coordinates retain the final point, the stage one-hot becomes zero, and hold fraction is 1. The optional inside-goal flag describes the target currently shown in the observation; it does not indicate completed holding.
 
-DualPayloadPlane expands its default X offsets when the payload shape or radius needs more separation. Explicit `payload_offset_x` overrides are used as supplied; custom placements must provide their own collision clearance.
+Partial progress is available as `info["goals_completed"]` and `goal_<n>_reached`; `current_goal_index` is zero-based, with `num_goals` indicating completion. Included learners log episode means as `ep_task_goals_completed` and `ep_task_goal_<n>_reached`, including timeouts. Frozen evaluation adds `eval_stochastic_` or `eval_deterministic_` prefixes and aggregates only episodes that report each metric.
 
-PayloadStep height shaping applies within the platform's width. Its climb milestone requires the payload centre to be over the finite platform and at the required height. Crossing the front line beside the platform or below that height does not retain a climb bonus.
+`goal_hold_reward_fraction` optionally distributes a fraction `f` of each completion bonus `B` across its hold (default `0`). The hold reward is `f * B * (h_next - h_previous)`, where `h` counts confirmed hold intervals; completion pays `(1 - f) * B`. Both are scaled by `progress_reward_weight`. First entry earns no hold credit, leaving reverses accumulated credit, and a timeout can retain partial credit without counting as a reached goal. This changes reward timing and discounted returns, so report the fraction in comparisons.
 
-PayloadGoal and PayloadGoalSequence also accept `towards_payload_potential="pseudo_huber"` with `towards_payload_softness=0.5` metres. This replaces the zone potential with `-mean(sqrt(d_i**2 + softness**2) - softness)` over all active agent roots, where `d_i` is horizontal distance to the same pushing reference point. The potential is approximately linear far away and quadratic near that point, with no positive-distance flat region. The implementation uses the equivalent rationalized expression for numerical accuracy near zero. Reward remains the weighted potential difference: approaching earns reward, retreating loses it, and stationary geometry yields zero when the potential discount is 1. Sequence goal changes reinitialize this potential before the next transition. The default `towards_payload_potential="zone"` retains the original radius-based definition; `towards_payload_goal_radius` applies only to that mode. Exported settings record the selected mode and softness, and either setting can be supplied through `scenario_kwargs` for training and evaluation.
+### Approach reward options
+
+The pushing reference point lies one payload radius behind the payload relative to its current goal: `payload_xy - payload_radius * unit(goal_xy - payload_xy)`. The default zone potential is the negative mean distance of active roots beyond a 1.25 m radius around this point. It encourages proximity with a rearward bias, without enforcing a strict pushing direction.
+
+The optional `towards_payload_potential="pseudo_huber"` uses `-mean(sqrt(d_i**2 + s**2) - s)` over all active roots, where `d_i` is horizontal distance to the reference point and `s` is `towards_payload_softness` (default 0.5 m). It is approximately linear far away and quadratic nearby, with no flat zone. `towards_payload_goal_radius` applies only to the default `"zone"` mode.
+
+Both modes reward weighted potential differences using `progress_reward_weight`, `towards_payload_reward_weight` (default 1), and `potential_reward_discount_factor`. Stationary geometry earns zero when the potential discount is 1. Set `towards_payload_reward_weight=0.0` for an approach-shaping ablation. Overrides are supplied through `scenario_kwargs` and recorded in resolved settings.
+
+### Multiple payloads and placement
+
+MultiPayloadGoal retains its rectangular goal distribution without the approach term. It samples assignments that allow all active payloads to occupy their goals without overlap in their reset orientation. `goal_rect` bounds payload centres; custom rectangles must accommodate the maximum active count.
+
+Payload reset spacing accounts for shape and radius. `payload_spawn_margin` requests minimum centre spacing; the resolved `payload_spawn_spacing` may be larger to avoid overlap. DualPayloadPlane expands default X offsets for larger shapes, while explicit `payload_offset_x` placements must provide their own clearance.
+
+PayloadStep climb shaping applies within the platform width; its climb milestone requires the payload centre to be over the finite platform at the required height.
 
 ## Action contract
 

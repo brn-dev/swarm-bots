@@ -47,7 +47,7 @@ result = evaluate_policy(
 )
 ```
 
-The evaluation seed controls the environment and Torch policy draws on the CPU and on the CUDA devices used by the simulator and the included actor adapter. A custom callable that draws on another CUDA device can declare it with an `inference_device` attribute. Evaluation and recording restore the default CPU and CUDA generators when the call ends, including seeds queued before CUDA initialization. Seeded evaluation and recording calls from threads in one process run in sequence because they share the default CPU generator. Use separate processes to run them in parallel or alongside training that draws from the default generators.
+The evaluation seed controls environment sampling and Torch policy draws. Evaluation and recording restore the caller's CPU/CUDA RNG state afterward. A custom policy using another CUDA device declares it through `inference_device`. Use separate processes for concurrent evaluation and training; seeded calls share process-wide generators.
 
 The evaluator accepts at most one episode per lane and returns episodes in lane order. It rejects `num_episodes > num_envs`. Smaller runs are useful for development but are not canonical protocol runs. Completed lanes still simulate while remaining lanes finish; their later rewards, successes, and episodes are ignored.
 
