@@ -885,8 +885,10 @@ def test_checkpoint_recording_noise_overrides(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("variant", ["mat_qcx", "mat_ind__lstm", "tmasac__slstm", "matd3__deepset_critic", "tmatd3"])
+@pytest.mark.parametrize("autoreset_mode", [AutoresetMode.SAME_STEP, AutoresetMode.NEXT_STEP])
 def test_checkpoint_recording_restores_actor_and_normalization_and_writes_complete_episodes(
     variant: str,
+    autoreset_mode: AutoresetMode,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     single_torch_thread: None,
@@ -920,10 +922,13 @@ def test_checkpoint_recording_restores_actor_and_normalization_and_writes_comple
         original_record = checkpoint_recording._record_episodes
 
         def record(env: Any, policy: Any, **kwargs: Any) -> None:
+            assert env.autoreset_mode is autoreset_mode
+
             def checked_policy(
                 observations: Mapping[str, torch.Tensor], starts: torch.Tensor
             ) -> Mapping[str, torch.Tensor]:
                 nonlocal policy_calls
+                torch.testing.assert_close(starts, env.current_step == 0)
                 expected_actions = expected_policy(observations, starts)
                 actions = policy(observations, starts)
                 for key in expected_actions:
@@ -942,6 +947,10 @@ def test_checkpoint_recording_restores_actor_and_normalization_and_writes_comple
 
         monkeypatch.setattr(checkpoint_recording, "_record_episodes", record)
         monkeypatch.setattr(live_recording, "_write_video_file", write_video)
+        recording_options = {
+            **construction_options,
+            "env_kwargs": {**construction_options["env_kwargs"], "autoreset_mode": autoreset_mode.value},
+        }
         output = record_checkpoint(
             checkpoint_path,
             "SwarmBots-WallEasy-v0",
@@ -951,7 +960,7 @@ def test_checkpoint_recording_restores_actor_and_normalization_and_writes_comple
             max_parallel_episodes=2,
             width=160,
             height=120,
-            **construction_options,
+            **recording_options,
         )
         assert len(list(output.glob("*.mp4"))) == 3
         assert policy_calls == 8

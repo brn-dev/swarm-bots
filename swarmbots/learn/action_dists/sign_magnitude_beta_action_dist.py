@@ -5,6 +5,7 @@ import torch
 from torch import distributions as torchdist
 
 from swarmbots.learn.action_dists.action_dist import AGENT_ACTIONS_DIM, ActionNetInitialization
+from swarmbots.learn.action_dists.beta_action_dist import promote_cpu_beta_parameters
 from swarmbots.learn.action_dists.sign_magnitude_action_dist import (
     SignMagnitudeActionDist,
     shape_parameter_greater_than_one,
@@ -84,6 +85,7 @@ class SignMagnitudeBetaActionDist(SignMagnitudeActionDist):
             self,
             raw_magnitude_parameters: torch.Tensor,
     ) -> tuple[torchdist.Distribution, torchdist.Distribution]:
+        raw_magnitude_parameters = promote_cpu_beta_parameters(raw_magnitude_parameters)
         negative_alpha = shape_parameter_greater_than_one(raw_magnitude_parameters[..., 0])
         negative_beta = shape_parameter_greater_than_one(raw_magnitude_parameters[..., 1])
         positive_alpha = shape_parameter_greater_than_one(raw_magnitude_parameters[..., 2])

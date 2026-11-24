@@ -2,6 +2,7 @@ import unittest
 import math
 from unittest.mock import patch
 
+import pytest
 import torch
 from torch import nn
 
@@ -18,6 +19,27 @@ from swarmbots.learn.action_dists.sign_magnitude_beta_action_dist import SignMag
 def _zero_init(linear: nn.Linear) -> None:
     nn.init.zeros_(linear.weight)
     nn.init.zeros_(linear.bias)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_sign_magnitude_beta_rollout_and_rescoring_under_cpu_autocast(dtype: torch.dtype) -> None:
+    trunk = nn.Linear(3, 4)
+    dist = SignMagnitudeBetaActionDist(4, 2, None)
+    observations = torch.ones((2, 3, 3))
+
+    with torch.no_grad(), torch.autocast("cpu", dtype):
+        actions, rollout_scores = dist.get_on_policy_actions_with_log_probs(
+            trunk(observations), storage_dtype=torch.float32,
+        )
+    with torch.autocast("cpu", dtype):
+        scores = dist.update_latent_features(trunk(observations)).log_prob(actions)
+
+    assert actions.dtype == torch.float32
+    assert (actions.abs() < 1).all()
+    assert torch.isfinite(rollout_scores).all()
+    torch.testing.assert_close(scores, rollout_scores, rtol=0, atol=0)
+    gradients = torch.autograd.grad(scores.sum(), (*trunk.parameters(), *dist.parameters()))
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)
 
 
 def _make_distributions() -> list[

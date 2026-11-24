@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from contextlib import suppress
 from copy import deepcopy
 from typing import Any
 
@@ -184,25 +183,23 @@ class MultiScenarioVectorEnv(VectorEnv):
                 for env, actions in zip(self.envs, child_actions, strict=True)
             ]
 
-        begun_envs: list[VectorEnv] = []
+        attempted_envs: list[VectorEnv] = []
         try:
             for env, actions in zip(self.envs, child_actions, strict=True):
+                if not bool(getattr(env, "has_pending_step", False)):
+                    # A child can publish its pending step before begin_step returns.
+                    attempted_envs.append(env)
                 begin_step = getattr(env, "begin_step")
                 begin_step(actions)
-                begun_envs.append(env)
 
-            results = []
-            for env in self.envs:
-                end_step = getattr(env, "end_step")
-                results.append(end_step())
-                begun_envs.remove(env)
-            return results
-        except Exception:
-            for env in begun_envs:
-                if not bool(getattr(env, "has_pending_step", False)):
-                    continue
-                with suppress(Exception):
-                    getattr(env, "end_step")()
+            return [getattr(env, "end_step")() for env in self.envs]
+        except BaseException as step_error:
+            for env in attempted_envs:
+                if bool(getattr(env, "has_pending_step", False)):
+                    try:
+                        getattr(env, "end_step")()
+                    except BaseException as cleanup_error:
+                        step_error.add_note(f"Could not finish interrupted child step: {cleanup_error}")
             raise
 
     def close_extras(self, **kwargs: Any) -> None:

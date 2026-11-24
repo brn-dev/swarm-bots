@@ -17,9 +17,12 @@ from swarmbots.learn.algos.ppo.ppo_rollout_buffer import PPORolloutBuffer
 from swarmbots.learn.algos.ppo.ppo_sampler import PPOSamplerConfig
 from swarmbots.learn.algos.r_mat.r_mat_encoder import RMATEncoderConfig
 from swarmbots.learn.algos.r_mat.r_mat_ind_policy import RMATIndPolicy, RMATIndPolicyConfig
-from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper
+from swarmbots.learn.algos.r_mat.r_ppo_wm_sampler import RPPOWMSamplerConfig
+from swarmbots.learn.env_wrappers.learn_wrappers.base_learn_env_wrapper import BaseLearnEnvWrapper, TorchObs
 from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
 from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
+from swarmbots.learn.env_wrappers.torch_record_episode_statistics_wrapper import TorchRecordEpisodeStatisticsWrapper
+from swarmbots.learn.exponential_moving_average import ExponentialMovingAverage
 from swarmbots.learn.scheduling.linear_scheduler import LinearScheduler
 from swarmbots.learn.scheduling.schedulers import ScheduledHyperParameter, SchedulerManager, ScheduleUnit
 from swarmbots.learn.testing_env import TestingSwarmBotsEnv as SwarmTestEnv
@@ -142,6 +145,98 @@ def _rollout_policy(env: BaseLearnEnvWrapper, recurrent: bool) -> PPOPolicy | RM
     return PPOPolicy(env, PPOPolicyConfig(
         actor_config=PPOActorConfig(hidden_dims=[8], latent_pi_dim_per_agent=8), continuous_config=continuous,
     ))
+
+
+@pytest.mark.parametrize("recurrent", [False, True], ids=["dense", "segmented"])
+def test_ppo_restarts_collection_after_a_partial_rollout_failure(recurrent: bool) -> None:
+    env = TorchRecordEpisodeStatisticsWrapper(SwarmBotsLearnEnvWrapper(SyncVectorEnv(
+        [
+            lambda: SwarmTestEnv(2, 3, 1, 1, 1, max_steps=2),
+            lambda: SwarmTestEnv(2, 3, 1, 1, 1, max_steps=4),
+        ],
+        autoreset_mode=AutoresetMode.SAME_STEP,
+    )))
+    policy = _rollout_policy(env, recurrent)
+    sampler_config = (
+        RPPOWMSamplerConfig(batch_size=2, sequence_length=3, num_next_steps=1) if recurrent
+        else PPOSamplerConfig(batch_size=6)
+    )
+    trainer = PPO(
+        policy, env, rollout_mode=StepsRolloutMode(6), n_epochs=1,
+        sampler_config=sampler_config, train_device="cpu", rollout_device="cpu",
+    )
+    return_ema, success_ema = ExponentialMovingAverage(.1), ExponentialMovingAverage(.1)
+    env_step = env.step
+    steps_before_error = 0
+
+    def fail_after_step(actions: torch.Tensor) -> tuple[TorchObs, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+        nonlocal steps_before_error
+        result = env_step(actions)
+        steps_before_error += 1
+        if steps_before_error == 2:
+            raise RuntimeError("step output failed")
+        return result
+
+    try:
+        trainer.perform_iteration(return_ema, success_ema, update_ema=True)
+        with patch.object(env, "step", side_effect=fail_after_step):
+            with pytest.raises(RuntimeError, match="step output failed"):
+                trainer.perform_iteration(return_ema, success_ema, update_ema=True)
+        assert (trainer.n_total_timesteps, trainer.n_total_iterations, trainer.n_total_updates) == (6, 1, 1)
+
+        with (
+            patch.object(env, "reset", wraps=env.reset) as reset,
+            patch.object(policy, "forward_with_temporal_state", wraps=policy.forward_with_temporal_state) as forward,
+        ):
+            metrics, collected = trainer.perform_iteration(return_ema, success_ema, update_ema=True)
+
+        reset.assert_called_once_with()
+        first_inputs = forward.call_args_list[0].kwargs
+        torch.testing.assert_close(first_inputs["local_obs"], torch.zeros_like(first_inputs["local_obs"]))
+        torch.testing.assert_close(
+            torch.stack([call.kwargs["episode_start_mask"] for call in forward.call_args_list]),
+            torch.tensor([[True, True], [False, False], [True, False]]),
+        )
+        if recurrent:
+            for state in first_inputs["temporal_state"].values():
+                for layer in state:
+                    assert all(torch.count_nonzero(tensor) == 0 for tensor in layer)
+        assert collected == 6
+        assert (metrics["ep_len"].n, metrics["ep_len"].mean) == (1, 2)
+        assert (trainer.n_total_timesteps, trainer.n_total_iterations, trainer.n_total_updates) == (12, 2, 2)
+    finally:
+        env.close()
+
+
+def test_ppo_preserves_completed_rollout_state_after_optimizer_failure() -> None:
+    env = SwarmBotsLearnEnvWrapper(SyncVectorEnv(
+        [lambda: SwarmTestEnv(2, 3, 1, 1, 1, max_steps=8)], autoreset_mode=AutoresetMode.SAME_STEP,
+    ))
+    policy = _rollout_policy(env, recurrent=False)
+    trainer = PPO(
+        policy, env, rollout_mode=StepsRolloutMode(2), n_epochs=1,
+        sampler_config=PPOSamplerConfig(batch_size=2), train_device="cpu", rollout_device="cpu",
+    )
+    return_ema, success_ema = ExponentialMovingAverage(.1), ExponentialMovingAverage(.1)
+    try:
+        with patch.object(trainer.optimizer, "step", side_effect=RuntimeError("optimizer failed")):
+            with pytest.raises(RuntimeError, match="optimizer failed"):
+                trainer.perform_iteration(return_ema, success_ema, update_ema=True)
+        assert (trainer.n_total_timesteps, trainer.n_total_iterations, trainer.n_total_updates) == (2, 1, 0)
+
+        with (
+            patch.object(env, "reset", wraps=env.reset) as reset,
+            patch.object(policy, "forward_with_temporal_state", wraps=policy.forward_with_temporal_state) as forward,
+        ):
+            trainer.perform_iteration(return_ema, success_ema, update_ema=True)
+
+        reset.assert_not_called()
+        first_inputs = forward.call_args_list[0].kwargs
+        torch.testing.assert_close(first_inputs["local_obs"], torch.full_like(first_inputs["local_obs"], 2.))
+        assert not first_inputs["episode_start_mask"].any()
+        assert (trainer.n_total_timesteps, trainer.n_total_iterations, trainer.n_total_updates) == (4, 2, 1)
+    finally:
+        env.close()
 
 
 @pytest.mark.parametrize("recurrent", [False, True])

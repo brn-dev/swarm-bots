@@ -1,6 +1,6 @@
 from typing import Any
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import gymnasium
 import numpy as np
@@ -1172,6 +1172,70 @@ def test_multi_scenario_vector_env_drains_started_steps_when_a_later_begin_fails
 
     assert step_events == ["begin:first", "begin:second", "end:first"]
     assert not first.has_pending_step
+
+
+@pytest.mark.parametrize("stage", ["begin", "end"])
+def test_multi_scenario_vector_env_drains_deferred_steps_after_interruption(stage: str) -> None:
+    step_events: list[str] = []
+    children = {
+        name: _DeferredDirectVectorEnv(
+            step_events=step_events,
+            scenario_name=name,
+            num_envs=1,
+            global_obs_dim=1,
+            hidden_local_vars_dim=1,
+            hidden_global_vars_dim=1,
+        )
+        for name in ("first", "second")
+    }
+    env = MultiScenarioVectorEnv(children)
+    actions = {key: np.zeros(space.shape, dtype=np.float32) for key, space in env.action_space.items()}
+    interrupted_child = children["second" if stage == "begin" else "first"]
+    method_name = f"{stage}_step"
+    original_method = getattr(interrupted_child, method_name)
+    interruption = KeyboardInterrupt(f"interrupted {stage}")
+    interrupted = False
+
+    def interrupt_once(*args: Any) -> Any:
+        nonlocal interrupted
+        if interrupted:
+            return original_method(*args)
+        interrupted = True
+        if stage == "begin":
+            original_method(*args)
+        raise interruption
+
+    with patch.object(interrupted_child, method_name, side_effect=interrupt_once):
+        with pytest.raises(KeyboardInterrupt) as raised:
+            env.step(actions)
+
+    assert raised.value is interruption
+    assert all(not child.has_pending_step for child in children.values())
+    env.reset()
+    _, rewards, _, _, _ = env.step(actions)
+    assert rewards.tolist() == [1.0, 1.0]
+
+
+def test_multi_scenario_vector_env_preserves_a_preexisting_deferred_step() -> None:
+    step_events: list[str] = []
+    child = _DeferredDirectVectorEnv(
+        step_events=step_events,
+        scenario_name="existing",
+        num_envs=1,
+        global_obs_dim=1,
+        hidden_local_vars_dim=1,
+        hidden_global_vars_dim=1,
+    )
+    env = MultiScenarioVectorEnv({"existing": child})
+    actions = {key: np.zeros(space.shape, dtype=np.float32) for key, space in env.action_space.items()}
+    child.begin_step(actions)
+
+    with pytest.raises(RuntimeError):
+        env.step(actions)
+
+    assert child.has_pending_step
+    child.end_step()
+    assert child.last_actions is actions
 
 
 def test_multi_scenario_vector_env_supports_torch_observations_actions_and_infos() -> None:

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
+import pytest
 import torch
 from torch import distributions as torchdist
 from gymnasium import spaces
@@ -31,6 +32,30 @@ from swarmbots.learn.nn_components.nn_init import init_linear_orthogonal
 
 
 _REAL_TORCH_COMPILE = torch.compile
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("use_rsample", [False, True])
+def test_beta_sampling_and_scoring_under_cpu_autocast(dtype: torch.dtype, use_rsample: bool) -> None:
+    dist = make_proba_distribution(
+        latent_dim=4,
+        action_space=spaces.Box(-1.0, 1.0, shape=(2, 2), dtype=np.float32),
+        action_space_dim=2,
+        action_net_initialization=init_linear_orthogonal,
+        continuous_config=BetaConfig(),
+    )
+    latent = torch.randn(3, 2, 4, requires_grad=True)
+
+    with torch.autocast("cpu", dtype):
+        actions, log_probs = dist.get_actions_with_log_probs(latent, use_rsample=use_rsample)
+        objective = actions.square().mean() if use_rsample else log_probs.mean()
+
+    assert actions.requires_grad is use_rsample
+    assert torch.isfinite(log_probs).all()
+    assert (actions.abs() <= 1).all()
+    gradient, = torch.autograd.grad(objective, latent)
+    assert torch.isfinite(gradient).all()
+    assert gradient.abs().sum() > 0
 
 
 def _compile_with_eager_backend(

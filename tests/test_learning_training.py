@@ -1051,6 +1051,54 @@ def test_learning_updates_parameters_on_actual_benchmark_transitions(variant: st
 
 @pytest.mark.integration
 @pytest.mark.parametrize("variant", ["mappo__deepset_critic", "masac__deepset_critic"])
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param(
+        "cuda", marks=[pytest.mark.cuda, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")],
+    ),
+])
+def test_learning_retries_after_an_interrupted_simulator_step(variant: str, device: str) -> None:
+    is_off_policy = variant == "masac__deepset_critic"
+    options = {
+        "learning_starts": 0, "batch_size": 2, "buffer_capacity_per_env": 32, "replay_exposure": 1,
+        "replay_compile_tensor_operations": False, "sac_compile_tensor_operations": False,
+        "sac_compile_optimizer_steps": False,
+    } if is_off_policy else {"learning_rate": 1e-3, "n_epochs": 1, "target_kl": None}
+    training_options = _training_kwargs()
+    training_options["device"] = device
+    trainer = make_training(
+        "SwarmBots-WallEasy-v0", variant, rollout_steps_per_env=4, algorithm_kwargs=options, **training_options,
+    )
+    try:
+        raw_env = trainer.env.unwrapped
+        finish_step = raw_env.end_step
+        step_count = 0
+
+        def interrupt_second_step() -> Any:
+            nonlocal step_count
+            step_count += 1
+            if step_count == 2:
+                raise KeyboardInterrupt("interrupted simulator step")
+            return finish_step()
+
+        with patch.object(raw_env, "end_step", side_effect=interrupt_second_step):
+            with pytest.raises(KeyboardInterrupt, match="interrupted simulator step"):
+                trainer.learn(max_total_timesteps=8, enable_command_prompt=False)
+
+        assert trainer.n_total_timesteps == trainer.n_total_iterations == trainer.n_total_updates == 0
+        trainer.learn(max_total_timesteps=8, enable_command_prompt=False)
+
+        assert trainer.n_total_timesteps == 8
+        assert trainer.n_total_iterations == 1
+        assert trainer.n_total_updates == (4 if is_off_policy else 1)
+        if isinstance(trainer, SAC):
+            assert len(trainer.replay_buffer) == 8
+    finally:
+        trainer.env.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("variant", ["mappo__deepset_critic", "masac__deepset_critic"])
 def test_checkpoint_counts_completed_updates_after_an_interrupted_iteration(variant: str, tmp_path: Path) -> None:
     is_ppo = variant == "mappo__deepset_critic"
     options = {"learning_rate": 1e-3, "n_epochs": 2, "target_kl": None} if is_ppo else {

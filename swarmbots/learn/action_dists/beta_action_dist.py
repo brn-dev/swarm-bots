@@ -19,6 +19,13 @@ from swarmbots.learn.action_dists.action_dist import (
 from swarmbots.learn.action_dists.entropy_utils import compute_entropy_metrics
 
 
+def promote_cpu_beta_parameters(parameters: torch.Tensor) -> torch.Tensor:
+    # CPU Dirichlet sampling, used by Beta.sample and Beta.rsample, needs at least float32.
+    if parameters.device.type == "cpu" and parameters.dtype in (torch.float16, torch.bfloat16):
+        return parameters.float()
+    return parameters
+
+
 @dataclass(frozen=True)
 class BetaConfig:
     alpha: float = 1.0 + math.log(2.0)
@@ -68,6 +75,7 @@ class BetaActionDist(ActionDist):
 
     def update_latent_features(self, latent_pi: torch.Tensor) -> Self:
         raw = self.output_net(latent_pi).view(*latent_pi.shape[:-1], self.action_dim, self._OUTPUTS_PER_ACTION)
+        raw = promote_cpu_beta_parameters(raw)
         alpha = 1.0 + F.softplus(raw[..., 0])
         beta = 1.0 + F.softplus(raw[..., 1])
         self.distribution = torchdist.Beta(

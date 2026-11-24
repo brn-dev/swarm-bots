@@ -74,6 +74,7 @@ def wrap_vec_env(
     shuffle_agents: bool = False,
     preserve_inactive_prefix_structure: bool = False,
     disable_connector_actions: bool = False,
+    allow_next_step_autoreset: bool = False,
 ) -> Any:
     from swarmbots.learn.env_wrappers.learn_wrappers.swarm_bots_learn_env_wrapper import SwarmBotsLearnEnvWrapper
     from swarmbots.learn.env_wrappers.torch_feature_wise_obs_norm_wrapper import TorchFeatureWiseObsNormWrapper
@@ -89,6 +90,7 @@ def wrap_vec_env(
         vector_env,
         device=rollout_device,
         disable_connector_actions=disable_connector_actions,
+        allow_next_step_autoreset=allow_next_step_autoreset,
     )
     if shuffle_agents:
         env = TorchShuffleAgentsWrapper(

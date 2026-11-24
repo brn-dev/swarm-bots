@@ -96,6 +96,95 @@ def _iterate_with_scored_batches(algorithm: OffPolicyAlgorithm) -> tuple[dict[st
     return metrics, scored_positions
 
 
+@pytest.mark.parametrize("recurrent", [False, True])
+def test_interrupted_collection_restarts_from_aligned_replay(recurrent: bool) -> None:
+    env = _make_env(max_steps=20)
+    try:
+        trainer = _make_algorithm(
+            env, "sac", recurrent=recurrent, batch_size=2, rollout_steps=6,
+            exposure=4 / 3 if recurrent else 1 / 3,
+        )
+        completed_iterations = int(recurrent)
+        if completed_iterations:
+            assert _iterate(trainer)["updates"] == 1
+
+        step = env.step
+        steps = 0
+
+        def interrupt_after_step(actions: torch.Tensor) -> Any:
+            nonlocal steps
+            result = step(actions)
+            steps += 1
+            if steps == 2:
+                raise KeyboardInterrupt("collection interrupted")
+            return result
+
+        with patch.object(env, "step", side_effect=interrupt_after_step):
+            with pytest.raises(KeyboardInterrupt, match="collection interrupted"):
+                _iterate(trainer)
+
+        assert len(trainer.replay_buffer) == 0
+        assert trainer.n_total_timesteps == 6 * completed_iterations
+        assert trainer.n_total_iterations == completed_iterations
+        assert trainer.n_total_updates == completed_iterations
+
+        assert _iterate(trainer)["updates"] == 1
+        replay = trainer.replay_buffer.get_all()
+        torch.testing.assert_close(replay.local_obs[:, 0, 0], torch.arange(6.0))
+        torch.testing.assert_close(replay.next_local_obs[:, 0, 0], torch.arange(1.0, 7.0))
+        assert trainer.n_total_updates == completed_iterations + 1
+        assert max(int(state["step"]) for state in trainer.critic_optimizer.state.values()) == completed_iterations + 1
+        if recurrent:
+            segment = trainer.replay_buffer.sample_episode_segments(1, segment_length=4, burn_in_steps=2)
+            torch.testing.assert_close(
+                segment.initial_temporal_state,
+                trainer.policy.initial_temporal_state(
+                    batch_size=1, n_agents=env.n_agents, device=segment.local_obs.device, dtype=segment.local_obs.dtype,
+                ),
+            )
+    finally:
+        env.close()
+
+
+def test_replay_reset_failure_preserves_collection_error_and_blocks_stale_sampling() -> None:
+    env = _make_env()
+    try:
+        trainer = _make_algorithm(env, "sac", recurrent=False, batch_size=2, rollout_steps=2, exposure=1)
+        assert _iterate(trainer)["updates"] == 1
+        with (
+            patch.object(env, "step", side_effect=RuntimeError("collection error")),
+            patch.object(trainer.replay_buffer, "reset", side_effect=RuntimeError("reset error")),
+        ):
+            with pytest.raises(RuntimeError, match="collection error") as interrupted:
+                _iterate(trainer)
+            assert any("reset error" in note for note in interrupted.value.__notes__)
+            with pytest.raises(RuntimeError, match="reset error"):
+                trainer.train(gradient_steps=1)
+
+        assert _iterate(trainer)["updates"] == 1
+        torch.testing.assert_close(trainer.replay_buffer.get_all().local_obs[:, 0, 0], torch.arange(2.0))
+    finally:
+        env.close()
+
+
+def test_rollout_diagnostics_failure_keeps_collected_replay_and_counters() -> None:
+    env = _make_env()
+    try:
+        trainer = _make_algorithm(env, "sac", recurrent=False, batch_size=2, rollout_steps=2, exposure=1)
+        with patch.object(trainer, "_compute_action_metrics", side_effect=RuntimeError("diagnostics failed")):
+            with pytest.raises(RuntimeError, match="diagnostics failed"):
+                _iterate(trainer)
+
+        assert len(trainer.replay_buffer) == 2
+        assert trainer.n_total_timesteps == 2
+        assert trainer.n_total_iterations == 1
+        assert trainer.n_total_updates == 0
+        assert _iterate(trainer)["updates"] == 1
+        torch.testing.assert_close(trainer.replay_buffer.get_all().local_obs[:, 0, 0], torch.arange(4.0))
+    finally:
+        env.close()
+
+
 @pytest.mark.parametrize("family", ["sac", "td3"])
 @pytest.mark.parametrize("recurrent", [False, True])
 def test_reporting_failure_preserves_actor_and_target_update_cadence(

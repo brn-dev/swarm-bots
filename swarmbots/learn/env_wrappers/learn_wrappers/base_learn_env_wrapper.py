@@ -28,6 +28,7 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         device: torch.device | str = "cpu",
         obs_dtype: torch.dtype = torch.float32,
         reward_dtype: torch.dtype = torch.float32,
+        allow_next_step_autoreset: bool = False,
     ) -> None:
         super().__init__(env)
         self.device = as_device(device)
@@ -35,7 +36,9 @@ class BaseLearnEnvWrapper(VectorWrapper, Generic[ActSpace], abc.ABC):
         self.reward_dtype = reward_dtype
 
         autoreset_mode = env.metadata.get("autoreset_mode", None)
-        if autoreset_mode != AutoresetMode.SAME_STEP:
+        if autoreset_mode != AutoresetMode.SAME_STEP and not (
+            allow_next_step_autoreset and autoreset_mode == AutoresetMode.NEXT_STEP
+        ):
             raise ValueError(
                 "SwarmBotsLearnVectorEnv requires VectorEnv autoreset_mode=SAME_STEP "
                 f"(got autoreset_mode={autoreset_mode!r}). The rollout pipeline expects terminal observations in "

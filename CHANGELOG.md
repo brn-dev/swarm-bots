@@ -66,6 +66,7 @@ These changes describe the current source checkout relative to the published `0.
 - Seed every CUDA device used for training rollouts, optimizer updates, or replay sampling. Benchmark evaluation, recording, and frozen training evaluations support running the actor and simulator on different devices.
 - Preserve the trainer's gSDE buffers and custom exploration state across frozen evaluations, including when using PyTorch inference mode.
 - Fix signed-Beta mode selection, improve likelihood accuracy for concentrated Beta components, and correct bounded Gaussian PPO likelihoods near saturation, including under autocast. Signed-Beta policies now draw negative magnitudes directly, and individual draws for existing seeds can change in both families.
+- Enable plain and signed-Beta action sampling under CPU FP16 and BF16 autocast.
 - Stabilize narrow Gaussian gradients in PPO and SAC, including under FP16 autocast, and score built-in hybrid heads in the emitted action precision. Joint sampling preserves custom action transforms, scoring hooks, and the likelihood range of replacement actions.
 - Preserve rollout action, score, and conditioning values when PPO storage widens. PPO scores each vector step in its emitted action precision, and recurrent PPO preserves previous-action values at rollout boundaries.
 - PPO rebases reduced-precision scalar targets in wider arithmetic and preserves the normalization frame of stacked observations when running statistics are frozen or resumed.
@@ -74,8 +75,10 @@ These changes describe the current source checkout relative to the published `0.
 - Full checkpoint loads require the saved adjustable policy loss weights and validate policy parameters, including FP8 weights, before updating the trainer. Resuming restores the auxiliary prediction coefficients even when optimizer state is omitted.
 - Preserve gSDE reset schedules across training, evaluation, and recording; add recording overrides and selective CUDA noise resets with a Torch fallback. Selective sampling changes exact seeded CUDA trajectories.
 - Record complete episodes and report recurrent episode starts on reset observations for both benchmark autoreset modes. Frozen evaluations wait for successful video encoding and keep interrupted milestones eligible for retry.
+- Support `NEXT_STEP` autoreset when recording a learning checkpoint.
 - Frozen evaluation reports the latest milestone reached by each rollout. CPU-only evaluations preserve pending CUDA seeds without initializing CUDA.
 - Hook failures preserve completed iterations' logs and scheduled checkpoints. Retrying `learn` with the same hooks can finish publishing an already completed evaluation.
+- Finish pending simulator steps when collection is interrupted so `learn` can retry from fresh episodes. PPO discards the incomplete rollout, and off-policy learners refill replay to restore observation and history continuity.
 - Evaluation metrics aggregate with buffered training metrics. CSV schemas can grow while a Windows reader holds the file open.
 - Require positive integer timestep budgets and preserve task-specific episode counters in mixed-scenario training and frozen evaluation reports.
 - Correct episode durations after autoreset, episode-weighted success rates across logging windows, compressed-log continuation, and plot exports.

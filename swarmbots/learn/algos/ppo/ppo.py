@@ -557,13 +557,16 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
             update_ema: bool,
     ) -> tuple[dict[str, Any], int]:
         with PerformanceTimer() as rollout_timer:
+            rollout_state = self._rollout_state
+            # The environment may have advanced if collection fails. Retry from a reset.
+            self._rollout_state = None
             if self.policy.supports_rollout_batch_sampler(self.sampler_config):
                 rollout_batch, episode_infos, rollout_metrics, self._rollout_state = collect_step_rollout_batch(
                     env=self.env,
                     policy=self.policy,
                     buffer=self.rollout_buffer,
                     n_steps=self.rollout_mode.n_steps_per_rollout,
-                    rollout_state=self._rollout_state,
+                    rollout_state=rollout_state,
                     gsde_reset_mode=self.gsde_reset_mode,
                 )
                 training_data: list[PPOEpisodeSegment] | PPORolloutBatch = rollout_batch
@@ -574,7 +577,7 @@ class PPO(BaseAlgorithm, Generic[PPOSamplesType, PPOSamplerConfigType]):
                     policy=self.policy,
                     buffer=self.rollout_buffer,
                     n_steps=self.rollout_mode.n_steps_per_rollout,
-                    rollout_state=self._rollout_state,
+                    rollout_state=rollout_state,
                     gsde_reset_mode=self.gsde_reset_mode,
                 )
                 training_data = episodes

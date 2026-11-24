@@ -727,18 +727,20 @@ def test_fp16_ppo_trunk_gradients_match_a_float32_reference() -> None:
     dist = PredictedStdGaussianActionDist(8, 1, base_std=1., squash_output=True)
     parameters = [*trunk.parameters(), *dist.parameters()]
     optimizer = torch.optim.SGD(parameters, lr=0.01)
+    log_std = -16.
     with torch.no_grad():
         trunk.weight.fill_(0.5)
         trunk.bias.zero_()
-        dist.action_net.weight.fill_(0.05)
-        dist.action_net.bias.fill_(0.65)
+        dist.action_net.weight.fill_(0.0625)
+        dist.action_net.bias.fill_(0.75)
         dist.log_std_net.weight.zero_()
-        dist.log_std_net.bias.fill_(-16.)
+        dist.log_std_net.bias.fill_(log_std)
 
     inputs = torch.ones(1, 1)
-    torch.manual_seed(12)
+    # An exact mean of 1 and a fixed residual keep the overflow independent of linear-kernel rounding.
+    action = torch.tensor([[1. + math.exp(log_std)]], dtype=torch.float64).tanh().float()
     with torch.autocast("cpu", torch.float16):
-        action, score = dist.get_on_policy_actions_with_log_probs(trunk(inputs), storage_dtype=torch.float32)
+        score = dist.update_latent_features(trunk(inputs)).log_prob(action)
     _backward_fp16_loss(score.sum(), parameters, optimizer)
     actual_gradients = [param.grad.clone() for param in parameters]
 

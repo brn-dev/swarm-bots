@@ -79,6 +79,8 @@ def record_checkpoint(
             env_kwargs=env_kwargs,
             policy_options=policy_options,
             compile_modules=compile_modules,
+            # Only the raw benchmark environment is stepped during recording.
+            allow_next_step_autoreset=True,
         )
         cleanup.callback(env.close)
         if isinstance(policy, TD3Policy):

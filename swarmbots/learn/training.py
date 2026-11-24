@@ -183,6 +183,7 @@ def _make_policy_env(
     gamma: float = DEFAULT_GAMMA,
     compile_modules: bool = False,
     additional_rng_devices: tuple[str | torch.device, ...] = (),
+    allow_next_step_autoreset: bool = False,
 ) -> tuple[BaseLearnEnvWrapper, BasePolicy]:
     policy_options = dict(policy_options)
     policy_options["model_scale"] = normalize_model_scale(policy_options.get("model_scale"))
@@ -207,6 +208,7 @@ def _make_policy_env(
             gamma=gamma,
             use_popart=use_popart,
             rollout_device=vector_env.device,
+            allow_next_step_autoreset=allow_next_step_autoreset,
         )
         actuators_per_limb = env.actuators_dim // env.connectors_dim
         env.action_space.seed(seed)

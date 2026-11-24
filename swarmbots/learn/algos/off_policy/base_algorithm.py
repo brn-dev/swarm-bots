@@ -155,6 +155,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.metrics_action_splitters = metrics_action_splitters
         self.agent_action_dim = int(env.action_space.total_agent_action_dim)
         self._rollout_state: OffPolicyRolloutState | None = None
+        self._replay_reset_pending = False
         self._pending_train_update: int | None = None
 
         self._validate_hyper_parameters()
@@ -270,24 +271,31 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         episode_success_rate_ema: ExponentialMovingAverage,
         update_ema: bool,
     ) -> tuple[dict[str, Any], int]:
+        if self._replay_reset_pending:
+            self._reset_rollout_stream()
         random_actions = self._should_collect_random_actions()
         with PerformanceTimer() as rollout_timer:
-            episode_infos, rollout_metrics, self._rollout_state = collect_off_policy_steps(
-                env=self.env,
-                replay_buffer=self.replay_buffer,
-                n_steps=self.rollout_steps_per_iteration,
-                policy=self.policy,
-                rollout_state=self._rollout_state,
-                random_actions=random_actions,
-                deterministic=False,
-                gsde_reset_mode=self.gsde_reset_mode,
-                rollout_device=self.rollout_device,
-            )
+            try:
+                episode_infos, rollout_metrics, self._rollout_state = collect_off_policy_steps(
+                    env=self.env,
+                    replay_buffer=self.replay_buffer,
+                    n_steps=self.rollout_steps_per_iteration,
+                    policy=self.policy,
+                    rollout_state=self._rollout_state,
+                    random_actions=random_actions,
+                    deterministic=False,
+                    gsde_reset_mode=self.gsde_reset_mode,
+                    rollout_device=self.rollout_device,
+                )
+            except BaseException as collection_error:
+                # The simulator and replay can advance before a new rollout state is returned.
+                try:
+                    self._reset_rollout_stream()
+                except Exception as reset_error:
+                    collection_error.add_note(f"Could not discard interrupted replay: {reset_error}")
+                raise
 
         rollout_steps = int(rollout_metrics.get("transitions_collected", self.rollout_steps_per_iteration))
-        rollout_actions = rollout_metrics.pop("_rollout_actions", None)
-        if rollout_actions is not None:
-            rollout_metrics.update(self._compute_action_metrics(rollout_actions, prefix="rollout"))
         self.n_total_timesteps += rollout_steps
         self.n_total_iterations += 1
 
@@ -297,6 +305,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     episode_return_ema.update(ep_info["r"])
                 if "success" in ep_info:
                     episode_success_rate_ema.update(float(ep_info["success"]))
+
+        rollout_actions = rollout_metrics.pop("_rollout_actions", None)
+        if rollout_actions is not None:
+            rollout_metrics.update(self._compute_action_metrics(rollout_actions, prefix="rollout"))
 
         train_metrics: dict[str, Any]
         if self._should_train():
@@ -324,6 +336,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     def train(self, *, gradient_steps: int) -> dict[str, Any]:
         if gradient_steps <= 0:
             return {"updates": 0, "total_updates": self.n_total_updates}
+        if self._replay_reset_pending:
+            self._reset_rollout_stream()
 
         with PerformanceTimer() as to_train_device_timer:
             self.policy.train()
@@ -564,6 +578,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     def replay_fill_target(self) -> int:
         return max(self.learning_starts, self.batch_size)
 
+    def _reset_rollout_stream(self) -> None:
+        self._rollout_state = None
+        self._replay_reset_pending = True
+        self.replay_buffer.reset()
+        self._replay_reset_pending = False
+
     def load(
         self,
         path: str | Path,
@@ -582,8 +602,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             restore_optimizer_state=restore_optimizer_state,
             restore_env_state=restore_env_state,
         )
-        self.replay_buffer.reset()
-        self._rollout_state = None
+        self._reset_rollout_stream()
         logger.info(
             f"Loaded {type(self).__name__} without replay state; collecting "
             f"{self.replay_fill_target} fresh transitions before training resumes."

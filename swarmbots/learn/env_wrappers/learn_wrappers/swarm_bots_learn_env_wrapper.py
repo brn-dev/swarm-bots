@@ -57,6 +57,7 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
         obs_dtype: torch.dtype = torch.float32,
         reward_dtype: torch.dtype = torch.float32,
         disable_connector_actions: bool = False,
+        allow_next_step_autoreset: bool = False,
     ) -> None:
         assert isinstance(env.action_space, spaces.Dict)
         assert "actuators" in env.action_space.keys()
@@ -89,6 +90,7 @@ class SwarmBotsLearnEnvWrapper(BaseLearnEnvWrapper):
             device=device,
             obs_dtype=obs_dtype,
             reward_dtype=reward_dtype,
+            allow_next_step_autoreset=allow_next_step_autoreset,
         )
 
         self.actuators_dim = action_space["actuators"].shape[2]

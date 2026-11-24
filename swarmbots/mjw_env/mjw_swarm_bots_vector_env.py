@@ -793,8 +793,20 @@ class MJWSwarmBotsVectorEnv(VectorEnv):
         self,
         actions: dict[str, torch.Tensor],
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
-        self.begin_step(actions)
-        return self.end_step()
+        previous_pending_step = self._pending_step
+        try:
+            self.begin_step(actions)
+            return self.end_step()
+        except BaseException as step_error:
+            pending_step = self._pending_step
+            if pending_step is not None and pending_step is not previous_pending_step:
+                # Finish the status copy and autoresets before the caller can reset or step again.
+                try:
+                    with self._warp_stream_scope():
+                        self._end_step()
+                except BaseException as cleanup_error:
+                    step_error.add_note(f"Could not finish interrupted MJW step: {cleanup_error}")
+            raise
 
     @property
     def supports_deferred_step(self) -> bool:
